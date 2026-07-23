@@ -6,6 +6,7 @@ Handle the state publishing and command receiving of the G1 robot
 """
 
 import numpy as np
+import time
 from typing import Any, Dict, Optional
 # from dds.dds_base import BaseDDSNode, node_manager
 from dds.dds_base import DDSObject
@@ -139,6 +140,7 @@ class G1RobotDDS(DDSObject):
             cmd_data = {
                 "mode_pr": int(msg.mode_pr),
                 "mode_machine": int(msg.mode_machine),
+                "receive_time_monotonic": time.monotonic(),
                 "motor_cmd": {
                     "positions": [float(msg.motor_cmd[i].q) for i in range(num_cmd_motors)],
                     "velocities": [float(msg.motor_cmd[i].dq) for i in range(num_cmd_motors)],

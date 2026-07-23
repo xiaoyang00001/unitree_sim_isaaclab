@@ -26,7 +26,7 @@ from dds.dds_create import create_dds_objects,create_dds_objects_replay
 parser = argparse.ArgumentParser(description="Unitree Simulation")
 parser.add_argument("--task", type=str, default="Isaac-PickPlace-G129-Head-Waist-Fix", help="task name")
 parser.add_argument("--action_source", type=str, default="dds", 
-                   choices=["dds", "file", "trajectory", "policy", "replay","dds_wholebody"], 
+                   choices=["dds", "file", "trajectory", "policy", "replay", "dds_wholebody", "sonic_dds"],
                    help="Action source")
 
 
@@ -53,6 +53,12 @@ parser.add_argument("--profile_interval", type=int, default=500, help="performan
 parser.add_argument("--model_path", type=str, default="assets/model/policy.onnx", help="model path")
 parser.add_argument("--reward_interval", type=int, default=10, help="step interval for reward calculation")
 parser.add_argument("--enable_wholebody_dds", action="store_true", default=False, help="enable wh dds")
+parser.add_argument("--sonic_lowcmd_timeout", type=float, default=0.10,
+                    help="maximum age in seconds of a SONIC rt/lowcmd before holding the last safe target")
+parser.add_argument("--sonic_ramp_seconds", type=float, default=2.0,
+                    help="seconds used to blend from the USD default pose to the first SONIC target")
+parser.add_argument("--sonic_max_target_step", type=float, default=0.10,
+                    help="maximum per-control-step joint target change in radians; 0 disables limiting")
 
 parser.add_argument("--physics_dt", type=float, default=None, help="physics time step, e.g., 0.005")
 parser.add_argument("--render_interval", type=int, default=None, help="render interval steps (>=1)")
@@ -406,7 +412,10 @@ def main():
     print(f"\ncreate action provider: {args_cli.action_source}...")
     try:
         print(f"args_cli.task: {args_cli.task}")
-        if not args_cli.replay_data and ("Wholebody" in args_cli.task or args_cli.enable_wholebody_dds):
+        if args_cli.task == "Isaac-G1-29DoF-Dex3-Sonic" and args_cli.action_source == "dds":
+            print("[sonic_dds] Selecting the dedicated 29-DoF SONIC action source for this task")
+            args_cli.action_source = "sonic_dds"
+        elif not args_cli.replay_data and ("Wholebody" in args_cli.task or args_cli.enable_wholebody_dds):
             args_cli.action_source = "dds_wholebody"
             args_cli.enable_wholebody_dds = True
             control_config.use_rl_action_mode = True
@@ -673,6 +682,9 @@ if __name__ == "__main__":
 # python sim_main.py --device cpu  --enable_cameras  --task Isaac-Move-Cylinder-G129-Dex1-Wholebody  --robot_type g129 --enable_dex1_dds 
 # python sim_main.py --device cpu  --enable_cameras  --task Isaac-Move-Cylinder-G129-Dex3-Wholebody  --robot_type g129 --enable_dex3_dds 
 # python sim_main.py --device cpu  --enable_cameras  --task Isaac-Move-Cylinder-G129-Inspire-Wholebody  --robot_type g129 --enable_inspire_dds 
+
+# Gear SONIC -> DDS -> Isaac Lab floating-base G1-29DoF. Dex3 remains at its default pose in phase 1.
+# python sim_main.py --task Isaac-G1-29DoF-Dex3-Sonic --robot_type g129 --action_source sonic_dds
 
 
 # python sim_main.py --device cpu  --enable_cameras  --task Isaac-PickPlace-Cylinder-H12-27dof-Inspire-Joint  --enable_inspire_dds --robot_type h1_2
