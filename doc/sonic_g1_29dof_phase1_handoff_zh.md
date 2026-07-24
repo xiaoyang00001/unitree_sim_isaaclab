@@ -1,960 +1,746 @@
-# Gear SONIC → Unitree Isaac Lab G1-29DoF 第一阶段交接记录
+# Gear SONIC → Isaac Lab G1 29DoF 非 VR 阶段交接与验证记录
 
-> 文档日期：2026-07-23  
-> 当前开发环境：Windows 10、Isaac Sim 5.1、Isaac Lab  
-> 后续目标环境：Ubuntu  
-> 项目目录：`unitree_sim_isaaclab`  
-> 状态：第一阶段代码骨架已实现并通过静态检查，尚未完成 Ubuntu 运行时、DDS 和端到端控制验证。
+> 文档日期：2026-07-23
+> 当前系统：Ubuntu 22.04、Isaac Sim 5.1、Isaac Lab
+> Isaac 桥接仓库：`/home/nolovr/Documents/unitree_sim_isaaclab`
+> GR00T/SONIC 仓库：`/home/nolovr/GR00T-WholeBodyControl`
+> Isaac Lab：`/home/nolovr/IsaacLab`
+> 当前结论：非 VR 的 G1 本体 29DoF 闭环已经完成键盘慢走、停步、0.8→0.5 m 分级深蹲、0.5→0.8 m 分级起身和正常退出验证，阶段一要求的“键盘控制行走和蹲下并验证整条链路”已经通过。深蹲 0.5 m 时保持稳定但 reference tracking 的 P95 仍高于本文候选优良门槛，因此还需要扩大动作矩阵、改进深蹲跟踪并做长时间稳定性测试，才能认定“全身关节控制特别好”。OpenXR/PICO 按键和夹爪映射尚未验证，明确留到后续阶段。
 
-## 1. 最终确认的需求
+## 1. 本阶段需求与边界
 
-本项目使用 `unitree_sim_isaaclab` 替换 Gear SONIC 原有的 MuJoCo 仿真后端。
+当前优先级不是 OpenXR，也不是 Dex3 夹爪，而是先把 Gear SONIC 对 G1 本体 29 个电机关节的闭环控制在 Isaac Lab/PhysX 中验证好。
 
-第一阶段只实现 G1 本体 29DoF 的自由基座全身控制，完整输入与控制链路为：
+本阶段必须满足：
+
+- SONIC 独占控制 G1 本体 29DoF：双腿 12、腰部 3、双臂和双腕 14。
+- Isaac Lab 不再叠加内部 locomotion policy，不与 SONIC 抢腿部或腰部控制权。
+- Floating Root 只由 PhysX 动力学和地面接触决定；进入正式控制后不能逐帧写 Root pose，也不能做 teleport 式动作回放。
+- 启动期间可以暂时固定 Root，避免 DDS 发现、模型加载和初始姿态插值期间机器人自由倒地；收到 SONIC 的正式 CONTROL 标记后必须释放 Root。
+- 非 VR 验证阶段不接入 Dex3 14 个手指关节，不验证 PICO/OpenXR 按键，不验证夹爪映射。
+- 控制频率、URDF、初始姿态、执行器参数、摩擦和自碰撞设置应尽量与 SONIC 发布训练环境一致。
+- 所有安全检查不能因为“仿真模式”而整体失效；尤其是绝对关节速度、LowState 新鲜度和命令超时检查。
+
+当前非 VR 数据链路为：
 
 ```text
-OpenXR 串流 APK
-    → RobotKit
-    → pico_manager_thread_server.py
-    → SMPL 人体全身运动参考
-    → Gear SONIC C++ / TensorRT
+键盘 / SONIC Planner / Reference Motion
+    → Gear SONIC C++ Encoder / Policy
     → Unitree DDS rt/lowcmd
-    → unitree_sim_isaaclab
-    → G1-29DoF-Dex3 Wholebody USD
-    → Isaac Lab / PhysX
-    → Unitree DDS rt/lowstate
-    → Gear SONIC
+    → unitree_sim_isaaclab SonicDDSActionProvider
+    → Isaac Lab JointPositionAction
+    → G1 29DoF URDF / PhysX
+    → Unitree DDS rt/lowstate + rt/secondary_imu
+    → Gear SONIC C++ 下一控制周期
 ```
 
-这里需要区分两类关节数据：
-
-- OpenXR/RobotKit 传输的是人体追踪骨架数据；
-- SMPL 表示人体全身运动参考；
-- Gear SONIC 将人体参考转换为 G1 的 29 个电机关节命令；
-- Isaac Lab 不直接使用 RobotKit/SMPL 数据控制机器人；
-- Isaac Lab 第一阶段只消费 Gear SONIC 通过 `rt/lowcmd` 发出的 G1 29DoF 控制。
-
-第一阶段的控制所有权：
-
-| 对象 | 数量 | 唯一控制源 |
-|---|---:|---|
-| G1 左腿 | 6DoF | Gear SONIC DDS |
-| G1 右腿 | 6DoF | Gear SONIC DDS |
-| G1 腰部 | 3DoF | Gear SONIC DDS |
-| G1 左臂和左腕 | 7DoF | Gear SONIC DDS |
-| G1 右臂和右腕 | 7DoF | Gear SONIC DDS |
-| 左 Dex3 | 7DoF | 第一阶段保持 USD 默认姿态 |
-| 右 Dex3 | 7DoF | 第一阶段保持 USD 默认姿态 |
-| Floating Root | 6DoF | PhysX |
-
-禁止以下控制方式：
-
-- 不允许 Isaac Lab 内部 locomotion RL policy 控制双腿；
-- 不允许把腰部固定为默认值而忽略 SONIC；
-- 不允许从 OpenXR、RobotKit 或 SMPL 直接覆盖机器人 Root；
-- 不允许每帧写 Root pose 形成 teleport 式动作回放；
-- 第一阶段不允许 SONIC 或 Dex3 DDS 修改 14 个手指关节；
-- 第一阶段不启用 Isaac Lab OpenXR 手柄 retargeter。
-
-## 2. 指定机器人资产
-
-第一阶段必须使用以下自由基座 wholebody USD：
+后续 PICO 数据链路预计为：
 
 ```text
-assets/robots/g1-29dof_wholebody_dex3/
-    g1_29dof_with_dex3_rev_1_0.usd
+OpenXR / PICO
+    → pico_manager_thread_server.py
+    → ZMQ manager input
+    → Gear SONIC C++ Encoder / Policy
+    → 同一套 DDS / Isaac Lab 29DoF 闭环
 ```
 
-完整工作区路径：
+第二条链路本轮没有进行端到端验证，不能把当前结论表述为“OpenXR 已通过”。
+
+## 2. 当前任务和机器人资产
+
+### 2.1 本体 29DoF 基线任务
+
+本阶段应使用：
 
 ```text
-F:\ISAACWholeBody\unitree_sim_isaaclab\
-assets\robots\g1-29dof_wholebody_dex3\
-g1_29dof_with_dex3_rev_1_0.usd
+Isaac-G1-29DoF-Sonic
 ```
 
-Ubuntu 上应通过项目相对路径加载，不应保留 Windows 绝对路径。
-
-机器人配置复用：
-
-```python
-G1RobotPresets.g1_29dof_dex3_wholebody(...)
-```
-
-底层配置为：
-
-```python
-G129_CFG_WITH_DEX3_WHOLEBODY
-```
-
-不能替换为：
+它直接加载 SONIC 发布训练环境使用的 URDF：
 
 ```text
-g1_29dof_with_dex3_base_fix.usd
+/home/nolovr/GR00T-WholeBodyControl/
+gear_sonic/data/assets/robot_description/urdf/g1/main.urdf
 ```
 
-因为本需求需要自由基座站立、移动、脚底接触和 PhysX 动力学结果。
+默认也可以通过环境变量覆盖 GR00T 根目录：
 
-## 3. 第一阶段场景定义
+```bash
+export GR00T_WBC_ROOT=/home/nolovr/GR00T-WholeBodyControl
+```
 
-新增任务：
+实际运行诊断结果：
+
+- 29 个本体关节；
+- 30 个刚体；
+- 总质量约 34.394 kg；
+- 自由基座；
+- 训练 URDF 的自碰撞开启；
+- Root 初始位置 `(0, 0, 0.76)`；
+- Root 初始四元数 `(1, 0, 0, 0)`，顺序为 `wxyz`。
+
+### 2.2 Dex3 任务只保留给后续阶段
+
+仓库仍注册：
 
 ```text
 Isaac-G1-29DoF-Dex3-Sonic
 ```
 
-场景只包含：
+该任务使用 29DoF 本体加 14DoF Dex3 的 whole-body USD，手指默认保持张开/零位。它没有作为本轮 29DoF 基线结论的依据，原因包括：
+
+- Dex3 USD 比训练 URDF 多出手部刚体和质量；
+- 整体质量、惯量、自碰撞开销和接触行为不再与训练环境完全一致；
+- 本轮需求已经明确先验证纯 29DoF，再进入 OpenXR 和夹爪映射阶段。
+
+因此，当前启动命令不要把 Dex3 任务当成“更完整的第一阶段任务”。
+
+## 3. 与 SONIC 训练环境对齐的动力学配置
+
+### 3.1 仿真时序
 
 ```text
-World
-├── GroundPlane
-├── DomeLight
-└── G1-29DoF-Dex3 Wholebody Robot
+physics dt = 0.005 s
+decimation = 4
+environment/control dt = 0.020 s
+control frequency = 50 Hz
 ```
 
-不包含：
-
-- 桌子；
-- 方块；
-- 圆柱；
-- 仓库场景；
-- 相机任务；
-- PickPlace；
-- reward 业务逻辑；
-- termination 业务逻辑；
-- curriculum；
-- 内部 locomotion policy。
-
-严格意义上的“完全空场景”没有地面，机器人会自由落体，因此保留 GroundPlane。
-
-## 4. 本轮已经修改和新增的文件
-
-### 4.1 新增 SONIC 29DoF ActionProvider
+`sim_main.py` 会检查 SONIC 任务的墙钟控制频率是否与 `sim.dt × decimation` 一致。默认额外目标插值和单步限幅均关闭：
 
 ```text
-action_provider/action_provider_sonic_dds.py
+sonic_ramp_seconds = 0.0
+sonic_max_target_step = 0.0
 ```
 
-职责：
+原因是 SONIC C++ 自己已经执行 INIT 初始姿态过渡；Isaac 侧再加 2 秒 ramp 或每步 0.1 rad 限制会改变策略实际看到的闭环响应。
 
-- 从已注册的 `G1RobotDDS` 获取 `rt/lowcmd`；
-- 校验 motor 数量至少为 29；
-- 按 Unitree G1 硬件 motor order 映射全部 29 个本体关节；
-- 不运行内部 RL policy；
-- 让 Dex3 的 14 个关节保持 USD/ArticulationCfg 默认姿态；
-- 从默认姿态平滑渐入首个 SONIC 目标；
-- 检查 NaN/Inf；
-- 检查 LowCmd 超时；
-- 限制每控制步最大目标变化；
-- 输出启动时 29/29 和 14/14 映射日志。
-
-当前实现输出的是完整 43 关节绝对位置目标：
+### 3.2 初始关节姿态
 
 ```text
-29 body joints ← SONIC LowCmd.q
-14 Dex3 joints ← robot.data.default_joint_pos
+左右 hip pitch       -0.312 rad
+左右 knee             0.669 rad
+左右 ankle pitch     -0.363 rad
+左右 elbow            0.600 rad
+left shoulder pitch   0.200 rad
+left shoulder roll    0.200 rad
+right shoulder pitch  0.200 rad
+right shoulder roll  -0.200 rad
+其余本体关节          0.000 rad
 ```
 
-### 4.2 新增共享的 G1 DDS 硬件顺序
+### 3.3 执行器参数
+
+参数与 `gear_sonic/envs/manager_env/robots/g1.py` 和 C++ `policy_parameters.hpp` 使用同一组公式：
 
 ```text
-robots/g1_joint_order.py
+natural frequency = 10 Hz × 2π
+damping ratio = 2.0（过阻尼，不是临界阻尼）
+stiffness = armature × natural_frequency²
+damping = 2 × damping_ratio × armature × natural_frequency
 ```
 
-该文件定义：
+基础电机参数为：
 
-```python
-G1_29DOF_DDS_JOINT_ORDER
-```
+| 电机参数组 | Armature | Stiffness | Damping |
+|---|---:|---:|---:|
+| 5020 | 0.003609725 | 14.250623 | 0.907223 |
+| 7520-14 | 0.010177520 | 40.179238 | 2.557890 |
+| 7520-22 | 0.025101925 | 99.098428 | 6.308802 |
+| 4010 | 0.004250000 | 16.778327 | 1.068142 |
 
-顺序已经对照 Gear SONIC：
+脚踝以及腰部 roll/pitch 按发布训练配置使用 5020 参数的 2 倍。各关节 effort/velocity limit、armature、stiffness 和 damping 也按发布配置分组设置。
+
+### 3.4 PhysX 和接触配置
+
+- 训练 URDF 自碰撞开启；
+- articulation solver position iterations 为 8；
+- articulation solver velocity iterations 为 4；
+- 刚体线性/角阻尼为 0；
+- `max_depenetration_velocity = 1.0`；
+- 地面静摩擦和动摩擦均为 1.0；
+- friction/restitution combine mode 均为 `multiply`；
+- 不再保留旧桥接场景中额外覆盖的 bounce threshold 和 friction correlation distance。
+
+## 4. 29DoF DDS 协议顺序
+
+LowCmd 和 LowState 的前 29 个 motor slot 统一使用 Unitree G1 硬件顺序。Isaac articulation 内部顺序不能直接假定等于 DDS 顺序，必须通过关节名显式映射。
 
 ```text
-GR00T-WholeBodyControl/
-gear_sonic_deploy/src/g1/g1_deploy_onnx_ref/include/
-robot_parameters.hpp
+00 left_hip_pitch_joint
+01 left_hip_roll_joint
+02 left_hip_yaw_joint
+03 left_knee_joint
+04 left_ankle_pitch_joint
+05 left_ankle_roll_joint
+
+06 right_hip_pitch_joint
+07 right_hip_roll_joint
+08 right_hip_yaw_joint
+09 right_knee_joint
+10 right_ankle_pitch_joint
+11 right_ankle_roll_joint
+
+12 waist_yaw_joint
+13 waist_roll_joint
+14 waist_pitch_joint
+
+15 left_shoulder_pitch_joint
+16 left_shoulder_roll_joint
+17 left_shoulder_yaw_joint
+18 left_elbow_joint
+19 left_wrist_roll_joint
+20 left_wrist_pitch_joint
+21 left_wrist_yaw_joint
+
+22 right_shoulder_pitch_joint
+23 right_shoulder_roll_joint
+24 right_shoulder_yaw_joint
+25 right_elbow_joint
+26 right_wrist_roll_joint
+27 right_wrist_pitch_joint
+28 right_wrist_yaw_joint
 ```
 
-以及其中的：
+当前实现由 `robots/g1_joint_order.py` 提供唯一 Python 协议定义，并同时用于：
 
-```cpp
-enum G1JointIndex
-```
+- `rt/lowcmd` → Isaac articulation position target；
+- Isaac articulation joint state → `rt/lowstate.motor_state[0:29]`。
 
-确认真实 DDS/硬件顺序为：
+启动日志会逐个输出 `motor[i] -> joint[j] name`，并要求最终显示 `Body mapping 29/29`。若任何关节缺失或重复，ActionProvider 会直接报错，而不是静默串关节。
+
+## 5. DDS、IMU 和闭环频率
+
+### 5.1 Isaac 专用 DDS profile
+
+本轮为 GR00T `deploy.sh` 新增了 `isaac` profile：
 
 ```text
-0   left_hip_pitch_joint
-1   left_hip_roll_joint
-2   left_hip_yaw_joint
-3   left_knee_joint
-4   left_ankle_pitch_joint
-5   left_ankle_roll_joint
-
-6   right_hip_pitch_joint
-7   right_hip_roll_joint
-8   right_hip_yaw_joint
-9   right_knee_joint
-10  right_ankle_pitch_joint
-11  right_ankle_roll_joint
-
-12  waist_yaw_joint
-13  waist_roll_joint
-14  waist_pitch_joint
-
-15  left_shoulder_pitch_joint
-16  left_shoulder_roll_joint
-17  left_shoulder_yaw_joint
-18  left_elbow_joint
-19  left_wrist_roll_joint
-20  left_wrist_pitch_joint
-21  left_wrist_yaw_joint
-
-22  right_shoulder_pitch_joint
-23  right_shoulder_roll_joint
-24  right_shoulder_yaw_joint
-25  right_elbow_joint
-26  right_wrist_roll_joint
-27  right_wrist_pitch_joint
-28  right_wrist_yaw_joint
+接口          lo
+DDS domain    1
+LowState CRC  开启
+生命周期标记  开启
 ```
 
-特别注意：
+原有 profile 保持语义：
 
-现有 Isaac Lab action 数组中曾出现左右交错的内部顺序，不能直接作为 Unitree `LowCmd.motor_cmd[i]` 顺序。若不做显式映射，会导致腿、腰和双臂串关节。
+| Profile | 典型用途 | DDS domain | CRC |
+|---|---|---:|---|
+| `sim` | MuJoCo | 0 | 关闭 |
+| `isaac` | 本项目 Isaac Lab | 1 | 开启 |
+| `real` | 真机 | 0 | 开启 |
 
-### 4.3 修改 LowState 状态反馈映射
+连接 Isaac 时必须使用命令末尾的 `isaac`，不能继续使用原来的 `sim`。使用 `sim` 会导致 domain、CRC 和生命周期协议不匹配，Isaac Root 也不会收到 A2 CONTROL 标记。
 
-```text
-tasks/common_observations/g1_29dof_state.py
-```
+### 5.2 状态发布
 
-原实现使用固定 articulation 下标列表拼接 `rt/lowstate`。本轮改为：
+Isaac 侧发布：
 
-```text
-Articulation joint_names
-    → name-to-index
-    → G1_29DOF_DDS_JOINT_ORDER
-    → LowState.motor_state[0:29]
-```
+- `rt/lowstate`：29 个关节位置、速度、估计/应用力矩以及 pelvis IMU；
+- `rt/secondary_imu`：torso link 的四元数、角速度和加速度；
+- LowState CRC：由 Unitree Python SDK 的 CRC 实现计算；
+- DDS 发布线程目标频率：100 Hz；
+- PhysX/状态样本更新频率：50 Hz。
 
-这样 LowCmd 正向映射和 LowState 反向映射使用同一个协议定义。
+SONIC policy 实际使用的关键基座观测包括：
 
-### 4.4 修改 G1 DDS 接收数据
+- pelvis/root 四元数；
+- pelvis/root body-frame 角速度；
+- 由四元数计算的重力方向历史；
+- 29 个关节状态和上一动作历史。
 
-```text
-dds/g1_robot_dds.py
-```
+四元数在 Isaac、Unitree HG 消息和 SONIC 中统一按 `[w, x, y, z]` 处理。
 
-每次收到并通过 CRC 检查的 LowCmd 后，增加：
+## 6. 启动生命周期和安全行为
 
-```python
-"receive_time_monotonic": time.monotonic()
-```
+### 6.1 生命周期标记
 
-用于识别 shared memory 中残留的过期命令。
+在 `isaac` profile 中，C++ 把桥接状态写入 LowCmd 的 `mode_machine`：
 
-### 4.5 修改 ActionProvider 工厂
+| 标记 | 数值 | 含义 | Isaac 行为 |
+|---|---:|---|---|
+| INIT | `0xA0` | C++ 初始姿态过渡 | 接收关节目标，但固定初始 Root |
+| WAIT | `0xA1` | 等待操作者进入控制 | 继续固定 Root |
+| CONTROL | `0xA2` | 正式闭环控制 | 永久释放 Root 给 PhysX |
 
-```text
-action_provider/create_action_provider.py
-```
+这解决了启动时的循环依赖：C++ 必须先收到 LowState 才能执行 INIT，而 Isaac 若提前释放自由基座，会在模型初始化完成前倒地。
 
-新增：
+### 6.2 命令和状态安全检查
 
-```text
-action_source = sonic_dds
-```
+当前保护包括：
 
-映射到：
+- Isaac LowCmd 默认超时为 0.10 秒；超时后保持最后一个安全 position target；
+- LowCmd 少于 29 个 position 或 kp 值时拒绝使用；
+- LowCmd 包含 NaN/Inf 时拒绝使用；
+- SONIC 正常退出时会发送 `kp=0` 的 damping-only packet；Isaac 识别该数据包并保持最后目标，不把其中的 `q=0` 误解释为“29 个关节全部打到零位”；
+- C++ 对 LowState 和 secondary IMU 都执行存在性与 500 ms 新鲜度检查；
+- C++ 对所有关节执行 `abs(dq) > 35 rad/s` 安全检查，此检查不再因为关闭 CRC 而失效；
+- 正式 CONTROL 后不再固定 Root；Root 释放是单向状态转换。即使 SONIC 进程随后重启并重新发送 INIT/WAIT 标记，Isaac 也只保持最后安全关节目标，不会再次写 Root pose 或把机器人传送回出生点；只有新的 CONTROL 标记到达后才恢复接收目标。
 
-```python
-SonicDDSActionProvider
-```
+### 6.3 退出顺序
 
-### 4.6 新增任务配置
+推荐测试结束时：
 
-```text
-tasks/g1_tasks/g1_29dof_dex3_sonic/__init__.py
-tasks/g1_tasks/g1_29dof_dex3_sonic/g1_29dof_dex3_sonic_env_cfg.py
-```
+1. Planner 模式下按 `r`，清除移动动量并回到 IDLE；
+2. 等机器人恢复稳定；
+3. 按 `o` 正常退出 GR00T C++；
+4. 在 Isaac 终端按 `Ctrl+C`；
+5. 确认日志出现 ActionProvider、Controller、DDS publish thread 和 simulation application 的正常清理信息。
 
-动作配置使用：
+不要依赖旧实现中按进程名批量 `SIGKILL` 的清理方式；当前退出逻辑集中在正常 `finally` 路径中。
 
-```python
-JointPositionActionCfg(
-    asset_name="robot",
-    joint_names=[".*"],
-    scale=1.0,
-    use_default_offset=False,
-    preserve_order=True,
-)
-```
+## 7. 关键代码实现
 
-`use_default_offset=False` 是必要条件，因为 SONIC `LowCmd.q` 是绝对目标位置，不能再次叠加 USD default pose。
+### 7.1 Isaac 桥接仓库
 
-### 4.7 修改 G1 task 注册
+| 文件 | 作用 |
+|---|---|
+| `tasks/g1_tasks/g1_29dof_dex3_sonic/g1_29dof_dex3_sonic_env_cfg.py` | 注册纯 29DoF 和后续 Dex3 两个任务；纯 29DoF 任务加载发布训练 URDF，并对齐时序、执行器、摩擦和自碰撞；显式复位时同时清除旧关节目标 |
+| `action_provider/action_provider_sonic_dds.py` | 将 29 个 SONIC LowCmd position target 显式映射到 articulation；处理生命周期、命令数值校验、超时、damping-only packet、Root 单向释放、倒地复位后的安全再接管和运行指标 |
+| `robots/g1_joint_order.py` | Python 侧唯一的 G1 29DoF DDS 硬件顺序 |
+| `tasks/common_observations/g1_29dof_state.py` | 按同一协议回传 29DoF LowState，并生成 pelvis/torso IMU |
+| `dds/g1_robot_dds.py` | LowCmd CRC 接收、LowState CRC 发布、secondary IMU 发布和频率统计 |
+| `dds/dds_master.py` | 可配置 domain/interface、100 Hz 发布调度和正常清理 |
+| `layeredcontrol/robot_control_system.py` | 基于 monotonic deadline 的稳定墙钟限频 |
+| `sim_main.py` | SONIC 任务默认 50 Hz、domain 1/lo、无相机服务、真正关闭渲染的 `--no_render`、自动倒地检测/复位以及集中式信号退出 |
+| `tools/diagnose_sonic_model.py` | 输出关节数、刚体数、质量、惯量和关键 frame 诊断 |
+| `tools/monitor_sonic_tracking.py` | 订阅 C++ ZMQ debug 流，测量参考动作与 PhysX 实测关节的误差、频率、丢帧和滞后 |
 
-```text
-tasks/g1_tasks/__init__.py
-```
+### 7.2 GR00T/SONIC 仓库
 
-注册新模块：
+| 文件 | 作用 |
+|---|---|
+| `gear_sonic_deploy/deploy.sh` | 新增 `isaac` profile、DDS domain/CRC/init duration/initial motion/frame 参数 |
+| `g1_deploy_onnx_ref.cpp` | 可配置 DDS domain、生命周期标记、双状态流新鲜度检查、绝对关节速度安全检查和显式初始 motion/frame |
+| `keyboard_handler.hpp` | 只有控制状态机实际进入 CONTROL 后才允许开启 planner；输出 motion set、mode、速度和高度变更日志 |
+| `localmotion_kplanner.hpp` / `localmotion_kplanner_onnx.hpp` | 提供 0–26 planner 协议值的唯一名称映射；修正旧日志把 mode 4 错写为 BOXING 的问题；重新初始化前释放 alias 输入 buffer 的 Ort tensor，修复 planner 二次启用 |
+| `motion_data_reader.hpp` | 对 motion 文件夹排序，使默认索引和初始动作可重复 |
+| `CMakeLists.txt` | GoogleTest 改为可选，默认构建不再依赖联网下载测试框架 |
 
-```text
-g1_29dof_dex3_sonic
-```
+## 8. 推荐启动流程
 
-### 4.8 修改启动入口
+建议先启动 Isaac，再启动 SONIC C++。C++ 首次加载 TensorRT/ONNX 模型可能持续一段时间；期间 Isaac 输出“等待 LowCmd”是正常的，不表示 DDS 一定失败。
 
-```text
-sim_main.py
-```
-
-新增：
-
-```text
---action_source sonic_dds
---sonic_lowcmd_timeout
---sonic_ramp_seconds
---sonic_max_target_step
-```
-
-如果任务是：
-
-```text
-Isaac-G1-29DoF-Dex3-Sonic
-```
-
-且 action source 保持默认 `dds`，程序会自动改用 `sonic_dds`，不会进入旧的 `dds_wholebody` RL policy 路径。
-
-## 5. 当前控制参数
-
-默认值：
-
-```text
-sonic_lowcmd_timeout = 0.10 s
-sonic_ramp_seconds = 2.0 s
-sonic_max_target_step = 0.10 rad/control-step
-simulation dt = 0.002 s
-decimation = 1
-```
-
-第一轮真实联调建议更保守：
-
-```text
-sonic_max_target_step = 0.02 rad/control-step
-```
-
-## 6. 当前控制模式及边界
-
-当前只实现了第一阶段位置目标模式：
-
-```text
-LowCmd.q
-    → 29DoF绝对位置目标
-    → Isaac Lab implicit actuator
-    → PhysX
-```
-
-尚未实现最终显式 PD 力矩模式：
-
-```text
-tau_cmd =
-    LowCmd.tau
-    + LowCmd.kp × (LowCmd.q - measured_q)
-    + LowCmd.kd × (LowCmd.dq - measured_dq)
-
-tau_cmd
-    → set_joint_effort_target
-    → PhysX
-```
-
-在位置模式完成真实 DDS、29DoF 映射和自由站立验证前，不建议直接切换力矩模式。
-
-显式 PD 模式还需要检查：
-
-- USD actuator 是否仍配置 stiffness/damping；
-- 避免外部 PD 与 implicit actuator 形成双重 PD；
-- 每关节 effort limit；
-- kp/kd 上下限；
-- dq 和 tau 的实际协议单位；
-- PhysX solver iteration；
-- 关节 damping、armature 和 friction；
-- 控制频率与仿真频率。
-
-## 7. Windows 上已经完成的验证
-
-已通过：
-
-```text
-Python py_compile：PASS
-git diff --check：PASS
-指定 wholebody Dex3 USD 存在：PASS
-Gear SONIC G1JointIndex 顺序检查：PASS 29/29
-新任务注册代码：已加入
-sonic_dds ActionProvider 工厂：已加入
-LowCmd 接收时间戳：已加入
-LowState 动态关节名映射：已加入
-Dex3 第一阶段默认保持：已加入
-```
-
-检查输出：
-
-```text
-DDS_ORDER_CHECK PASS 29/29
-USD_EXISTS True
-```
-
-## 8. Windows 上未完成的验证及原因
-
-尝试使用 Isaac Sim 5.1 Python 启动任务注册/配置解析时，现有环境缺少：
-
-```text
-unitree_sdk2py
-```
-
-错误为：
-
-```text
-ModuleNotFoundError: No module named 'unitree_sdk2py'
-```
-
-失败发生在项目已有的：
-
-```text
-dds/dds_master.py
-```
-
-导入阶段，不是新代码的 Python 语法错误。
-
-经确认后决定：
-
-- 不在 Windows 上安装或编译 `unitree_sdk2py`；
-- 提交当前代码和本文档；
-- 在 Ubuntu 环境安装官方依赖并继续运行时验证。
-
-因此当前不能宣称以下内容已经成功：
-
-- 新任务已经完成环境构造；
-- USD 实际加载后确认是 43 个 articulation joints；
-- `rt/lowcmd` 已经被收到；
-- 29DoF 已经实际运动；
-- `rt/lowstate` 已经被 SONIC 消费；
-- 机器人已经自由站立；
-- OpenXR 到 Isaac Lab 已经端到端运行。
-
-## 9. Ubuntu 环境准备
-
-建议目录结构：
-
-```text
-workspace/
-├── IsaacLab
-├── unitree_sim_isaaclab
-├── unitree_sdk2_python
-└── GR00T-WholeBodyControl
-```
-
-按照 Unitree 官方项目说明安装 `unitree_sdk2_python`：
+### 8.1 终端 A：启动纯 29DoF Isaac 基线
 
 ```bash
-git clone https://github.com/unitreerobotics/unitree_sdk2_python.git
-cd unitree_sdk2_python
-pip install -e .
-```
+cd /home/nolovr/Documents/unitree_sim_isaaclab
 
-如果出现：
-
-```text
-Could not locate cyclonedds.
-Try to set CYCLONEDDS_HOME or CMAKE_PREFIX_PATH
-```
-
-先编译 CycloneDDS 0.10.x：
-
-```bash
-git clone https://github.com/eclipse-cyclonedds/cyclonedds -b releases/0.10.x
-cd cyclonedds
-mkdir build install
-cd build
-cmake .. -DCMAKE_INSTALL_PREFIX=../install
-cmake --build . --target install
-```
-
-然后：
-
-```bash
-export CYCLONEDDS_HOME=/absolute/path/to/cyclonedds/install
-export CMAKE_PREFIX_PATH=$CYCLONEDDS_HOME:$CMAKE_PREFIX_PATH
-cd /absolute/path/to/unitree_sdk2_python
-pip install -e .
-```
-
-必须确保 `unitree_sdk2py` 安装到运行 Isaac Lab 的同一个 Python 环境，而不是另一个系统 Python 或 Conda 环境。
-
-验证：
-
-```bash
-python -c "import unitree_sdk2py; print(unitree_sdk2py.__file__)"
-
-python -c "from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelPublisher, ChannelSubscriber; print('channel import OK')"
-
-python -c "from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_, LowState_; print('G1 HG IDL OK')"
-
-python -c "from unitree_sdk2py.utils.crc import CRC; print('CRC OK')"
-```
-
-## 10. Ubuntu 上的下一步执行顺序
-
-### 步骤 1：检查提交内容
-
-进入 `unitree_sim_isaaclab`：
-
-```bash
-git status
-git diff --check
-```
-
-确认以下文件存在：
-
-```text
-action_provider/action_provider_sonic_dds.py
-robots/g1_joint_order.py
-tasks/g1_tasks/g1_29dof_dex3_sonic/__init__.py
-tasks/g1_tasks/g1_29dof_dex3_sonic/g1_29dof_dex3_sonic_env_cfg.py
-doc/sonic_g1_29dof_phase1_handoff_zh.md
-```
-
-### 步骤 2：验证任务注册和配置解析
-
-在 Isaac Lab Python 环境中执行一个最小脚本：
-
-```python
-from isaaclab.app import AppLauncher
-
-app = AppLauncher(headless=True).app
-
-import gymnasium as gym
-import tasks
-from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
-
-task = "Isaac-G1-29DoF-Dex3-Sonic"
-assert task in gym.registry
-
-cfg = parse_env_cfg(task, device="cuda:0", num_envs=1)
-print(cfg.scene.robot.spawn.usd_path)
-print(cfg.actions.joint_pos.use_default_offset)
-
-app.close()
-```
-
-预期：
-
-```text
-任务已注册
-USD路径指向 g1_29dof_with_dex3_rev_1_0.usd
-use_default_offset=False
-sim.dt=0.002
-```
-
-### 步骤 3：只构造环境，不启动 SONIC
-
-目标：
-
-- USD 能加载；
-- Floating Root 未固定；
-- GroundPlane 正常；
-- articulation joint 数量符合预期；
-- 29 个 body joint 全部存在；
-- 14 个 Dex3 joint 全部存在；
-- 机器人初始姿态不穿透地面。
-
-必须记录：
-
-```text
-robot.data.joint_names
-robot.num_joints
-robot.data.body_names
-root initial pose
-```
-
-预期总关节数：
-
-```text
-29 body + 14 Dex3 = 43
-```
-
-### 步骤 4：验证启动时映射日志
-
-启动：
-
-```bash
-cd unitree_sim_isaaclab
-
-python sim_main.py \
-  --task Isaac-G1-29DoF-Dex3-Sonic \
+UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo \
+/home/nolovr/IsaacLab/isaaclab.sh -p sim_main.py \
+  --task Isaac-G1-29DoF-Sonic \
   --robot_type g129 \
   --action_source sonic_dds \
-  --step_hz 500 \
-  --sonic_lowcmd_timeout 0.10 \
-  --sonic_ramp_seconds 2.0 \
-  --sonic_max_target_step 0.02
+  --device cpu \
+  --no_render \
+  --stats_interval 5 \
+  --profile_interval 250
 ```
 
-第一阶段不要添加：
+当前单机器人配置推荐 `--device cpu`：PhysX 使用 CPU，GPU 留给 C++ TensorRT/ONNX Runtime，实测更容易稳定保持 50 Hz。
+
+关键启动日志应包括：
 
 ```text
---enable_dex3_dds
+[DDS Config] domain=1, interface=lo
+[sim] control timing: physics_dt=0.005000s, decimation=4, ... step_hz=50
+[sonic_dds] Body mapping 29/29
+[fall_reset] enabled: tilt>=60.0deg or base_z<=0.350m ...
 ```
 
-预期日志：
+纯 29DoF SONIC 任务默认开启自动倒地恢复。默认判据和恢复时序为：Root 倾角达到 60°，或 Root 高度低于等于 0.35 m，连续保持 0.5 秒后触发；复位到默认站姿后固定 Root 1 秒，只接受复位后新到达的 `0xA2` CONTROL 包，再用 1 秒从默认关节姿态平滑混合回 SONIC 目标；整个恢复过程之后还有 2 秒额外检测冷却。
+
+可调参数如下：
 
 ```text
-[sonic_dds] Control ownership: G1 body=SONIC DDS (29), Dex3=default hold (14), root=PhysX
-[sonic_dds] motor[00] -> ... left_hip_pitch_joint
-...
-[sonic_dds] motor[28] -> ... right_wrist_yaw_joint
-[sonic_dds] Body mapping 29/29, Dex3 hold mapping 14/14
-[sonic_dds] HOLD: waiting for the first rt/lowcmd
+--fall_reset_tilt_deg 60
+--fall_reset_min_base_height 0.35
+--fall_reset_debounce_seconds 0.5
+--fall_reset_hold_seconds 1.0
+--fall_reset_blend_seconds 1.0
+--fall_reset_cooldown_seconds 2.0
 ```
 
-### 步骤 5：验证无 SONIC 时的安全行为
-
-不启动 Gear SONIC，只运行 Isaac Lab：
-
-- 机器人保持 default joint target；
-- Dex3 保持默认姿态；
-- 不出现 action buffer 清零导致的手指抽动；
-- 不出现内部 RL policy 输出；
-- 不直接写 Root；
-- 等待 LowCmd 时日志最多每秒提示一次。
-
-注意：
-
-自由基座机器人能否仅依靠 default pose 站立取决于 actuator、接触和初始高度。若机器人在无 SONIC 时缓慢倒下，不应立即修改 Root；先确认其是否只是没有平衡控制输入。
-
-### 步骤 6：先验证 DDS，本阶段不应用大动作
-
-分别验证：
-
-```text
-Gear SONIC publisher：rt/lowcmd
-Isaac Lab subscriber：rt/lowcmd
-Isaac Lab publisher：rt/lowstate
-Gear SONIC subscriber：rt/lowstate
-```
-
-确保 DDS 两端统一：
-
-- domain/channel；
-- network interface；
-- `unitree_hg` IDL；
-- topic name；
-- CRC；
-- QoS；
-- 29 motor count。
-
-当前 `sim_main.py` 提示仿真侧使用 channel/domain 1。Gear SONIC 必须使用同一 domain。
-
-确认原 MuJoCo bridge 已停止，不能同时存在两个：
-
-```text
-rt/lowstate publisher
-```
-
-### 步骤 7：打印 LowCmd 统计但暂不驱动
-
-建议临时或通过调试日志记录：
-
-```text
-receive timestamp
-message frequency
-motor count
-mode_pr
-mode_machine
-q min/max
-dq min/max
-tau min/max
-kp min/max
-kd min/max
-CRC result
-```
-
-先确认数据合理，再让 ActionProvider 应用动作。
-
-### 步骤 8：29个关节逐一小幅映射验证
-
-对每个 motor 发送小幅位置变化，例如：
-
-```text
-+0.02 rad
-```
-
-按顺序验证 0–28：
-
-- 只有目标关节运动；
-- 左右不交换；
-- pitch/roll/yaw 不交换；
-- ankle 不映射到 shoulder；
-- 腰部3轴正确；
-- 反馈的 `LowState.motor_state[i]` 对应同一个物理关节。
-
-不要直接用完整 PICO 大动作作为第一项测试。
-
-### 步骤 9：验证 Dex3 第一阶段保持
-
-在29DoF测试过程中确认：
-
-- 14个Dex3关节保持 default pose；
-- `rt/lowcmd` 不写入Dex3；
-- 没有启动 `rt/dex3/left/cmd` 或 `rt/dex3/right/cmd` 控制；
-- 手指不随 SONIC 变化。
-
-### 步骤 10：验证 LowState 闭环
-
-必须证明：
-
-```text
-PhysX measured q/dq/tau
-    → G1 DDS hardware order
-    → rt/lowstate
-    → Gear SONIC consumed
-```
-
-不要只看 `publisher.Write()` 返回或 DDS 初始化成功。
-
-建议在两端同时记录 sequence/timestamp，测量：
-
-- LowCmd 发布频率；
-- Isaac 接收延迟；
-- PhysX step 延迟；
-- LowState 发布频率；
-- SONIC 状态反馈延迟；
-- 陈旧包和丢包。
-
-### 步骤 11：自由基座动作验证
-
-依次测试：
-
-1. 静止站立；
-2. 轻微手臂动作；
-3. 腰部小幅旋转；
-4. 膝盖小幅弯曲；
-5. 原地踏步；
-6. 单步前进；
-7. 连续行走；
-8. 转向；
-9. 上下肢同时动作。
-
-必须确认：
-
-- Root 由 PhysX 运动；
-- 没有 root teleport；
-- 脚底接触有效；
-- 地面摩擦合理；
-- 没有关节爆炸；
-- 没有明显穿透；
-- LowCmd 超时后不会继续执行陈旧行走命令。
-
-### 步骤 12：位置模式稳定后再实现显式 PD
-
-位置模式真实运行稳定后，新增控制模式，例如：
-
-```text
---sonic_control_mode position
---sonic_control_mode effort
-```
-
-effort 模式计算：
-
-```python
-tau_cmd = (
-    tau_ff
-    + kp * (q_des - q)
-    + kd * (dq_des - dq)
-)
-```
-
-然后：
-
-```python
-robot.set_joint_effort_target(tau_cmd, joint_ids=body_indices)
-```
-
-实现时必须禁用或规避 actuator 双重 PD，并增加：
-
-- torque clamp；
-- kp/kd clamp；
-- position limit；
-- velocity limit；
-- NaN/Inf fault；
-- fault state；
-- timeout damping；
-- reset 后重新 ramp-in。
-
-## 11. 第二阶段范围：Isaac Lab OpenXR → Dex3
-
-第一阶段完成后，第二阶段才处理 Dex3。
-
-第二阶段数据流：
-
-```text
-Isaac Lab OpenXR Device
-    → CONTROLLER_LEFT / CONTROLLER_RIGHT
-    → Trigger / Squeeze
-    → Dex3 retargeter
-    → 7 + 7 hand joint targets
-```
-
-参考文件：
-
-```text
-D:\Omniverse\IsaacLab\source\isaaclab\isaaclab\devices\openxr\
-retargeters\humanoid\unitree\trihand\
-g1_upper_body_motion_ctrl_retargeter.py
-```
-
-Ubuntu 对应使用 Isaac Lab 仓库内同一路径文件。
-
-参考映射：
-
-```text
-Trigger → index finger
-Squeeze → middle finger
-max(Trigger, Squeeze) → thumb flexion
-Trigger - Squeeze → thumb base rotation
-```
-
-第二阶段只复用：
-
-- motion controller input extraction；
-- Trigger/Squeeze 映射；
-- 左右镜像；
-- 14手指关节输出重排。
-
-不复用其 wrist pose 去覆盖 G1 手腕。
-
-第二阶段最终所有权：
-
-```text
-G1 29DoF body → SONIC DDS
-G1 wrists → SONIC DDS
-Dex3 14DoF fingers → Isaac Lab OpenXR
-Floating Root → PhysX
-```
-
-## 12. 第一阶段验收标准
-
-只有同时满足以下条件，才能把第一阶段标记为完成。
-
-### 资产和场景
-
-- 加载指定 `g1_29dof_with_dex3_rev_1_0.usd`；
-- Floating Root 未固定；
-- 一个机器人、一个地面、一个灯光；
-- 29 body joints + 14 Dex3 joints；
-- 无任务物体。
-
-### 控制权
-
-- 29DoF 全部由 SONIC DDS 控制；
-- 没有内部 RL policy；
-- 腰部没有默认值覆盖；
-- Dex3 保持默认姿态；
-- Root 只由 PhysX 更新。
-
-### DDS
-
-- 持续收到有效 `rt/lowcmd`；
-- 持续发布有效 `rt/lowstate`；
-- 两边使用相同 domain 和 IDL；
-- 29 motor order 正确；
-- 原 MuJoCo bridge 已停止；
-- `rt/lowstate` 只有一个权威发布者。
-
-### 物理
-
-- 自由基座机器人能在 SONIC 控制下站立；
-- 能响应全身动作；
-- Root 没有被直接覆盖；
-- 脚底接触有效；
-- 无明显爆炸、穿透或瞬移；
-- 超时保护有效。
-
-### 端到端证据
-
-必须能够追踪：
-
-```text
-OpenXR frame
-→ RobotKit frame
-→ PICO manager frame
-→ SMPL frame
-→ SONIC inference/control sequence
-→ rt/lowcmd sequence
-→ Isaac applied sequence
-→ PhysX state
-→ rt/lowstate sequence
-→ SONIC consumed state
-```
-
-仅有以下证据不足以宣称完成：
-
-- Python 能导入；
-- Isaac 能启动；
-- DDS 初始化成功；
-- `publisher.Write()` 没报错；
-- 机器人 USD 可见；
-- 单个关节偶尔运动。
-
-## 13. 建议的第一次 Ubuntu 启动命令
-
-安装依赖并确认任务能构造后：
+`kneel`、`crawl`、`IDLE_LYING_FACE_DOWN` 等动作会主动进入低高度或大倾角姿态，测试这些动作时必须显式增加：
 
 ```bash
-cd /path/to/unitree_sim_isaaclab
-
-python sim_main.py \
-  --task Isaac-G1-29DoF-Dex3-Sonic \
-  --robot_type g129 \
-  --action_source sonic_dds \
-  --step_hz 500 \
-  --sonic_lowcmd_timeout 0.10 \
-  --sonic_ramp_seconds 2.0 \
-  --sonic_max_target_step 0.02
+--no_auto_reset_on_fall
 ```
 
-第一轮建议：
+关闭自动检测不会破坏手动 reset；SONIC 任务的手动 reset 仍会清除旧目标并走安全站姿恢复流程。
 
-- 不加 `--enable_dex3_dds`；
-- 不直接启动大幅人体动作；
-- 不立即切 effort 控制；
-- 先记录真实 articulation joint names；
-- 先验证等待 LowCmd 时的默认保持；
-- 再做单关节映射。
+### 8.2 终端 B：启动非 VR 键盘 SONIC
 
-## 14. 提交前建议
-
-提交前执行：
+本轮验证使用了显式 motion 和 frame，避免文件系统顺序或默认第 0 帧改变启动姿态：
 
 ```bash
-git status
-git diff --check
-git diff --stat
+cd /home/nolovr/GR00T-WholeBodyControl/gear_sonic_deploy
+
+bash deploy.sh \
+  --input-type keyboard \
+  --output-type zmq \
+  --initial-motion walking_quip_360_R_002__A428 \
+  --initial-frame 24 \
+  isaac
 ```
 
-建议提交说明：
+看到 `Init Done` 后：
 
 ```text
-feat: add Gear SONIC DDS control scene for floating G1 29DoF
+]       进入 CONTROL，Isaac 收到 A2 后释放 Root
+Enter   开启/关闭 planner
+1       在 standing motion set 中选择 SLOW_WALK
+w       前进；当前最小速度会被限制为 0.2 m/s
+r       Planner 紧急停步并清除移动动量
+n       从 standing 切换到 squat motion set，默认 IDLE_SQUAT、高度 0.8 m
+-       每次降低目标高度 0.1 m，最低限制为 0.2 m
+=       每次升高目标高度 0.1 m，最高限制为 0.8 m
+p       从 squat 返回 standing motion set
+o       正常退出程序
 ```
 
-不要在提交说明中写：
+重要安全顺序：先按 `]`，等待 C++ 日志确认进入 CONTROL、Isaac 日志确认收到 A2 并释放 Root，再按 Enter 开 planner。代码检查的是状态机已经实际进入 CONTROL，而不只是“曾经按过 `]`”。蹲下和起身建议每次只按一次 `-` 或 `=`，待机器人稳定后再进入下一高度；本轮实际按 0.8、0.7、0.6、0.5 m 和反向顺序完成验证。
+
+### 8.3 参考动作跟踪监控
+
+当前 `config/g1_udp_network.env` 的本机机器人 ID 为 1，因此 deploy 输出 topic 为 `g1_1_debug`。如果以后切换机器人 ID 或手动覆盖 topic，应以 `deploy.sh` 启动摘要里的 `ZMQ Output` 为准。
+
+```bash
+cd /home/nolovr/Documents/unitree_sim_isaaclab
+source /home/nolovr/GR00T-WholeBodyControl/.venv_teleop/bin/activate
+
+python -u tools/monitor_sonic_tracking.py \
+  --host localhost \
+  --port 5557 \
+  --topic g1_1_debug \
+  --warmup 2 \
+  --duration 30 \
+  --report-interval 5 \
+  --timeout 10 \
+  --max-lag-frames 10
+```
+
+该工具比较：
 
 ```text
-end-to-end control completed
+body_q_target   = C++ 当前 reference motion 的 29DoF 目标
+body_q_measured = Isaac/PhysX 反馈回 C++ 的 29DoF 实测位置
 ```
 
-因为当前还没有完成 Ubuntu 运行时和真实 DDS 端到端验证。
+它与 Isaac 日志中的 `pd_target_mae` 不是同一个指标。`pd_target_mae` 是实际关节位置到 policy 虚拟 PD 平衡点的位移；机器人为了支撑重量和平衡，尤其在脚踝处需要非零弹簧位移，因此不能把它当作 reference tracking error。
 
+### 8.4 后续 PICO/ZMQ 输入启动方式
+
+用户提供的 PICO manager 流程应把原来的 `sim` profile 改为 `isaac`：
+
+终端 B：
+
+```bash
+cd /home/nolovr/GR00T-WholeBodyControl/gear_sonic_deploy
+bash deploy.sh --input-type zmq_manager --zmq-host localhost isaac
+```
+
+终端 C：
+
+```bash
+cd /home/nolovr/GR00T-WholeBodyControl
+source .venv_teleop/bin/activate
+python gear_sonic/scripts/pico_manager_thread_server.py --manager --port 5556
+```
+
+这组命令只记录为下一阶段入口。本轮没有连接 OpenXR/PICO 设备，也没有验证手柄按键、手指数据或夹爪映射。
+
+## 9. 本轮实际验证结果
+
+### 9.1 静态和构建检查
+
+- Isaac 修改文件通过 Python AST 语法检查；
+- 两个仓库均通过 `git diff --check`；
+- `deploy.sh` 通过 `bash -n`；
+- GR00T `just build` 全量构建通过；
+- 任务实际加载为 29 joints / 30 bodies；
+- 启动日志确认全部 29 个 LowCmd/LowState 关节映射正确；
+- Planner 在同一进程中执行“启用 → 禁用 → 再启用”，第二次初始化成功，验证了 Ort alias buffer 的清理修复；
+- ActionProvider 状态机独立测试通过：A2 后再次收到 A0 时保持最后安全目标且不再写 Root；NaN `kp`、超时命令和 damping-only 命令均被拒绝或安全保持；
+- 最终补丁版端到端冒烟约 366 秒：CONTROL 前按 Enter 得到 `Wait for the CONTROL state...` 并拒绝 planner；A2 后 planner 正常初始化，随后完成 0.2 m/s 前进、`r` 停步、0.7 m 蹲下、恢复站立和正常退出；
+- 最终冒烟第一次启动曾在 Kit 启动约 0.28 秒、尚未加载任务代码时，于 Isaac Sim telemetry/crashreporter 原生插件内发生一次段错误；确认无残留进程和资源不足后立即重试成功，后续 366 秒运行正常。该现象暂记为一次未复现的 Isaac Sim 启动瞬态，不作为 SONIC 控制链故障计数。
+
+### 9.2 频率和 DDS
+
+一次完整键盘回归持续约 780 秒：
+
+- Isaac 主控制循环 overall average：50.00 Hz；
+- 最近 100 帧 moving average：约 50.00 Hz；
+- LowState 发布：约 98.8–99.2 Hz；
+- secondary IMU 发布：约 98.8–99.2 Hz；
+- C++ 持续收到 LowState 和 torso IMU，没有触发丢失状态安全停止；
+- 120 秒混合状态 ZMQ debug 监控收到 6001 个样本，50.00 Hz，`missing_index_steps=0`；
+- 25 秒深蹲专项监控收到 1251 个样本，50.00 Hz，`missing_index_steps=0`。
+
+### 9.3 启动和站立
+
+- INIT `0xA0`、WAIT `0xA1`、CONTROL `0xA2` 顺序正确；
+- A2 前 Root 保持初始状态；
+- A2 后 Root 释放给 PhysX；
+- 启动瞬态最大倾角约 5.08°，最低 base z 约 0.732 m，随后恢复；
+- 不同回归窗口的稳态站立倾角约 1.2–2.1°，base z 稳定在约 0.785–0.787 m；
+- 完成深蹲并起身后，倾角稳定在约 2.0°，base z 约 0.785–0.786 m。
+
+### 9.4 低速前进行走
+
+测试动作：Planner `SLOW_WALK`，前进速度 0.2 m/s。
+
+Isaac/PhysX 侧：
+
+- 未跌倒；
+- 动态窗口最大倾角约 6.25°；
+- 动态窗口最低 base z 约 0.774 m；
+- 停步后先恢复到倾角均值 1.36°、最大 2.61°，随后稳定到约 1.18°；
+- base z 恢复到约 0.787 m。
+
+C++ reference tracking 8 秒窗口：
+
+```text
+samples                  401
+receive rate             50.00 Hz
+missing index steps      0
+joint MAE                0.0675 rad
+joint RMSE               0.0931 rad
+joint P95                0.2010 rad
+joint max                0.3567 rad
+
+left leg MAE             0.0528 rad
+right leg MAE            0.0598 rad
+waist MAE                0.0670 rad
+left arm MAE             0.0824 rad
+right arm MAE            0.0718 rad
+
+base orientation error   2.23° mean / 4.59° max
+best lag                 2 frames，约 40 ms
+lag-corrected MAE        0.0671 rad
+```
+
+窗口前半段的 reference target activity 均值约 0.225 rad/s，完整 8 秒均值约 0.122 rad/s，最大约 3.816 rad/s，单关节覆盖范围最大约 0.902 rad。这说明窗口包含实际目标变化，不是纯静态站立数据。
+
+覆盖站立、前进、停步和部分蹲下过渡的 120 秒混合窗口结果为：
+
+```text
+samples                  6001
+receive rate             50.00 Hz
+missing index steps      0
+joint MAE                0.0768 rad
+joint RMSE               0.1119 rad
+joint P95                0.2305 rad
+joint max                0.6244 rad
+best lag                 2 frames，约 40 ms
+lag-corrected MAE        0.0767 rad
+```
+
+### 9.5 IDLE_SQUAT 分级深蹲和起身
+
+实际键盘序列：
+
+```text
+n     standing → squat motion set，IDLE_SQUAT (4)，height=0.8 m
+-     height=0.7 m
+-     height=0.6 m
+-     height=0.5 m
+=     height=0.6 m
+=     height=0.7 m
+=     height=0.8 m
+p     squat → standing motion set，planner 输出回到 IDLE
+```
+
+日志中的 `IDLE_SQUAT (4)` 是 planner 协议的真实含义。旧 ONNX 日志只覆盖少数模式，曾错误地把数值 4 打印为 `BOXING`；本轮已把 0–26 的协议名称集中到唯一映射并在日志中同时输出名称和数值。
+
+Isaac/PhysX 表现：
+
+- 站立时 base z 约 0.785–0.787 m；
+- 目标高度 0.7 m 时，base z 约 0.710–0.712 m，稳定倾角约 13.2–13.4°；
+- 目标高度 0.6 m 时，base z 约 0.620–0.622 m，稳定倾角约 12–13°；
+- 目标高度 0.5 m 时，base z 约 0.543–0.544 m，稳定倾角约 13.5°；
+- 过渡过程最大倾角约 14.9°，最大关节速度约 1.6 rad/s；
+- 0.5 m 深蹲可稳定保持，随后按 0.1 m 逐级起身，没有跌倒、NaN、DDS 丢失或安全停止；
+- 起身回到 standing 后，base z 恢复到约 0.785–0.786 m，倾角约 2.0°。
+
+25 秒深蹲专项 reference tracking：
+
+```text
+samples                  1251
+receive rate             50.00 Hz
+missing index steps      0
+joint MAE                0.0940 rad
+joint RMSE               0.1218 rad
+joint P95                0.3102 rad
+joint max                0.3832 rad
+
+left leg MAE             0.0784 rad
+right leg MAE            0.0840 rad
+waist MAE                0.0912 rad
+left arm MAE             0.1017 rad
+right arm MAE            0.1093 rad
+
+best lag                 1 frame，约 20 ms
+```
+
+该结果表明深蹲功能和稳定性已经通过，整体 MAE、RMSE、分组 MAE 和响应滞后处于本文候选范围内；但 P95 0.3102 rad 高于候选门槛 0.25 rad。因此不能把本次深蹲结果描述为“全部关节跟踪已经特别好”。误差主要来自深蹲平衡状态下的腰部和双臂参考姿态偏差，继续优化时应先区分 policy 为维持平衡主动偏离 reference 与桥接/执行器误差，不能直接通过随意提高增益破坏训练动力学对齐。
+
+### 9.6 正常停止和安全降级
+
+- `r` 成功把 planner 切回 IDLE 并清除 movement momentum；
+- `o` 后 C++ 发送 damping-only packet 并正常退出；
+- Isaac 连续识别到 `damping-only rt/lowcmd`，保持最后安全目标，没有把关节打到零位；
+- Isaac `Ctrl+C` 后 ActionProvider、Controller、DDS 发布线程、共享内存和 simulation application 均正常清理；
+- 退出后未发现残留的 `sim_main.py`、`g1_deploy_onnx_ref`、monitor 或 PICO server 进程。
+
+### 9.7 自动倒地复位验证
+
+2026-07-24 在隔离的 DDS domain 50、loopback 接口上完成了自动倒地恢复的端到端故障注入。测试发布器持续发送 CRC 正确、`mode_machine=0xA2`、但故意不稳定的 29DoF 目标，使机器人在 PhysX 中真实失稳；没有连接 PICO、真实机器人或日常测试 domain 1。
+
+验证结果：
+
+- Isaac 收到首个 A2 后正常释放 floating Root；
+- 第一次在 `base_z=0.243 m`、倾角约 50°时，由低高度判据确认倒地；后续循环在倾角约 85–87°、`base_z≈0.075 m` 时同时命中倾角和高度判据；
+- 每次确认倒地后均写回默认 Root pose/velocity、默认 joint position/velocity，并清除旧 joint position/velocity target；
+- `env.reset(env_ids=...)` 成功清空 action、observation、termination、episode/history 等运行缓存并执行 simulation forward；
+- 恢复期间旧 LowCmd 不会被重新应用，Root 保持默认站姿；只有复位开始时间之后新到达的有效 A2 才能重新释放 Root；
+- 新 A2 到达后按 1 秒完成默认姿态到 SONIC 目标的连续混合；
+- 因故障注入目标持续保持不稳定，系统按“保持 + 混合 + 冷却 + debounce”周期连续完成 4 次自动复位，没有卡死、NaN、串关节或控制循环中断；
+- 最后一次复位后的观测为 `base_z≈0.682 m`、倾角约 1.9–2.5°，证明机器人实际恢复为直立状态，而不只是清除了内部状态标志；
+- 故障注入期间主循环仍稳定在约 50.0 Hz。
+
+该测试证明倒地检测、物理状态复位、控制缓存复位、旧命令隔离、站姿保持和 SONIC 平滑再接管已经形成闭环。它不代表故意不稳定的测试目标本身可以站立；持续发送同一故障目标时再次倒地并再次复位是预期行为。
+
+## 10. 当前结论不能覆盖的内容
+
+以下内容尚未验证：
+
+- OpenXR/PICO 真实端到端链路；
+- PICO 手柄按键；
+- 夹爪或 Dex3 关节映射；
+- `Isaac-G1-29DoF-Dex3-Sonic` 的动态性能；
+- 后退、转向、侧移、不同速度行走；
+- kneel、crawl、boxing、styled walking 等其余 planner 模式；
+- 多个 reference motion 文件和不同初始 frame；
+- 20–30 分钟长时间 soak；
+- 故意断开 LowCmd、LowState 或 secondary IMU 的故障注入；
+- GPU PhysX 模式下与 TensorRT 同时运行的性能稳定性。
+
+另有两个指标解释限制：
+
+1. C++ debug 流中的 `base_trans_measured` 目前仍是输出可视化层的固定占位值，不是真实 Isaac Root translation。因此本轮只使用 joint tracking 和 base quaternion error，不能用该字段评估位置跟踪。
+2. `pd_target_mae` 是虚拟 PD 平衡点位移，不是 reference motion MAE；脚踝出现较大的稳态位移并不等同于脚踝 reference 跟踪失败。
+
+所以准确表述应是：
+
+> 纯 29DoF、非 VR 的阶段一功能验收已经完成：键盘可控制低速前进、停步、分级深蹲和分级起身，DDS/IMU/策略/PhysX 回路与安全退出均闭环通过。当前结果仍不能扩展解释为全部 planner 动作都已通过，也不能宣称 OpenXR 或夹爪控制已经完成；0.5 m 深蹲的 P95 跟踪质量还应继续改进。
+
+## 11. 建议的下一步验收计划
+
+### 11.1 先把监控变成可重复的验收
+
+建议下一步先扩展 `monitor_sonic_tracking.py`：
+
+- 支持 JSON/CSV 结果输出；
+- 支持命令行阈值和非零退出码；
+- 记录每个关节、每个分组、base tilt/z、数据新鲜度和恢复时间；
+- 每个动作保存 motion、frame、planner mode、速度、持续时间和 Git commit；
+- 形成一次命令可重复执行的非 VR 回归表。
+
+可先采用以下“候选阈值”，跑完动作矩阵后再根据数据确认或调整：
+
+| 指标 | 候选门槛 |
+|---|---:|
+| 控制平均频率 | 49.5–50.5 Hz |
+| ZMQ missing index steps | 0 |
+| reference joint MAE | ≤ 0.10 rad |
+| reference joint RMSE | ≤ 0.13 rad |
+| reference joint P95 | ≤ 0.25 rad |
+| 每个大关节分组 MAE | ≤ 0.12 rad |
+| 最佳响应滞后 | ≤ 3 帧 / 60 ms |
+| 正常站立稳态倾角均值 | ≤ 2° |
+| 普通行走最大倾角 | ≤ 10° |
+| 停步后恢复到倾角 ≤ 3° | ≤ 2 秒 |
+| 跌倒、NaN、CRC、安全停止 | 0 次 |
+
+这些阈值是基于当前基线提出的工程建议，不是已经由产品需求确认的最终标准。
+
+### 11.2 非 VR 动作矩阵
+
+建议按风险递增执行：
+
+1. 站立 5 分钟，不开启 planner；
+2. reference motion 播放：选择 3–5 个不同动作和不同初始 frame；
+3. SLOW_WALK：前进、后退、adjust left/right、heading left/right、侧移；
+4. 速度阶梯：0.2、0.4、0.6 m/s，每档至少 60 秒；
+5. squat set：`IDLE_SQUAT` 的 0.8→0.5→0.8 m 已通过；下一步测试 kneel，并对 0.5 m 深蹲的腰臂 P95 误差做专项分析；
+6. boxing set：重点观察腰、肩、肘、腕；
+7. styled walking：选择低风险样式开始；
+8. 每种动作执行 `r` 停步，测量恢复时间；
+9. 全部通过后进行 20–30 分钟混合动作 soak；
+10. 最后做 LowCmd、LowState、secondary IMU 暂停/恢复的故障注入。
+
+### 11.3 进入 OpenXR/夹爪阶段的门槛
+
+只有在以下条件满足后，才建议开启阶段 9：
+
+- 29DoF 动作矩阵全部无跌倒、无串关节、无异常安全退出；
+- 站立、行走、腰臂动作和停步恢复均达到确认后的阈值；
+- 长时间 soak 通过；
+- 断流保护验证通过；
+- Dex3 资产的额外质量、惯量、自碰撞和 50 Hz 性能单独重新评估。
+
+然后再做：
+
+1. 启用 PICO/ZMQ manager 输入但暂不控制手；
+2. 验证 OpenXR 按键事件和状态机；
+3. 定义夹爪开合或 Dex3 关节的唯一控制所有权；
+4. 增加手部命令限位、速度限制、超时和 emergency open；
+5. 最后做 OpenXR → PICO server → SONIC → DDS → Isaac 的端到端夹爪映射验证。
+
+## 12. 常见问题排查
+
+### Isaac 一直显示等待 LowCmd
+
+- 确认 C++ 最终进入模型运行阶段；首次模型加载可能较慢；
+- 确认使用 `isaac`，不是 `sim`；
+- 两边均确认 `domain=1`、`interface=lo`；
+- 检查 C++ 是否持续收到 `rt/lowstate` 和 `rt/secondary_imu`。
+
+### 关节已经动，但 Root 一直被固定
+
+- 查看 LowCmd `mode_machine` 是否进入 `0xA2`；
+- 在键盘模式下需要看到 `Init Done` 后按 `]`；
+- 如果 C++ 用 `sim` profile 启动，不会发布 Isaac 生命周期标记。
+
+### monitor 没有数据
+
+- 查看 `deploy.sh` 摘要中的 `ZMQ Output`；
+- 当前 robot ID 1 的默认 topic 是 `g1_1_debug`；
+- 端口默认 5557；
+- monitor 必须在 GR00T `.venv_teleop` 中运行，确保 `pyzmq/msgpack/numpy` 可用。
+
+### 仿真只有约 25 Hz
+
+- 使用 `--no_render`；
+- 不要同时指定非零 `--livestream_type`；
+- 单机器人基线优先使用 `--device cpu`；
+- 确认没有误用 43DoF Dex3 自碰撞任务作为纯 29DoF性能基线。
+
+### 任务找不到 SONIC URDF
+
+- 检查 `/home/nolovr/GR00T-WholeBodyControl` 是否存在；
+- 或设置 `GR00T_WBC_ROOT`；
+- 纯 29DoF 任务实际实例化时，Isaac URDF importer 会报告所选绝对路径。
+
+## 13. Git 和工作区注意事项
+
+两个仓库当前都已经由 Git 管理，但修改尚未在本文档中假定已经提交。
+
+特别需要保留的用户现有改动：
+
+- `/home/nolovr/GR00T-WholeBodyControl/config/g1_udp_network.env` 中 robot ID 已从 2 改为 1；
+- `teleimager` 子模块的 dirty 状态；
+- 运行 Isaac 后产生或更新的 `__pycache__` 文件。
+
+这些内容不属于本轮 29DoF 实现本身，不应在整理提交时被误删或整体回退。`/home/nolovr/IsaacLab` 本轮没有代码修改。

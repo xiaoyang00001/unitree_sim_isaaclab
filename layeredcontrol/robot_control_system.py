@@ -28,19 +28,21 @@ class RobotController:
         self.config = config
         self.action_provider: Optional[ActionProvider] = None
         self.is_running = False
-        
-        
-        # minimal frequency control
+
+        if config.step_hz <= 0:
+            raise ValueError(f"step_hz must be positive, got {config.step_hz}")
+
+        # Deadline-based frequency control.  The previous implementation saved
+        # the timestamp taken before sleeping, so every second loop skipped its
+        # sleep and a requested 100 Hz ran at about 120 Hz.  A monotonic deadline
+        # keeps the environment step cadence stable and skips missed deadlines
+        # without issuing catch-up bursts.
         self._step_interval = 1.0 / config.step_hz
-        self._last_step_time = 0.0
+        self._next_step_time = 0.0
         
         all_joint_names = env.scene["robot"].data.joint_names
         self._last_action = torch.zeros(len(all_joint_names), device=env.device)
         
-        
-        # pre-calculate the sleep threshold (avoid calculating every time)
-        self._sleep_threshold = 0.0002
-        self._sleep_adjustment = 0.0001
         
         # minimal statistics
         self.step_count = 0
@@ -72,7 +74,7 @@ class RobotController:
         
         self.is_running = True
         self._start_time = time.time()
-        self._last_step_time = self._perf_counter()
+        self._next_step_time = self._perf_counter() + self._step_interval
         
         # start the action provider
         if self.action_provider:
@@ -129,15 +131,19 @@ class RobotController:
             
             self.step_count += 1
         
-        # 3. minimal frequency control (no rendering overhead, use the pre-calculated threshold)
+        # 3. deadline-based frequency control
         sleep_start = perf_counter()
         current_time = perf_counter()
-        if self._last_step_time > 0:
-            elapsed = current_time - self._last_step_time
-            sleep_needed = self._step_interval - elapsed
-            if sleep_needed > self._sleep_threshold:  # use the pre-calculated threshold
-                self._time_sleep(sleep_needed - self._sleep_adjustment)  # use the pre-calculated adjustment value
-        self._last_step_time = current_time
+        sleep_needed = self._next_step_time - current_time
+        if sleep_needed > 0.0:
+            self._time_sleep(sleep_needed)
+
+        current_time = perf_counter()
+        missed_intervals = max(
+            0,
+            int((current_time - self._next_step_time) // self._step_interval),
+        )
+        self._next_step_time += (missed_intervals + 1) * self._step_interval
         sleep_time = perf_counter() - sleep_start
         
         # 4. minimal performance print

@@ -94,13 +94,15 @@ class SharedMemoryManager:
     
     def cleanup(self):
         """Clean up shared memory"""
-        if hasattr(self, 'shm') and self.shm:
-            self.shm.close()
+        shared_memory_handle = getattr(self, "shm", None)
+        if shared_memory_handle is not None:
+            shared_memory_handle.close()
             if self.created:
                 try:
-                    self.shm.unlink()
-                except:
+                    shared_memory_handle.unlink()
+                except FileNotFoundError:
                     pass
+            self.shm = None
     
     def __del__(self):
         """Destructor"""

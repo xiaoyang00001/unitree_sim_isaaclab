@@ -7,7 +7,12 @@ from isaaclab.actuators import ActuatorNetMLPCfg, DCMotorCfg, ImplicitActuatorCf
 from isaaclab.assets.articulation import ArticulationCfg
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 import os
-project_root = os.environ.get("PROJECT_ROOT")
+
+# Resolve assets reliably when robot configurations are imported outside
+# sim_main.py (for example through Gym task registration or diagnostic tests).
+project_root = os.environ.get("PROJECT_ROOT") or os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))
+)
 G129_CFG_WITH_DEX3_BASE_FIX = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
         usd_path=f"{project_root}/assets/robots/g1-29dof-dex3-base-fix-usd/g1_29dof_with_dex3_base_fix.usd",

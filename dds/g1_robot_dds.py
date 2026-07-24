@@ -11,8 +11,12 @@ from typing import Any, Dict, Optional
 # from dds.dds_base import BaseDDSNode, node_manager
 from dds.dds_base import DDSObject
 from unitree_sdk2py.core.channel import ChannelPublisher, ChannelSubscriber
-from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_, LowCmd_
-from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_, unitree_hg_msg_dds__LowState_
+from unitree_sdk2py.idl.unitree_hg.msg.dds_ import IMUState_, LowCmd_, LowState_
+from unitree_sdk2py.idl.default import (
+    unitree_hg_msg_dds__IMUState_,
+    unitree_hg_msg_dds__LowCmd_,
+    unitree_hg_msg_dds__LowState_,
+)
 from unitree_sdk2py.utils.crc import CRC
 
 
@@ -34,14 +38,19 @@ class G1RobotDDS(DDSObject):
         self.node_name = node_name
         self.crc = CRC()
         self.low_state = unitree_hg_msg_dds__LowState_()
+        self.torso_imu_state = unitree_hg_msg_dds__IMUState_()
+        self._stats_window_start = time.monotonic()
+        self._lowstate_publish_count = 0
+        self._torso_imu_publish_count = 0
+        self._last_sample_age_ms = 0.0
         self._initialized = True
         
         # setup the shared memory
         self.setup_shared_memory(
             input_shm_name="isaac_robot_state",  # read the state of the G1 robot from Isaac Lab
             output_shm_name="dds_robot_cmd",  # output the command to Isaac Lab
-            input_size=3072,
-            output_size=3072  # output the command to Isaac Lab
+            input_size=8192,
+            output_size=8192  # output the command to Isaac Lab
         )
         
         print(f"[{self.node_name}] G1 robot DDS node initialized")
@@ -51,7 +60,10 @@ class G1RobotDDS(DDSObject):
         try:
             self.publisher = ChannelPublisher("rt/lowstate", LowState_)
             self.publisher.Init()
+            self.torso_imu_publisher = ChannelPublisher("rt/secondary_imu", IMUState_)
+            self.torso_imu_publisher.Init()
             print(f"[{self.node_name}] State publisher initialized (rt/lowstate)")
+            print(f"[{self.node_name}] Torso IMU publisher initialized (rt/secondary_imu)")
             return True
         except Exception as e:
             print(f"g1_robot_dds [{self.node_name}] State publisher initialization failed: {e}")    
@@ -78,39 +90,109 @@ class G1RobotDDS(DDSObject):
                 return
 
             motor_state = self.low_state.motor_state
-            imu_state = self.low_state.imu_state
-            num_motors =len(motor_state)
 
             positions = data.get("joint_positions")
             velocities = data.get("joint_velocities")
             torques = data.get("joint_torques")
 
-            if positions and velocities and torques:
-                q_array = np.asarray(positions, dtype=np.float32)
-                dq_array = np.asarray(velocities, dtype=np.float32)
-                tau_array = np.asarray(torques, dtype=np.float32)
-                for i in range(len(q_array)):
-                    motor = motor_state[i]
-                    motor.q = q_array[i]
-                    motor.dq = dq_array[i]
-                    motor.tau_est = tau_array[i]
+            if positions is None or velocities is None or torques is None:
+                return
 
-            imu = data.get("imu_data")
-            if imu and len(imu) >= 13:
-                imu_array = np.asarray(imu, dtype=np.float32)
+            q_array = np.asarray(positions, dtype=np.float32)
+            dq_array = np.asarray(velocities, dtype=np.float32)
+            tau_array = np.asarray(torques, dtype=np.float32)
+            if not (len(q_array) == len(dq_array) == len(tau_array)):
+                raise ValueError(
+                    "joint state arrays must have equal lengths: "
+                    f"q={len(q_array)}, dq={len(dq_array)}, tau={len(tau_array)}"
+                )
+            if len(q_array) > len(motor_state):
+                raise ValueError(
+                    f"joint state contains {len(q_array)} motors, LowState supports {len(motor_state)}"
+                )
+            if not (
+                np.isfinite(q_array).all()
+                and np.isfinite(dq_array).all()
+                and np.isfinite(tau_array).all()
+            ):
+                raise ValueError("joint state contains NaN or Inf")
 
-                imu_state.quaternion[:] = imu_array[[4, 5, 6, 3]] #[x,y,z,w]
+            for i in range(len(q_array)):
+                motor = motor_state[i]
+                motor.q = q_array[i]
+                motor.dq = dq_array[i]
+                motor.tau_est = tau_array[i]
 
-                imu_state.accelerometer[:] = imu_array[7:10]
+            base_imu = data.get("base_imu_data", data.get("imu_data"))
+            if not self._copy_imu_state(self.low_state.imu_state, base_imu, "base/pelvis"):
+                return
 
-                imu_state.gyroscope[:] = imu_array[10:13]
+            torso_imu = data.get("torso_imu_data")
+            have_torso_imu = self._copy_imu_state(
+                self.torso_imu_state,
+                torso_imu,
+                "torso",
+                required=False,
+            )
 
             self.low_state.tick += 1
             self.low_state.crc = self.crc.Crc(self.low_state)
             self.publisher.Write(self.low_state)
+            self._lowstate_publish_count += 1
+
+            if have_torso_imu:
+                self.torso_imu_publisher.Write(self.torso_imu_state)
+                self._torso_imu_publish_count += 1
+
+            sample_time = data.get("sample_time_monotonic")
+            if sample_time is not None:
+                self._last_sample_age_ms = max(0.0, (time.monotonic() - float(sample_time)) * 1000.0)
+            self._report_publish_stats()
 
         except Exception as e:
             print(f"g1_robot_dds [{self.node_name}] Error processing publish data: {e}")
+
+    @staticmethod
+    def _copy_imu_state(message, imu_data, label: str, required: bool = True) -> bool:
+        if imu_data is None:
+            if required:
+                print(f"g1_robot_dds: missing required {label} IMU sample")
+            return False
+
+        imu_array = np.asarray(imu_data, dtype=np.float32)
+        if imu_array.size < 13:
+            raise ValueError(f"{label} IMU sample has {imu_array.size} values; expected at least 13")
+        if not np.isfinite(imu_array[:13]).all():
+            raise ValueError(f"{label} IMU sample contains NaN or Inf")
+
+        quaternion_wxyz = imu_array[3:7]
+        quaternion_norm = float(np.linalg.norm(quaternion_wxyz))
+        if quaternion_norm < 1.0e-6:
+            raise ValueError(f"{label} IMU quaternion has zero norm")
+        quaternion_wxyz = quaternion_wxyz / quaternion_norm
+
+        # Unitree HG IMUState and SONIC both use quaternion order [w, x, y, z].
+        message.quaternion[:] = quaternion_wxyz
+        message.accelerometer[:] = imu_array[7:10]
+        message.gyroscope[:] = imu_array[10:13]
+        return True
+
+    def _report_publish_stats(self) -> None:
+        now = time.monotonic()
+        elapsed = now - self._stats_window_start
+        if elapsed < 5.0:
+            return
+
+        lowstate_hz = self._lowstate_publish_count / elapsed
+        torso_imu_hz = self._torso_imu_publish_count / elapsed
+        print(
+            f"[{self.node_name}] DDS publish: lowstate={lowstate_hz:.1f}Hz, "
+            f"secondary_imu={torso_imu_hz:.1f}Hz, "
+            f"sample_age={self._last_sample_age_ms:.2f}ms"
+        )
+        self._stats_window_start = now
+        self._lowstate_publish_count = 0
+        self._torso_imu_publish_count = 0
 
     
     def dds_subscriber(self, msg: LowCmd_,datatype:str=None) -> Dict[str, Any]:
@@ -165,23 +247,39 @@ class G1RobotDDS(DDSObject):
             return self.output_shm.read_data()
         return None
     
-    def write_robot_state(self, joint_positions, joint_velocities, joint_torques, imu_data):
+    def write_robot_state(
+        self,
+        joint_positions,
+        joint_velocities,
+        joint_torques,
+        imu_data=None,
+        *,
+        base_imu_data=None,
+        torso_imu_data=None,
+    ):
         """Write the robot state to the shared memory
         
         Args:
             joint_positions: the joint position list or torch.Tensor
             joint_velocities: the joint velocity list or torch.Tensor
             joint_torques: the joint torque list or torch.Tensor
-            imu_data: the IMU data list or torch.Tensor
+            imu_data: legacy base IMU argument kept for other tasks
+            base_imu_data: pelvis/base IMU in [pos, quat(wxyz), accel, gyro] layout
+            torso_imu_data: torso IMU in [pos, quat(wxyz), accel, gyro] layout
         """
         if self.input_shm is None:
             return
         try:
+            if base_imu_data is None:
+                base_imu_data = imu_data
+
             state_data = {
                 "joint_positions": joint_positions.tolist() if hasattr(joint_positions, 'tolist') else joint_positions,
                 "joint_velocities": joint_velocities.tolist() if hasattr(joint_velocities, 'tolist') else joint_velocities,
                 "joint_torques": joint_torques.tolist() if hasattr(joint_torques, 'tolist') else joint_torques,
-                "imu_data": imu_data.tolist() if hasattr(imu_data, 'tolist') else imu_data
+                "base_imu_data": base_imu_data.tolist() if hasattr(base_imu_data, 'tolist') else base_imu_data,
+                "torso_imu_data": torso_imu_data.tolist() if hasattr(torso_imu_data, 'tolist') else torso_imu_data,
+                "sample_time_monotonic": time.monotonic(),
             }
             self.input_shm.write_data(state_data)
         except Exception as e:

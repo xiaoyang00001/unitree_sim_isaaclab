@@ -204,10 +204,38 @@ python sim_main.py --device cpu  --enable_cameras  --task  Isaac-PickPlace-Cylin
 - `--task`: Task name, corresponding to the task names in the table above
 - `--enable_dex1_dds/--enable_dex3_dds`: Represent enabling DDS for two-finger gripper/three-finger dexterous hand respectively  
 - `--robot_type`: Robot type, currently has 29-DOF unitree g1 (g129),27-DoF H1-2
-- `--no_render`: Run without launching the Sim window and enable the WebRTC video stream. If running in a Docker environment, please add this parameter. You can use the Isaac Sim WebRTC Streaming Client to view the video feed.
-.
+- `--no_render`: Run headless and disable rendering updates entirely. This is the lowest-overhead mode and cannot be combined with WebRTC livestreaming.
+- `--livestream_type 1|2`: Run headless with offscreen rendering and enable the WebRTC stream (`1` for a public-network address, `2` for a private-network address). Use `--public_ip` with type `1` when needed.
+##### Gear SONIC G1 29-DoF non-VR baseline
 
-**Note 1:** If you need to control robot movement, please refer to `send_commands_8bit.py` or `send_commands_keyboard.py` to publish control commands, or you can use them directly. Please note that only tasks marked with `Wholebody` are mobile tasks and can control the robot's movement.
+Use the pure 29-DoF task that matches the released SONIC training model before enabling Dex3 or OpenXR:
+
+```bash
+cd /home/nolovr/Documents/unitree_sim_isaaclab
+UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo \
+/home/nolovr/IsaacLab/isaaclab.sh -p sim_main.py \
+  --task Isaac-G1-29DoF-Sonic \
+  --robot_type g129 \
+  --action_source sonic_dds \
+  --device cpu \
+  --no_render
+```
+
+Start SONIC in another terminal with the dedicated `isaac` profile:
+
+```bash
+cd /home/nolovr/GR00T-WholeBodyControl/gear_sonic_deploy
+bash deploy.sh \
+  --input-type keyboard \
+  --output-type zmq \
+  --initial-motion walking_quip_360_R_002__A428 \
+  --initial-frame 24 \
+  isaac
+```
+
+See the [Chinese SONIC G1 29-DoF phase-1 handoff](doc/sonic_g1_29dof_phase1_handoff_zh.md) for the complete implementation, runbook, metric definitions, and current validation status.
+
+**Note 1:** For general tasks, use `send_commands_8bit.py` or `send_commands_keyboard.py` to publish movement commands. Tasks marked `Wholebody` are normally the mobile tasks; `Isaac-G1-29DoF-Sonic` is a dedicated exception whose whole body is owned by the external SONIC policy.
 
 **Note 2:** The Isaac Sim WebRTC Streaming Client is a tool provided by NVIDIA Isaac Sim for viewing the Sim window remotely. For installation and usage details, please refer to the 
 [official documentation](https://docs.isaacsim.omniverse.nvidia.com/6.0.0/installation/manual_livestream_clients.html)

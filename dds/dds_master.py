@@ -1,7 +1,8 @@
 # Copyright (c) 2025, Unitree Robotics Co., Ltd. All Rights Reserved.
 # License: Apache License, Version 2.0
-import time
+import os
 import threading
+import time
 from typing import Dict, List, Optional
 from unitree_sdk2py.core.channel import ChannelFactoryInitialize
 from dds.dds_base import DDSObject
@@ -55,11 +56,31 @@ class DDSManager:
         """Init DDS system"""
         if self.dds_initialized:
             return True
-        
+
         try:
-            ChannelFactoryInitialize(1)
+            raw_domain = os.environ.get("UNITREE_DDS_DOMAIN", "1").strip()
+            try:
+                dds_domain = int(raw_domain)
+            except ValueError as exc:
+                raise ValueError(
+                    f"UNITREE_DDS_DOMAIN must be an integer, got {raw_domain!r}"
+                ) from exc
+            if dds_domain < 0:
+                raise ValueError(f"UNITREE_DDS_DOMAIN must be non-negative, got {dds_domain}")
+
+            dds_interface = os.environ.get("UNITREE_DDS_INTERFACE", "").strip() or None
+            if dds_interface:
+                ChannelFactoryInitialize(dds_domain, dds_interface)
+            else:
+                ChannelFactoryInitialize(dds_domain)
+
+            self.dds_domain = dds_domain
+            self.dds_interface = dds_interface
             self.dds_initialized = True
-            print("[DDSManager] DDS system initialized")
+            print(
+                "[DDSManager] DDS system initialized "
+                f"(domain={dds_domain}, interface={dds_interface or 'auto'})"
+            )
             return True
         except Exception as e:
             print(f"[DDSManager] DDS system initialization failed: {e}")
@@ -194,6 +215,15 @@ class DDSManager:
         for name, obj in self.objects.items():
             obj.publishing = False
         self.publishing_running = False
+
+        publish_thread = self.publish_thread
+        if (
+            publish_thread is not None
+            and publish_thread.is_alive()
+            and publish_thread is not threading.current_thread()
+        ):
+            publish_thread.join(timeout=2.0)
+        self.publish_thread = None
     def stop_subscribing(self):
         """Stop subscribing"""
         for name, obj in self.objects.items():
@@ -208,9 +238,25 @@ class DDSManager:
 
 
     def stop_all_communication(self):
+        self.publishing_running = False
+        self.subscribing_running = False
         for name, obj in self.objects.items():
-            obj.stop_communication()    
-            self.publishing_running=False
-            self.subscribing_running=False
+            obj.stop_communication()
+        self.stop_publishing()
+        self.stop_subscribing()
+
+    def cleanup(self):
+        """Stop DDS activity and release shared-memory segments owned by objects."""
+        self.stop_all_communication()
+        for obj in self.objects.values():
+            for attribute_name in ("input_shm", "output_shm"):
+                shared_memory = getattr(obj, attribute_name, None)
+                if shared_memory is not None:
+                    shared_memory.cleanup()
+                    setattr(obj, attribute_name, None)
+        self.objects.clear()
+        self._pub_list.clear()
+        self._pub_interval.clear()
+        self._pub_next_ts.clear()
 # global singleton instance
 dds_manager = DDSManager()

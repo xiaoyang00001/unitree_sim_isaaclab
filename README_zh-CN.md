@@ -199,9 +199,39 @@ python sim_main.py --device cpu  --enable_cameras  --task  Isaac-PickPlace-Cylin
 - `--task:` 任务名称，对应上表中的任务名称
 - `--enable_dex1_dds/--enable_dex3_dds:` 分别代表启用二指夹爪/三指灵巧手的dds
 - `--robot_type:` 机器人类型，目前有29自由度的unitree g1(g129),27自由度的H1-2
-- `--no_render:` 不启动Sim窗口下运行并且开启WebRTC视频流, 如果使用Docker环境进行运行请添加此参数; 可以使用isaacsim-webrtc-streaming-client进行查看画面
+- `--no_render`：以无窗口方式运行并完全关闭渲染更新；这是开销最低的模式，不能与 WebRTC 直播同时使用。
+- `--livestream_type 1|2`：以无窗口、离屏渲染方式开启 WebRTC 视频流（`1` 为公网地址，`2` 为私网地址）；类型 `1` 可按需配合 `--public_ip` 使用。
 
-**注意 1:** 如需要控制机器人移动，请参考`send_commands_8bit.py` 或者 `send_commands_keyboard.py` 发布控制命令，也可以直接使用。但是请注意只有带有`Wholebody`标识的才是移动型任务，才能控制机器人移动。
+##### Gear SONIC G1 29DoF 非 VR 基线
+
+第一阶段应使用与 SONIC 发布训练环境一致的纯 29DoF 任务，先不要启用 Dex3 或 OpenXR：
+
+```bash
+cd /home/nolovr/Documents/unitree_sim_isaaclab
+UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo \
+/home/nolovr/IsaacLab/isaaclab.sh -p sim_main.py \
+  --task Isaac-G1-29DoF-Sonic \
+  --robot_type g129 \
+  --action_source sonic_dds \
+  --device cpu \
+  --no_render
+```
+
+另一个终端启动 SONIC 时必须使用 `isaac` profile：
+
+```bash
+cd /home/nolovr/GR00T-WholeBodyControl/gear_sonic_deploy
+bash deploy.sh \
+  --input-type keyboard \
+  --output-type zmq \
+  --initial-motion walking_quip_360_R_002__A428 \
+  --initial-frame 24 \
+  isaac
+```
+
+完整实现、启动顺序、指标解释和当前验证结果见 [SONIC G1 29DoF 非 VR 阶段交接记录](doc/sonic_g1_29dof_phase1_handoff_zh.md)。
+
+**注意 1:** 通用任务如需控制机器人移动，请参考 `send_commands_8bit.py` 或 `send_commands_keyboard.py`。通常只有带 `Wholebody` 标识的任务支持移动；`Isaac-G1-29DoF-Sonic` 是由外部 SONIC policy 独占全身控制的专用例外。
 
 **注意 2:** isaacsim-webrtc-streaming-client 是isaacsim提供的一个用于查看Sim窗口画面的工具，具体安装和使用可参考[官方教程](https://docs.isaacsim.omniverse.nvidia.com/6.0.0/installation/manual_livestream_clients.html).
 
