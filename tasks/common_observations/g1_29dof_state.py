@@ -81,7 +81,8 @@ def get_robot_arm_joint_names() -> list[str]:
 # global variable to cache the DDS instance
 _g1_robot_dds = None
 
-# 观测缓存：索引张量与DDS限速（50FPS）+ 预分配缓冲
+# 观测缓存：索引张量 + 预分配缓冲。DDS 发布周期由调用任务决定；
+# SONIC 任务必须在每个 50 Hz 控制步发布一个新物理样本，不再用墙钟限速。
 _obs_cache = {
     "device": None,
     "joint_names": None,
@@ -93,7 +94,7 @@ _obs_cache = {
     "torque_buf": None,
     "combined_buf": None,
     "dds_last_ns": 0,
-    "dds_min_interval_ms": 20,
+    "sample_seq": 0,
 }
 
 # Cache body-name resolution; the selected wholebody asset has dedicated pelvis
@@ -118,12 +119,18 @@ def _get_g1_robot_dds_instance():
 def get_robot_boy_joint_states(
     env: ManagerBasedRLEnv,
     enable_dds: bool = True,
+    dds_min_interval_ms: float = 20.0,
 ) -> torch.Tensor:
     """get the robot body joint states, positions and velocities
     
     Args:
         env: ManagerBasedRLEnv - reinforcement learning environment instance
         enable_dds: bool - whether to enable the DDS publish function
+        dds_min_interval_ms: optional wall-clock throttle for legacy tasks.
+            Set to 0 for SONIC so that every environment control step is a
+            distinct LowState sample.  A 20 ms wall-clock gate is not safe at
+            a nominal 50 Hz because small scheduler jitter can alias it down
+            to 25--33 Hz.
     
     Returns:
         torch.Tensor
@@ -189,11 +196,13 @@ def get_robot_boy_joint_states(
     combined_buf[:, n:2*n].copy_(vel_buf)
     combined_buf[:, 2*n:3*n].copy_(torque_buf)
 
-    # write to DDS（限速发布，避免高频CPU拷贝）
+    # Write to DDS.  SONIC passes dds_min_interval_ms=0 and therefore publishes
+    # exactly once per observation/control step.  Other tasks keep the legacy
+    # wall-clock throttle unless they explicitly opt out.
     if enable_dds and combined_buf.shape[0] > 0:
         try:
             now_ns = time.monotonic_ns()
-            min_interval_ns = int(_obs_cache["dds_min_interval_ms"] * 1_000_000)
+            min_interval_ns = max(0, int(float(dds_min_interval_ms) * 1_000_000))
             if now_ns - _obs_cache["dds_last_ns"] >= min_interval_ns:
                 g1_robot_dds = _get_g1_robot_dds_instance()
                 if g1_robot_dds:
@@ -208,12 +217,18 @@ def get_robot_boy_joint_states(
                         body_candidates=("torso_link", "imu_in_torso"),
                     )
                     if base_imu_data.shape[0] > 0 and torso_imu_data.shape[0] > 0:
+                        _obs_cache["sample_seq"] += 1
+                        sample_seq = int(_obs_cache["sample_seq"])
+                        step_dt = float(getattr(env, "step_dt", 0.02))
+                        sim_time_s = sample_seq * step_dt
                         g1_robot_dds.write_robot_state(
                             pos_buf[0].contiguous().cpu().numpy(),
                             vel_buf[0].contiguous().cpu().numpy(),
                             torque_buf[0].contiguous().cpu().numpy(),
                             base_imu_data=base_imu_data[0].contiguous().cpu().numpy(),
                             torso_imu_data=torso_imu_data[0].contiguous().cpu().numpy(),
+                            sample_seq=sample_seq,
+                            sim_time_s=sim_time_s,
                         )
                         _obs_cache["dds_last_ns"] = now_ns
         except Exception as e:

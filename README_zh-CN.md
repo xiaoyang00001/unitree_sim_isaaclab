@@ -204,18 +204,24 @@ python sim_main.py --device cpu  --enable_cameras  --task  Isaac-PickPlace-Cylin
 
 ##### Gear SONIC G1 29DoF 非 VR 基线
 
-第一阶段应使用与 SONIC 发布训练环境一致的纯 29DoF 任务，先不要启用 Dex3 或 OpenXR：
+第一阶段默认使用 43DoF articulation：SONIC 独占控制 29 个本体关节，14 个 Dex3 关节保持默认张开姿态，暂不接收手部命令或启用 OpenXR。桥接会执行完整 LowCmd `mode/q/dq/tau/kp/kd`。如需与发布训练载体做 A/B，可把任务名改为 `Isaac-G1-29DoF-Training-Sonic`（29 关节、无 Dex3）：
 
 ```bash
 cd /home/nolovr/Documents/unitree_sim_isaaclab
+source /home/nolovr/miniconda3/etc/profile.d/conda.sh
+conda activate env_isaaclab
+
 UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo \
 /home/nolovr/IsaacLab/isaaclab.sh -p sim_main.py \
   --task Isaac-G1-29DoF-Sonic \
   --robot_type g129 \
   --action_source sonic_dds \
   --device cpu \
-  --no_render
+  --stats_interval 5 \
+  --profile_interval 250
 ```
+
+当前代码已经回到进行 MuJoCo 第 3～7 项对齐之前的动力学/接触基线，同时保留 43DoF articulation、完整 `mode/q/dq/tau/kp/kd` LowCmd 和倒地复位。左右脚恢复 SONIC 训练 URDF 原有的 7 个 cylinder（Isaac 导入时转换为 capsule）碰撞条，不再使用 MuJoCo 单平底 box；第 4～7 项 armature、干摩擦、hip 降限、PhysX 外力迭代和 torso 惯量改动均不在当前代码中。PICO manager 保持 GR00T Git 原版本，没有额外加入“可以更钝来换稳定”的新滤波；GUI 保持约 50 Hz，C++ policy/reference 保持 50 Hz，`LowState.tick` 只用于诊断。若只想排除渲染负载，可临时加 `--no_render` 做 A/B。
 
 另一个终端启动 SONIC 时必须使用 `isaac` profile：
 

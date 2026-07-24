@@ -19,15 +19,22 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import GroundPlaneCfg
 from isaaclab.utils import configclass
 
+from robots.g1_sonic_urdf import (
+    DEX3_HAND_JOINT_NAMES,
+    build_default_sonic_g1_43dof_urdf,
+    default_sonic_g1_43dof_output_path,
+)
 from tasks.common_config import G1RobotPresets
 from tasks.common_event.event_manager import SimpleEvent, SimpleEventManager
 from tasks.common_observations.g1_29dof_state import get_robot_boy_joint_states
 
 
-# Keep the bridge dynamics identical to the released SONIC training setup in
+# Keep the active-drive gains and motor armatures identical to the released
+# SONIC training setup in
 # GR00T-WholeBodyControl/gear_sonic/envs/manager_env/robots/g1.py.  The policy
 # was trained with these motor inertias, 10 Hz natural frequency and damping
-# ratio 2.0.
+# ratio 2.0.  Incoming LowCmd kp/kd values are applied dynamically at runtime;
+# these values are also the safe startup/default gains.
 SONIC_ARMATURE_5020 = 0.003609725
 SONIC_ARMATURE_7520_14 = 0.010177520
 SONIC_ARMATURE_7520_22 = 0.025101925
@@ -53,14 +60,80 @@ SONIC_DAMPING_4010 = (
     2.0 * SONIC_DAMPING_RATIO * SONIC_ARMATURE_4010 * SONIC_NATURAL_FREQ
 )
 
+DEX3_PHASE1_EFFORT_LIMITS = {
+    name: 2.45 if name.endswith("thumb_0_joint") else 0.7
+    for name in DEX3_HAND_JOINT_NAMES
+}
+DEX3_VELOCITY_LIMITS = {
+    name: 3.14 if name.endswith("thumb_0_joint") else 12.0
+    for name in DEX3_HAND_JOINT_NAMES
+}
+
+
+def _groot_root() -> Path:
+    return Path(
+        os.environ.get("GR00T_WBC_ROOT", "/home/nolovr/GR00T-WholeBodyControl")
+    ).expanduser()
+
+
+def _make_sonic_urdf_spawn(
+    asset_path: Path,
+    *,
+    force_usd_conversion: bool,
+) -> sim_utils.UrdfFileCfg:
+    return sim_utils.UrdfFileCfg(
+        fix_base=False,
+        replace_cylinders_with_capsules=True,
+        asset_path=str(asset_path),
+        force_usd_conversion=force_usd_conversion,
+        activate_contact_sensors=True,
+        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            disable_gravity=False,
+            retain_accelerations=False,
+            linear_damping=0.0,
+            angular_damping=0.0,
+            max_linear_velocity=1000.0,
+            max_angular_velocity=1000.0,
+            max_depenetration_velocity=1.0,
+        ),
+        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            enabled_self_collisions=True,
+            solver_position_iteration_count=8,
+            solver_velocity_iteration_count=4,
+        ),
+        joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
+            gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(
+                stiffness=0.0,
+                damping=0.0,
+            )
+        ),
+    )
+
 
 def make_sonic_robot_cfg() -> ArticulationCfg:
-    """Build the later-phase Dex3 asset with the SONIC policy's body dynamics."""
+    """Build the phase-one 29-body + 14-Dex3 SONIC articulation."""
 
     cfg = G1RobotPresets.g1_29dof_dex3_wholebody(
         init_pos=(0.0, 0.0, 0.76),
         init_rot=(1.0, 0.0, 0.0, 0.0),
     )
+
+    # Build a deterministic adapter instead of modifying GR00T's ignored data
+    # files.  Missing external assets must not break Gym's eager task-package
+    # import; selecting this task will then surface the missing generated path
+    # directly from the URDF importer.
+    asset_path = default_sonic_g1_43dof_output_path()
+    try:
+        asset_path = build_default_sonic_g1_43dof_urdf(_groot_root())
+    except FileNotFoundError:
+        pass
+    cfg.spawn = _make_sonic_urdf_spawn(asset_path, force_usd_conversion=True)
+    # The adapted carrier adds 14 hand joints and many hand bodies that are not
+    # part of the released 29-DoF training articulation.  Keep whole-body
+    # self-collision disabled for this carrier to avoid unnecessary collision
+    # work and discrete arm/torso contact impulses.  The exact 29-DoF A/B task
+    # replaces this spawn configuration and keeps its training setting.
+    cfg.spawn.articulation_props.enabled_self_collisions = False
 
     # Match policy_parameters.hpp/default_angles and the training robot config.
     # Unlisted body joints and all Dex3 joints start at zero.
@@ -76,17 +149,6 @@ def make_sonic_robot_cfg() -> ArticulationCfg:
         ".*_hand_.*_joint": 0.0,
     }
 
-    # Keep the released training solver iterations.  The deployed USD contains
-    # 14 extra Dex3 joints and 25 extra hand bodies that are absent from the
-    # training URDF; enabling whole-articulation self-collision for that asset
-    # raises a 20 ms environment step to about 23 ms on the target machine.  It
-    # is therefore kept disabled, matching this USD's original configuration,
-    # so the 50 Hz closed loop remains real-time.
-    cfg.spawn.articulation_props.enabled_self_collisions = False
-    cfg.spawn.articulation_props.solver_position_iteration_count = 8
-    cfg.spawn.articulation_props.solver_velocity_iteration_count = 4
-
-    dex3_actuator = cfg.actuators["hands"]
     cfg.actuators = {
         "legs": ImplicitActuatorCfg(
             joint_names_expr=[
@@ -206,8 +268,20 @@ def make_sonic_robot_cfg() -> ArticulationCfg:
                 ".*_wrist_yaw_joint": SONIC_ARMATURE_4010,
             },
         ),
-        # Phase 1 keeps the 14 Dex3 joints at their default positions.
-        "hands": dex3_actuator,
+        # Phase 1 keeps the 14 joints articulated and open, but does not consume
+        # PICO/Dex3 commands yet.  The non-thumb 0.7 Nm safety cap follows the
+        # working MuJoCo loop; the source URDF retains its 1.4 Nm physical limit.
+        "hands": ImplicitActuatorCfg(
+            joint_names_expr=list(DEX3_HAND_JOINT_NAMES),
+            effort_limit_sim=DEX3_PHASE1_EFFORT_LIMITS,
+            velocity_limit_sim=DEX3_VELOCITY_LIMITS,
+            stiffness=1.5,
+            damping=0.1,
+            armature=0.01,
+            friction=0.1,
+            dynamic_friction=0.1,
+            viscous_friction=0.05,
+        ),
     }
     return cfg
 
@@ -215,53 +289,20 @@ def make_sonic_robot_cfg() -> ArticulationCfg:
 def make_sonic_training_robot_cfg() -> ArticulationCfg:
     """Build the exact 29-DoF URDF articulation used by SONIC training.
 
-    The repository's whole-body Dex3 USD gives inertial mass to several visual
-    sensor helper links that have no inertial element in the released training
-    URDF.  That changes the simulated robot mass by 4.22 kg.  The non-VR body
-    validation therefore uses the original URDF conversion path first; the
-    articulated Dex3 model remains registered separately for the later hand
-    control phase.
+    This is an explicit A/B task, not the default carrier.  It removes the 14
+    Dex3 joints while retaining the same body actuator and simulation timing
+    configuration, so carrier/contact differences can be isolated.
     """
 
     cfg = make_sonic_robot_cfg()
-    groot_root = Path(
-        os.environ.get("GR00T_WBC_ROOT", "/home/nolovr/GR00T-WholeBodyControl")
-    ).expanduser()
+    groot_root = _groot_root()
     asset_path = groot_root / "gear_sonic/data/assets/robot_description/urdf/g1/main.urdf"
     # Do not fail while this module is imported: the repository auto-imports
     # every task package during Gym registration, including when a non-SONIC
     # task is selected.  If this task is actually instantiated and the checkout
     # is missing, Isaac's URDF importer will report the selected path directly.
 
-    cfg.spawn = sim_utils.UrdfFileCfg(
-        fix_base=False,
-        replace_cylinders_with_capsules=True,
-        asset_path=str(asset_path),
-        activate_contact_sensors=True,
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(
-            disable_gravity=False,
-            retain_accelerations=False,
-            linear_damping=0.0,
-            angular_damping=0.0,
-            max_linear_velocity=1000.0,
-            max_angular_velocity=1000.0,
-            max_depenetration_velocity=1.0,
-        ),
-        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-            # Match the released SONIC training articulation exactly.  The
-            # earlier 25 Hz measurement with this enabled was caused by an
-            # accidentally enabled WebRTC stream, not by self-collision.
-            enabled_self_collisions=True,
-            solver_position_iteration_count=8,
-            solver_velocity_iteration_count=4,
-        ),
-        joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
-            gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(
-                stiffness=0.0,
-                damping=0.0,
-            )
-        ),
-    )
+    cfg.spawn = _make_sonic_urdf_spawn(asset_path, force_usd_conversion=False)
     cfg.init_state.joint_pos.pop(".*_hand_.*_joint", None)
     cfg.actuators.pop("hands", None)
     return cfg
@@ -299,20 +340,43 @@ class G129Dex3SonicSceneCfg(InteractiveSceneCfg):
 
 @configclass
 class G129SonicSceneCfg(G129Dex3SonicSceneCfg):
-    """Exact released SONIC 29-DoF training articulation, without Dex3 DOFs."""
+    """Default SONIC scene: 29 controlled body joints plus 14 held Dex3 joints."""
+
+
+@configclass
+class G129TrainingSonicSceneCfg(G129Dex3SonicSceneCfg):
+    """Exact released SONIC 29-DoF training articulation for A/B regression."""
 
     robot: ArticulationCfg = make_sonic_training_robot_cfg()
 
 
 @configclass
 class ActionsCfg:
-    """Absolute joint-position targets supplied by SonicDDSActionProvider."""
+    """Complete LowCmd motion targets supplied by SonicDDSActionProvider.
+
+    The action tensor is field-major: all q targets, followed by all dq targets,
+    followed by all feed-forward tau targets.  LowCmd kp/kd are persistent
+    articulation properties and are written by the provider only when changed.
+    """
 
     joint_pos = mdp.JointPositionActionCfg(
         asset_name="robot",
         joint_names=[".*"],
         scale=1.0,
         use_default_offset=False,
+        preserve_order=True,
+    )
+    joint_vel = mdp.JointVelocityActionCfg(
+        asset_name="robot",
+        joint_names=[".*"],
+        scale=1.0,
+        use_default_offset=False,
+        preserve_order=True,
+    )
+    joint_effort = mdp.JointEffortActionCfg(
+        asset_name="robot",
+        joint_names=[".*"],
+        scale=1.0,
         preserve_order=True,
     )
 
@@ -322,8 +386,13 @@ class ObservationsCfg:
     @configclass
     class PolicyCfg(ObsGroup):
         # This observation also writes the 29 body states and IMU sample to the
-        # existing G1 DDS shared-memory publisher.
-        robot_body_state = ObsTerm(func=get_robot_boy_joint_states)
+        # existing G1 DDS shared-memory publisher.  Publish once per 50 Hz
+        # environment step: wall-clock throttling aliases a slightly early
+        # 19.x ms step into an unintended 25--33 Hz state stream.
+        robot_body_state = ObsTerm(
+            func=get_robot_boy_joint_states,
+            params={"dds_min_interval_ms": 0.0},
+        )
 
         def __post_init__(self):
             self.enable_corruption = False
@@ -374,10 +443,9 @@ class G129Dex3SonicEnvCfg(ManagerBasedRLEnvCfg):
         self.episode_length_s = 24.0 * 60.0 * 60.0
         self.sim.dt = 0.005
         self.sim.render_interval = self.decimation
-        # Keep the remaining PhysX fields at Isaac Lab defaults, matching the
-        # released SONIC training environment.  In particular, do not retain
-        # the older bridge scene's custom bounce threshold or friction
-        # correlation distance here.
+        # Keep the remaining PhysX fields at Isaac Lab defaults.  In particular,
+        # do not retain the older bridge scene's custom bounce threshold or
+        # friction correlation distance here.
         self.sim.physics_material.static_friction = 1.0
         self.sim.physics_material.dynamic_friction = 1.0
         self.sim.physics_material.friction_combine_mode = "multiply"
@@ -398,9 +466,28 @@ class G129Dex3SonicEnvCfg(ManagerBasedRLEnvCfg):
 
 @configclass
 class G129SonicEnvCfg(G129Dex3SonicEnvCfg):
-    """Non-VR 29-DoF baseline using the exact SONIC training URDF."""
+    """Default non-VR SONIC task using the adapted 43-DoF articulation."""
 
     scene: G129SonicSceneCfg = G129SonicSceneCfg(
+        num_envs=1,
+        env_spacing=0.0,
+        replicate_physics=True,
+    )
+
+    def __post_init__(self):
+        super().__post_init__()
+        # Keep PhysX's default external-force update behavior.  Enabling the
+        # per-iteration mode is a TGS-specific numerical option, not an
+        # equivalent of MuJoCo's Newton solver, and it showed no measured
+        # benefit in the current closed loop.
+        self.sim.physx.enable_external_forces_every_iteration = False
+
+
+@configclass
+class G129TrainingSonicEnvCfg(G129Dex3SonicEnvCfg):
+    """Exact 29-DoF training-URDF regression task."""
+
+    scene: G129TrainingSonicSceneCfg = G129TrainingSonicSceneCfg(
         num_envs=1,
         env_spacing=0.0,
         replicate_physics=True,

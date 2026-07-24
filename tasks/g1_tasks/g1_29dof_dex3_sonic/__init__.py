@@ -10,7 +10,7 @@ gym.register(
     id="Isaac-G1-29DoF-Dex3-Sonic",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     kwargs={
-        "env_cfg_entry_point": g1_29dof_dex3_sonic_env_cfg.G129Dex3SonicEnvCfg,
+        "env_cfg_entry_point": g1_29dof_dex3_sonic_env_cfg.G129SonicEnvCfg,
     },
     disable_env_checker=True,
 )
@@ -21,6 +21,16 @@ gym.register(
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     kwargs={
         "env_cfg_entry_point": g1_29dof_dex3_sonic_env_cfg.G129SonicEnvCfg,
+    },
+    disable_env_checker=True,
+)
+
+
+gym.register(
+    id="Isaac-G1-29DoF-Training-Sonic",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": g1_29dof_dex3_sonic_env_cfg.G129TrainingSonicEnvCfg,
     },
     disable_env_checker=True,
 )

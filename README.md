@@ -208,18 +208,24 @@ python sim_main.py --device cpu  --enable_cameras  --task  Isaac-PickPlace-Cylin
 - `--livestream_type 1|2`: Run headless with offscreen rendering and enable the WebRTC stream (`1` for a public-network address, `2` for a private-network address). Use `--public_ip` with type `1` when needed.
 ##### Gear SONIC G1 29-DoF non-VR baseline
 
-Use the pure 29-DoF task that matches the released SONIC training model before enabling Dex3 or OpenXR:
+Phase one now uses a 43-DoF articulation by default: SONIC exclusively controls the 29 body joints, while the 14 articulated Dex3 joints hold their open defaults and do not yet consume hand or OpenXR commands. The bridge executes the complete LowCmd `mode/q/dq/tau/kp/kd`. For an A/B comparison against the released training carrier, switch the task name to `Isaac-G1-29DoF-Training-Sonic` (29 joints, no Dex3):
 
 ```bash
 cd /home/nolovr/Documents/unitree_sim_isaaclab
+source /home/nolovr/miniconda3/etc/profile.d/conda.sh
+conda activate env_isaaclab
+
 UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo \
 /home/nolovr/IsaacLab/isaaclab.sh -p sim_main.py \
   --task Isaac-G1-29DoF-Sonic \
   --robot_type g129 \
   --action_source sonic_dds \
   --device cpu \
-  --no_render
+  --stats_interval 5 \
+  --profile_interval 250
 ```
+
+The current code has been returned to the dynamics/contact baseline from before the MuJoCo items 3–7 alignment experiments, while retaining the 43-DoF articulation, complete `mode/q/dq/tau/kp/kd` LowCmd execution, and fall recovery. Each foot again uses the seven cylinder collision strips from the SONIC training URDF (converted to capsules by the Isaac importer), rather than a single MuJoCo flat box. The item 4–7 armature, dry-friction, hip-limit, PhysX-force-iteration, and torso-inertia experiments are absent. The PICO manager matches its GR00T Git version with no additional “slower for stability” filter; the GUI remains about 50 Hz, C++ policy/reference remains 50 Hz, and `LowState.tick` is diagnostic only. Add `--no_render` only for a rendering-load A/B test.
 
 Start SONIC in another terminal with the dedicated `isaac` profile:
 

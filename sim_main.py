@@ -136,6 +136,18 @@ parser.add_argument(
     help="time to blend from the default pose back to fresh SONIC targets",
 )
 parser.add_argument(
+    "--fall_reset_lowstate_grace_seconds",
+    "--fall-reset-lowstate-grace-seconds",
+    dest="fall_reset_lowstate_grace_seconds",
+    type=float,
+    default=1.0,
+    help=(
+        "before and after an intentional Isaac reset, publish zero joint dq/tau "
+        "for this long so the pose teleport cannot trip SONIC's normal velocity "
+        "safety check"
+    ),
+)
+parser.add_argument(
     "--fall_reset_cooldown_seconds",
     "--fall-reset-cooldown-seconds",
     dest="fall_reset_cooldown_seconds",
@@ -184,12 +196,13 @@ args_cli = parser.parse_args()
 sonic_task_names = {
     "Isaac-G1-29DoF-Sonic",
     "Isaac-G1-29DoF-Dex3-Sonic",
+    "Isaac-G1-29DoF-Training-Sonic",
 }
 is_sonic_task = args_cli.task in sonic_task_names
 
 if args_cli.auto_reset_on_fall is None:
-    # The new behavior is enabled by default only for the two dedicated SONIC
-    # bridge tasks.  All existing non-SONIC tasks retain their old behavior.
+    # The new behavior is enabled by default only for dedicated SONIC bridge
+    # tasks. All existing non-SONIC tasks retain their old behavior.
     args_cli.auto_reset_on_fall = is_sonic_task
 
 if args_cli.step_hz is None:
@@ -199,6 +212,8 @@ elif args_cli.step_hz <= 0:
 
 if args_cli.physics_dt is not None and args_cli.physics_dt <= 0.0:
     parser.error("--physics_dt must be positive")
+if args_cli.render_interval is not None and args_cli.render_interval <= 0:
+    parser.error("--render_interval must be positive")
 
 if not 0.0 < args_cli.fall_reset_tilt_deg <= 180.0:
     parser.error("--fall_reset_tilt_deg must be in (0, 180]")
@@ -211,6 +226,7 @@ for option_name in (
     "fall_reset_debounce_seconds",
     "fall_reset_hold_seconds",
     "fall_reset_blend_seconds",
+    "fall_reset_lowstate_grace_seconds",
     "fall_reset_cooldown_seconds",
 ):
     option_value = getattr(args_cli, option_name)
@@ -413,6 +429,28 @@ def main():
         if args_cli.physics_dt is not None:
             env_cfg.sim.dt = float(args_cli.physics_dt)
 
+        # Isaac Lab's environment step reads cfg.sim.render_interval directly.
+        # Changing SimulationContext.render_interval after gym.make() does not
+        # alter the modulo test inside ManagerBasedRLEnv.step(), which made the
+        # previous command-line override ineffective.  Resolve it before the
+        # environment is constructed.
+        if args_cli.no_render:
+            resolved_render_interval = 1_000_000
+        elif args_cli.render_interval is not None:
+            resolved_render_interval = int(args_cli.render_interval)
+        else:
+            resolved_render_interval = max(1, int(env_cfg.sim.render_interval))
+        env_cfg.sim.render_interval = resolved_render_interval
+
+        self_collisions_enabled = None
+        articulation_props = getattr(
+            getattr(env_cfg.scene.robot, "spawn", None),
+            "articulation_props",
+            None,
+        )
+        if articulation_props is not None:
+            self_collisions_enabled = articulation_props.enabled_self_collisions
+
         physics_dt = float(env_cfg.sim.dt)
         decimation = int(env_cfg.decimation)
         if physics_dt <= 0.0 or decimation <= 0:
@@ -432,6 +470,13 @@ def main():
             "[sim] control timing: "
             f"physics_dt={physics_dt:.6f}s, decimation={decimation}, "
             f"env_step_dt={env_step_dt:.6f}s, step_hz={args_cli.step_hz}"
+        )
+        render_hz = 1.0 / (physics_dt * resolved_render_interval)
+        print(
+            "[sim] rendering: "
+            f"render_interval={resolved_render_interval} physics steps "
+            f"(~{render_hz:.2f} Hz), "
+            f"self_collisions={self_collisions_enabled}"
         )
     except Exception as e:
         print(f"Failed to parse environment configuration: {e}")
@@ -461,24 +506,24 @@ def main():
         except Exception as e:
             print(f"[env] failed to set reward interval: {e}")
         headless_mode = bool(getattr(args_cli, "headless", False))
-        render_interval = None
-        if args_cli.render_interval is not None:
-            try:
-                render_interval = max(1, int(args_cli.render_interval))
-            except Exception as e:
-                print(f"[sim] invalid render_interval value {args_cli.render_interval}: {e}")
         try:
             if args_cli.no_render:
-                env.sim.render_interval = 1_000_000
                 env.sim.render_mode = "offscreen"
-                print("[sim] rendering disabled via --no_render")
+                print(
+                    "[sim] rendering disabled via --no_render "
+                    f"(cfg interval={env.cfg.sim.render_interval})"
+                )
             elif headless_mode:
                 env.sim.render_mode = "offscreen"
-                env.sim.render_interval = render_interval or 1
-                print(f"[sim] headless offscreen rendering every {env.sim.render_interval} steps")
-            elif render_interval is not None:
-                env.sim.render_interval = render_interval
-                print(f"[sim] render_interval set to {env.sim.render_interval}")
+                print(
+                    "[sim] headless offscreen rendering every "
+                    f"{env.cfg.sim.render_interval} physics steps"
+                )
+            else:
+                print(
+                    "[sim] GUI rendering every "
+                    f"{env.cfg.sim.render_interval} physics steps"
+                )
         except Exception as e:
             print(f"[sim] failed to configure rendering: {e}")
         if args_cli.camera_write_interval is not None:
@@ -711,6 +756,7 @@ def main():
             f"{args_cli.fall_reset_debounce_seconds:.2f}s; "
             f"hold={args_cli.fall_reset_hold_seconds:.2f}s, "
             f"blend={args_cli.fall_reset_blend_seconds:.2f}s, "
+            f"lowstate_grace={args_cli.fall_reset_lowstate_grace_seconds:.2f}s, "
             f"cooldown={args_cli.fall_reset_cooldown_seconds:.2f}s"
         )
     elif args_cli.auto_reset_on_fall:
@@ -727,6 +773,12 @@ def main():
             env_cfg.event_manager.trigger(event_name, env)
             return False
 
+        robot_dds = dds_manager.get_object("g129")
+        if robot_dds is not None and hasattr(robot_dds, "begin_reset_state_grace"):
+            robot_dds.begin_reset_state_grace(
+                args_cli.fall_reset_lowstate_grace_seconds,
+                reason,
+            )
         action_provider.begin_fall_recovery(
             hold_duration_s=args_cli.fall_reset_hold_seconds,
             blend_duration_s=args_cli.fall_reset_blend_seconds,
@@ -737,6 +789,15 @@ def main():
         # forwards the new state before the next control step.
         env_cfg.event_manager.trigger(event_name, env)
         env.reset(env_ids=sonic_env_ids)
+        # env.reset can itself take longer than the pre-reset grace window on a
+        # CPU-loaded Isaac instance.  Re-arm the window after the reset so the
+        # first live PhysX samples (where teleport-derived dq is most likely)
+        # are always suppressed, independent of reset duration.
+        if robot_dds is not None and hasattr(robot_dds, "begin_reset_state_grace"):
+            robot_dds.begin_reset_state_grace(
+                args_cli.fall_reset_lowstate_grace_seconds,
+                f"{reason}: post-reset stabilization",
+            )
         fall_reset_monitor.mark_reset(
             time.monotonic(),
             args_cli.fall_reset_hold_seconds + args_cli.fall_reset_blend_seconds,
@@ -771,11 +832,14 @@ def main():
         print("========= start controller success =========")
         
         # main loop - execute in main thread to support rendering
-        last_stats_time = time.time()
-        loop_start_time = time.time()
+        monotonic = time.monotonic
+        last_stats_time = monotonic()
+        loop_start_time = last_stats_time
         loop_count = 0
-        last_loop_time = time.time()
+        last_loop_time = last_stats_time
         recent_loop_times = []  # for calculating moving average frequency
+        sim_state_update_count = 0
+        sim_state_work_s = 0.0
         
         
         reward_interval = max(1, args_cli.reward_interval)
@@ -787,23 +851,30 @@ def main():
                 and controller.is_running
                 and not shutdown_event.is_set()
             ):
-                current_time = time.time()
+                current_time = monotonic()
                 loop_count += 1
                 reset_performed = False
                 if not args_cli.replay_data:
+                    sim_state_work_start = monotonic()
                     try:
                         env_state = env.scene.get_state()
-                        env_state_json =  sim_state_to_json(env_state)
-                        sim_state = {"init_state":env_state_json,"task_name":args_cli.task}
+                        env_state_json = sim_state_to_json(env_state)
+                        sim_state = {
+                            "init_state": env_state_json,
+                            "task_name": args_cli.task,
+                        }
                     except Exception as e:
                         print(f"Failed to get env state: {e}")
                         raise e
                     try:
-                    # sim_state = json.dumps(sim_state)
+                        # sim_state = json.dumps(sim_state)
                         sim_state_dds.write_sim_state_data(sim_state)
                     except Exception as e:
                         print(f"Failed to write sim state: {e}")
                         raise e
+                    sim_state_update_count += 1
+                    sim_state_work_s += monotonic() - sim_state_work_start
+
                     try:
                         reset_pose_cmd = reset_pose_dds.get_reset_pose_command()
                     except Exception as e:
@@ -856,7 +927,7 @@ def main():
                 # print(f"env_state: {env_state}")
                 # calculate instantaneous loop time
                 if reset_performed:
-                    current_time = time.time()
+                    current_time = monotonic()
                     last_loop_time = current_time
                     recent_loop_times.clear()
                 else:
@@ -887,16 +958,17 @@ def main():
                             )
                             trigger_robot_reset("reset_all_self", "automatic fall detection")
                             reset_performed = True
-                            last_loop_time = time.time()
+                            last_loop_time = monotonic()
                             recent_loop_times.clear()
                 
                 # execute control step (in main thread, support rendering)
                 controller.step()
 
                 # print statistics and loop frequency periodically
-                if current_time - last_stats_time >= args_cli.stats_interval:
+                stats_now = monotonic()
+                if stats_now - last_stats_time >= args_cli.stats_interval:
                     # calculate while loop execution frequency
-                    elapsed_time = current_time - loop_start_time
+                    elapsed_time = stats_now - loop_start_time
                     loop_frequency = loop_count / elapsed_time if elapsed_time > 0 else 0
                     
                     # calculate moving average frequency (based on recent loop times)
@@ -920,10 +992,25 @@ def main():
                     print(f"average loop time: {(elapsed_time/loop_count*1000):.2f} ms")
                     if recent_loop_times:
                         print(f"recent loop time: {(avg_loop_time*1000):.2f} ms")
+                    stats_window_s = stats_now - last_stats_time
+                    sim_state_rate = (
+                        sim_state_update_count / stats_window_s if stats_window_s > 0.0 else 0.0
+                    )
+                    sim_state_mean_ms = (
+                        1000.0 * sim_state_work_s / sim_state_update_count
+                        if sim_state_update_count > 0
+                        else 0.0
+                    )
+                    print(
+                        "sim-state export: "
+                        f"{sim_state_rate:.2f} Hz, mean work {sim_state_mean_ms:.3f} ms"
+                    )
                     print(f"=============================")
                     
                     # print_stats(controller)
-                    last_stats_time = current_time
+                    last_stats_time = stats_now
+                    sim_state_update_count = 0
+                    sim_state_work_s = 0.0
        
                 # check environment state
                 if env.sim.is_stopped():

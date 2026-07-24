@@ -40,8 +40,11 @@ class RobotController:
         self._step_interval = 1.0 / config.step_hz
         self._next_step_time = 0.0
         
-        all_joint_names = env.scene["robot"].data.joint_names
-        self._last_action = torch.zeros(len(all_joint_names), device=env.device)
+        # Action dimensions are task-defined and are not necessarily equal to
+        # the articulation joint count.  The SONIC bridge, for example, carries
+        # q/dq/tau as three fields per joint.
+        action_dim = env.action_manager.total_action_dim
+        self._last_action = torch.zeros((env.num_envs, action_dim), device=env.device)
         
         
         # minimal statistics

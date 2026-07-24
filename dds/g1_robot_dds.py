@@ -42,7 +42,17 @@ class G1RobotDDS(DDSObject):
         self._stats_window_start = time.monotonic()
         self._lowstate_publish_count = 0
         self._torso_imu_publish_count = 0
+        self._fresh_sample_count = 0
+        self._repeated_sample_publish_count = 0
+        self._last_sample_seq = None
+        self._lowcmd_packet_count = 0
+        self._lowcmd_content_update_count = 0
+        self._last_lowcmd_signature = None
         self._last_sample_age_ms = 0.0
+        self._reset_state_grace_until = 0.0
+        self._reset_state_grace_active = False
+        self._reset_state_grace_samples = 0
+        self._reset_state_grace_max_abs_dq = 0.0
         self._initialized = True
         
         # setup the shared memory
@@ -81,6 +91,33 @@ class G1RobotDDS(DDSObject):
             import traceback
             traceback.print_exc()
             return False
+
+    def begin_reset_state_grace(self, duration_s: float, reason: str) -> None:
+        """Suppress non-physical LowState velocity/torque during an Isaac reset.
+
+        Resetting a PhysX articulation writes a discontinuous pose into the
+        simulation.  A velocity sample produced around that teleport is not a
+        physical motor velocity and must not trip the deploy process's normal
+        35 rad/s safety limit.  Position and IMU samples remain live; only dq
+        and tau_est are reported as zero for this explicitly requested window.
+        """
+        duration_s = max(0.0, float(duration_s))
+        if duration_s <= 0.0:
+            return
+
+        now = time.monotonic()
+        new_deadline = now + duration_s
+        was_active = self._reset_state_grace_active and now < self._reset_state_grace_until
+        if not was_active:
+            self._reset_state_grace_samples = 0
+            self._reset_state_grace_max_abs_dq = 0.0
+        self._reset_state_grace_until = max(self._reset_state_grace_until, new_deadline)
+        self._reset_state_grace_active = True
+        action = "extended" if was_active else "started"
+        print(
+            f"[{self.node_name}] Reset LowState grace {action}: "
+            f"zeroing published dq/tau for {duration_s:.3f}s ({reason})"
+        )
     
     def dds_publisher(self) -> Any:
         """Convert Isaac Lab state to DDS message and publish."""
@@ -117,6 +154,26 @@ class G1RobotDDS(DDSObject):
             ):
                 raise ValueError("joint state contains NaN or Inf")
 
+            publish_time = time.monotonic()
+            if publish_time < self._reset_state_grace_until:
+                self._reset_state_grace_active = True
+                self._reset_state_grace_samples += 1
+                if dq_array.size:
+                    self._reset_state_grace_max_abs_dq = max(
+                        self._reset_state_grace_max_abs_dq,
+                        float(np.max(np.abs(dq_array))),
+                    )
+                dq_array = np.zeros_like(dq_array)
+                tau_array = np.zeros_like(tau_array)
+            elif self._reset_state_grace_active:
+                print(
+                    f"[{self.node_name}] Reset LowState grace complete: "
+                    f"samples={self._reset_state_grace_samples}, "
+                    f"max_raw_abs_dq={self._reset_state_grace_max_abs_dq:.3f}rad/s; "
+                    "restoring live dq/tau"
+                )
+                self._reset_state_grace_active = False
+
             for i in range(len(q_array)):
                 motor = motor_state[i]
                 motor.q = q_array[i]
@@ -135,7 +192,22 @@ class G1RobotDDS(DDSObject):
                 required=False,
             )
 
-            self.low_state.tick += 1
+            sample_seq = data.get("sample_seq")
+            if sample_seq is None:
+                # Backward-compatible fallback for non-SONIC observation writers.
+                sample_seq = int(self.low_state.tick) + 1
+            sample_seq = int(sample_seq)
+            if self._last_sample_seq != sample_seq:
+                self._fresh_sample_count += 1
+                self._last_sample_seq = sample_seq
+            else:
+                self._repeated_sample_publish_count += 1
+
+            # Tick identifies a fresh PhysX sample.  Re-publishing the same
+            # shared-memory state at 100 Hz deliberately keeps the same tick so
+            # diagnostics and future synchronized consumers can distinguish it
+            # from a newly advanced simulation state.
+            self.low_state.tick = sample_seq & 0xFFFFFFFF
             self.low_state.crc = self.crc.Crc(self.low_state)
             self.publisher.Write(self.low_state)
             self._lowstate_publish_count += 1
@@ -185,14 +257,26 @@ class G1RobotDDS(DDSObject):
 
         lowstate_hz = self._lowstate_publish_count / elapsed
         torso_imu_hz = self._torso_imu_publish_count / elapsed
+        fresh_sample_hz = self._fresh_sample_count / elapsed
+        repeated_publish_hz = self._repeated_sample_publish_count / elapsed
+        lowcmd_packet_hz = self._lowcmd_packet_count / elapsed
+        lowcmd_content_hz = self._lowcmd_content_update_count / elapsed
         print(
             f"[{self.node_name}] DDS publish: lowstate={lowstate_hz:.1f}Hz, "
             f"secondary_imu={torso_imu_hz:.1f}Hz, "
-            f"sample_age={self._last_sample_age_ms:.2f}ms"
+            f"fresh_physx={fresh_sample_hz:.1f}Hz, repeats={repeated_publish_hz:.1f}Hz, "
+            f"lowcmd_packets={lowcmd_packet_hz:.1f}Hz, "
+            f"lowcmd_changes={lowcmd_content_hz:.1f}Hz, "
+            f"sample_age={self._last_sample_age_ms:.2f}ms, "
+            f"sample_seq={self._last_sample_seq}"
         )
         self._stats_window_start = now
         self._lowstate_publish_count = 0
         self._torso_imu_publish_count = 0
+        self._fresh_sample_count = 0
+        self._repeated_sample_publish_count = 0
+        self._lowcmd_packet_count = 0
+        self._lowcmd_content_update_count = 0
 
     
     def dds_subscriber(self, msg: LowCmd_,datatype:str=None) -> Dict[str, Any]:
@@ -203,6 +287,7 @@ class G1RobotDDS(DDSObject):
             "mode_pr": int,
             "mode_machine": int,
             "motor_cmd": {
+                "modes": [29 motor enable modes],
                 "positions": [29 joint position commands],
                 "velocities": [29 joint velocity commands],
                 "torques": [29 joint torque commands],
@@ -219,16 +304,38 @@ class G1RobotDDS(DDSObject):
             
             # extract the command data
             num_cmd_motors = len(msg.motor_cmd)
+            modes = [int(msg.motor_cmd[i].mode) for i in range(num_cmd_motors)]
+            positions = [float(msg.motor_cmd[i].q) for i in range(num_cmd_motors)]
+            velocities = [float(msg.motor_cmd[i].dq) for i in range(num_cmd_motors)]
+            torques = [float(msg.motor_cmd[i].tau) for i in range(num_cmd_motors)]
+            kp = [float(msg.motor_cmd[i].kp) for i in range(num_cmd_motors)]
+            kd = [float(msg.motor_cmd[i].kd) for i in range(num_cmd_motors)]
+            signature = (
+                int(msg.mode_pr),
+                int(msg.mode_machine),
+                tuple(modes),
+                tuple(positions),
+                tuple(velocities),
+                tuple(torques),
+                tuple(kp),
+                tuple(kd),
+            )
+            self._lowcmd_packet_count += 1
+            if signature != self._last_lowcmd_signature:
+                self._lowcmd_content_update_count += 1
+                self._last_lowcmd_signature = signature
+
             cmd_data = {
                 "mode_pr": int(msg.mode_pr),
                 "mode_machine": int(msg.mode_machine),
                 "receive_time_monotonic": time.monotonic(),
                 "motor_cmd": {
-                    "positions": [float(msg.motor_cmd[i].q) for i in range(num_cmd_motors)],
-                    "velocities": [float(msg.motor_cmd[i].dq) for i in range(num_cmd_motors)],
-                    "torques": [float(msg.motor_cmd[i].tau) for i in range(num_cmd_motors)],
-                    "kp": [float(msg.motor_cmd[i].kp) for i in range(num_cmd_motors)],
-                    "kd": [float(msg.motor_cmd[i].kd) for i in range(num_cmd_motors)]
+                    "modes": modes,
+                    "positions": positions,
+                    "velocities": velocities,
+                    "torques": torques,
+                    "kp": kp,
+                    "kd": kd,
                 }
             }
             self.output_shm.write_data(cmd_data)
@@ -256,6 +363,8 @@ class G1RobotDDS(DDSObject):
         *,
         base_imu_data=None,
         torso_imu_data=None,
+        sample_seq=None,
+        sim_time_s=None,
     ):
         """Write the robot state to the shared memory
         
@@ -280,6 +389,8 @@ class G1RobotDDS(DDSObject):
                 "base_imu_data": base_imu_data.tolist() if hasattr(base_imu_data, 'tolist') else base_imu_data,
                 "torso_imu_data": torso_imu_data.tolist() if hasattr(torso_imu_data, 'tolist') else torso_imu_data,
                 "sample_time_monotonic": time.monotonic(),
+                "sample_seq": int(sample_seq) if sample_seq is not None else None,
+                "sim_time_s": float(sim_time_s) if sim_time_s is not None else None,
             }
             self.input_shm.write_data(state_data)
         except Exception as e:

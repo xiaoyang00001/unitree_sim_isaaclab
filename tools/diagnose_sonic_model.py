@@ -74,6 +74,11 @@ def main() -> None:
             "physics_dt": float(cfg.sim.dt),
             "decimation": int(cfg.decimation),
             "control_hz": 1.0 / (float(cfg.sim.dt) * int(cfg.decimation)),
+            "physx": {
+                "enable_external_forces_every_iteration": bool(
+                    cfg.sim.physx.enable_external_forces_every_iteration
+                ),
+            },
             "num_joints": len(joint_names),
             "num_bodies": len(body_names),
             "total_mass_kg": round(float(masses.sum()), 8),
@@ -81,6 +86,43 @@ def main() -> None:
             "body_names": body_names,
             "relative_frames": {},
         }
+
+        key_joint_names = (
+            "left_hip_pitch_joint",
+            "left_hip_roll_joint",
+            "left_hip_yaw_joint",
+            "left_knee_joint",
+            "left_ankle_pitch_joint",
+            "waist_roll_joint",
+            "left_shoulder_pitch_joint",
+            "left_wrist_pitch_joint",
+            "left_hand_index_0_joint",
+        )
+        key_joint_dynamics = {}
+        for name in key_joint_names:
+            if name not in joint_names:
+                continue
+            index = joint_names.index(name)
+            key_joint_dynamics[name] = {
+                "effort_limit": round(float(data.joint_effort_limits[0, index]), 8),
+                "armature": round(float(data.joint_armature[0, index]), 10),
+                "static_friction": round(float(data.joint_friction_coeff[0, index]), 8),
+                "dynamic_friction": round(
+                    float(data.joint_dynamic_friction_coeff[0, index]), 8
+                ),
+                "viscous_friction": round(
+                    float(data.joint_viscous_friction_coeff[0, index]), 8
+                ),
+                "stiffness": round(float(data.joint_stiffness[0, index]), 8),
+                "damping": round(float(data.joint_damping[0, index]), 8),
+            }
+        report["key_joint_dynamics"] = key_joint_dynamics
+
+        key_body_masses = {}
+        for name in ("pelvis", "torso_link"):
+            if name in body_names:
+                key_body_masses[name] = round(float(masses[body_names.index(name)]), 8)
+        report["key_body_masses_kg"] = key_body_masses
 
         body_rows = []
         for index, name in enumerate(body_names):
