@@ -20,6 +20,10 @@ from unitree_sdk2py.idl.default import (
 from unitree_sdk2py.utils.crc import CRC
 
 
+ISAAC_LOWSTATE_SYNC_MAGIC = 0x49534143  # ASCII-ish "ISAC"
+SONIC_LOWCMD_SYNC_MAGIC = 0x534E4331  # "SNC1"
+
+
 class G1RobotDDS(DDSObject):
     """G1 robot DDS communication class - singleton pattern
     
@@ -45,9 +49,19 @@ class G1RobotDDS(DDSObject):
         self._fresh_sample_count = 0
         self._repeated_sample_publish_count = 0
         self._last_sample_seq = None
+        self._latest_written_sample_seq = None
+        self._latest_written_sample_time = None
+        self._latest_written_sim_time_s = None
+        self._latest_written_reset_epoch = 0
+        self._last_published_reset_epoch = 0
+        self._reset_epoch = 0
         self._lowcmd_packet_count = 0
         self._lowcmd_content_update_count = 0
         self._last_lowcmd_signature = None
+        self._last_lowcmd_ack_tick = None
+        self._last_lowcmd_ack_reset_epoch = None
+        self._lowcmd_ack_match_count = 0
+        self._lowcmd_ack_stale_count = 0
         self._last_sample_age_ms = 0.0
         self._reset_state_grace_until = 0.0
         self._reset_state_grace_active = False
@@ -78,6 +92,30 @@ class G1RobotDDS(DDSObject):
         except Exception as e:
             print(f"g1_robot_dds [{self.node_name}] State publisher initialization failed: {e}")    
             return False
+
+    def begin_reset_epoch(self, reason: str) -> int:
+        """Advance the Isaac-only reset generation carried in LowState.reserve.
+
+        ``tick`` identifies an individual advanced PhysX state.  The reset epoch
+        identifies a discontinuous articulation reset, allowing SONIC to clear
+        recurrent/history state without changing the standard G1 message type.
+        The marker is ignored by real-robot and MuJoCo paths.
+        """
+        self._reset_epoch = (int(getattr(self, "_reset_epoch", 0)) + 1) & 0xFFFFFFFF
+        print(
+            f"[{self.node_name}] Isaac reset epoch -> {self._reset_epoch} "
+            f"({reason})"
+        )
+        return self._reset_epoch
+
+    def get_latest_written_state_info(self) -> Dict[str, Any]:
+        """Return the state generation that the next Isaac step must consume."""
+        return {
+            "sample_seq": getattr(self, "_latest_written_sample_seq", None),
+            "sample_time_monotonic": getattr(self, "_latest_written_sample_time", None),
+            "sim_time_s": getattr(self, "_latest_written_sim_time_s", None),
+            "reset_epoch": int(getattr(self, "_latest_written_reset_epoch", 0)),
+        }
     
     def setup_subscriber(self) -> bool:
         """Setup the subscriber of the G1 robot"""
@@ -208,13 +246,28 @@ class G1RobotDDS(DDSObject):
             # diagnostics and future synchronized consumers can distinguish it
             # from a newly advanced simulation state.
             self.low_state.tick = sample_seq & 0xFFFFFFFF
+            # Isaac/Sonic synchronized-control extension.  Standard Unitree
+            # fields remain untouched; consumers opt in by checking the magic.
+            published_reset_epoch = int(
+                data.get("reset_epoch", getattr(self, "_reset_epoch", 0))
+            ) & 0xFFFFFFFF
+            self._last_published_reset_epoch = published_reset_epoch
+            self.low_state.reserve[0] = published_reset_epoch
+            self.low_state.reserve[1] = 1  # protocol version
+            self.low_state.reserve[2] = 0
+            self.low_state.reserve[3] = ISAAC_LOWSTATE_SYNC_MAGIC
             self.low_state.crc = self.crc.Crc(self.low_state)
-            self.publisher.Write(self.low_state)
-            self._lowstate_publish_count += 1
 
+            # Publish the secondary IMU first and LowState last.  In the
+            # synchronized bridge the unique LowState tick is the commit marker
+            # that wakes the C++ policy; sending torso data first minimizes the
+            # chance that one policy step combines a new pelvis sample with the
+            # previous torso sample.
             if have_torso_imu:
                 self.torso_imu_publisher.Write(self.torso_imu_state)
                 self._torso_imu_publish_count += 1
+            self.publisher.Write(self.low_state)
+            self._lowstate_publish_count += 1
 
             sample_time = data.get("sample_time_monotonic")
             if sample_time is not None:
@@ -261,14 +314,19 @@ class G1RobotDDS(DDSObject):
         repeated_publish_hz = self._repeated_sample_publish_count / elapsed
         lowcmd_packet_hz = self._lowcmd_packet_count / elapsed
         lowcmd_content_hz = self._lowcmd_content_update_count / elapsed
+        ack_match_hz = self._lowcmd_ack_match_count / elapsed
+        ack_stale_hz = self._lowcmd_ack_stale_count / elapsed
         print(
             f"[{self.node_name}] DDS publish: lowstate={lowstate_hz:.1f}Hz, "
             f"secondary_imu={torso_imu_hz:.1f}Hz, "
             f"fresh_physx={fresh_sample_hz:.1f}Hz, repeats={repeated_publish_hz:.1f}Hz, "
             f"lowcmd_packets={lowcmd_packet_hz:.1f}Hz, "
             f"lowcmd_changes={lowcmd_content_hz:.1f}Hz, "
+            f"ack_match={ack_match_hz:.1f}Hz, ack_stale={ack_stale_hz:.1f}Hz, "
             f"sample_age={self._last_sample_age_ms:.2f}ms, "
-            f"sample_seq={self._last_sample_seq}"
+            f"sample_seq={self._last_sample_seq}, ack_tick={self._last_lowcmd_ack_tick}, "
+            f"reset_epoch={getattr(self, '_last_published_reset_epoch', 0)}/"
+            f"{self._last_lowcmd_ack_reset_epoch}"
         )
         self._stats_window_start = now
         self._lowstate_publish_count = 0
@@ -277,6 +335,8 @@ class G1RobotDDS(DDSObject):
         self._repeated_sample_publish_count = 0
         self._lowcmd_packet_count = 0
         self._lowcmd_content_update_count = 0
+        self._lowcmd_ack_match_count = 0
+        self._lowcmd_ack_stale_count = 0
 
     
     def dds_subscriber(self, msg: LowCmd_,datatype:str=None) -> Dict[str, Any]:
@@ -310,9 +370,11 @@ class G1RobotDDS(DDSObject):
             torques = [float(msg.motor_cmd[i].tau) for i in range(num_cmd_motors)]
             kp = [float(msg.motor_cmd[i].kp) for i in range(num_cmd_motors)]
             kd = [float(msg.motor_cmd[i].kd) for i in range(num_cmd_motors)]
+            reserve = [int(value) for value in msg.reserve]
             signature = (
                 int(msg.mode_pr),
                 int(msg.mode_machine),
+                tuple(reserve),
                 tuple(modes),
                 tuple(positions),
                 tuple(velocities),
@@ -325,10 +387,29 @@ class G1RobotDDS(DDSObject):
                 self._lowcmd_content_update_count += 1
                 self._last_lowcmd_signature = signature
 
+            sync_magic = reserve[3] if len(reserve) >= 4 else 0
+            if sync_magic == SONIC_LOWCMD_SYNC_MAGIC:
+                self._last_lowcmd_ack_tick = reserve[0]
+                self._last_lowcmd_ack_reset_epoch = reserve[1]
+                if (
+                    self._last_sample_seq is not None
+                    and reserve[0] == (int(self._last_sample_seq) & 0xFFFFFFFF)
+                    and reserve[1]
+                    == (int(getattr(self, "_last_published_reset_epoch", 0)) & 0xFFFFFFFF)
+                ):
+                    self._lowcmd_ack_match_count += 1
+                else:
+                    self._lowcmd_ack_stale_count += 1
+
             cmd_data = {
                 "mode_pr": int(msg.mode_pr),
                 "mode_machine": int(msg.mode_machine),
                 "receive_time_monotonic": time.monotonic(),
+                "reserve": reserve,
+                "ack_state_tick": reserve[0] if sync_magic == SONIC_LOWCMD_SYNC_MAGIC else None,
+                "ack_reset_epoch": reserve[1] if sync_magic == SONIC_LOWCMD_SYNC_MAGIC else None,
+                "control_step_count": reserve[2] if sync_magic == SONIC_LOWCMD_SYNC_MAGIC else None,
+                "sync_magic": sync_magic,
                 "motor_cmd": {
                     "modes": modes,
                     "positions": positions,
@@ -382,15 +463,27 @@ class G1RobotDDS(DDSObject):
             if base_imu_data is None:
                 base_imu_data = imu_data
 
+            normalized_sample_seq = int(sample_seq) if sample_seq is not None else None
+            write_time = time.monotonic()
+            self._latest_written_sample_seq = normalized_sample_seq
+            self._latest_written_sample_time = write_time
+            self._latest_written_sim_time_s = (
+                float(sim_time_s) if sim_time_s is not None else None
+            )
+            self._latest_written_reset_epoch = int(
+                getattr(self, "_reset_epoch", 0)
+            ) & 0xFFFFFFFF
+
             state_data = {
                 "joint_positions": joint_positions.tolist() if hasattr(joint_positions, 'tolist') else joint_positions,
                 "joint_velocities": joint_velocities.tolist() if hasattr(joint_velocities, 'tolist') else joint_velocities,
                 "joint_torques": joint_torques.tolist() if hasattr(joint_torques, 'tolist') else joint_torques,
                 "base_imu_data": base_imu_data.tolist() if hasattr(base_imu_data, 'tolist') else base_imu_data,
                 "torso_imu_data": torso_imu_data.tolist() if hasattr(torso_imu_data, 'tolist') else torso_imu_data,
-                "sample_time_monotonic": time.monotonic(),
-                "sample_seq": int(sample_seq) if sample_seq is not None else None,
+                "sample_time_monotonic": write_time,
+                "sample_seq": normalized_sample_seq,
                 "sim_time_s": float(sim_time_s) if sim_time_s is not None else None,
+                "reset_epoch": self._latest_written_reset_epoch,
             }
             self.input_shm.write_data(state_data)
         except Exception as e:

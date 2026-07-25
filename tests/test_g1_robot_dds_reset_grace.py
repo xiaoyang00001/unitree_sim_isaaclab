@@ -6,7 +6,11 @@ import unittest
 import numpy as np
 
 try:
-    from dds.g1_robot_dds import G1RobotDDS
+    from dds.g1_robot_dds import (
+        ISAAC_LOWSTATE_SYNC_MAGIC,
+        SONIC_LOWCMD_SYNC_MAGIC,
+        G1RobotDDS,
+    )
     from unitree_sdk2py.idl.default import (
         unitree_hg_msg_dds__IMUState_,
         unitree_hg_msg_dds__LowCmd_,
@@ -31,8 +35,14 @@ class _FakeSharedMemory:
 
 
 class _FakePublisher:
+    def __init__(self, label=None, write_log=None):
+        self.label = label
+        self.write_log = write_log
+
     def Write(self, message):
         del message
+        if self.write_log is not None:
+            self.write_log.append(self.label)
 
 
 class _FakeCRC:
@@ -78,8 +88,9 @@ class G1RobotDDSResetGraceTest(unittest.TestCase):
         self.dds.torso_imu_state = unitree_hg_msg_dds__IMUState_()
         self.dds.input_shm = _FakeSharedMemory(self.payload)
         self.dds.output_shm = _FakeSharedMemory(None)
-        self.dds.publisher = _FakePublisher()
-        self.dds.torso_imu_publisher = _FakePublisher()
+        self.publish_order = []
+        self.dds.publisher = _FakePublisher("lowstate", self.publish_order)
+        self.dds.torso_imu_publisher = _FakePublisher("torso_imu", self.publish_order)
         self.dds.crc = _FakeCRC()
         self.dds._stats_window_start = time.monotonic()
         self.dds._lowstate_publish_count = 0
@@ -87,9 +98,16 @@ class G1RobotDDSResetGraceTest(unittest.TestCase):
         self.dds._fresh_sample_count = 0
         self.dds._repeated_sample_publish_count = 0
         self.dds._last_sample_seq = None
+        self.dds._reset_epoch = 0
+        self.dds._latest_written_reset_epoch = 0
+        self.dds._last_published_reset_epoch = 0
         self.dds._lowcmd_packet_count = 0
         self.dds._lowcmd_content_update_count = 0
         self.dds._last_lowcmd_signature = None
+        self.dds._last_lowcmd_ack_tick = None
+        self.dds._last_lowcmd_ack_reset_epoch = None
+        self.dds._lowcmd_ack_match_count = 0
+        self.dds._lowcmd_ack_stale_count = 0
         self.dds._last_sample_age_ms = 0.0
         self.dds._reset_state_grace_until = 0.0
         self.dds._reset_state_grace_active = False
@@ -113,7 +131,11 @@ class G1RobotDDSResetGraceTest(unittest.TestCase):
         self.assertAlmostEqual(self.dds._reset_state_grace_max_abs_dq, 42.0)
         self.assertEqual(self.dds._lowstate_publish_count, 1)
         self.assertEqual(self.dds._torso_imu_publish_count, 1)
+        self.assertEqual(self.publish_order[-2:], ["torso_imu", "lowstate"])
         self.assertEqual(self.dds.low_state.tick, 17)
+        self.assertEqual(self.dds.low_state.reserve[0], 0)
+        self.assertEqual(self.dds.low_state.reserve[1], 1)
+        self.assertEqual(self.dds.low_state.reserve[3], ISAAC_LOWSTATE_SYNC_MAGIC)
         self.assertEqual(self.dds._fresh_sample_count, 1)
         self.assertEqual(self.dds._repeated_sample_publish_count, 0)
 
@@ -149,6 +171,10 @@ class G1RobotDDSResetGraceTest(unittest.TestCase):
         message.mode_pr = 3
         message.mode_machine = 0xA2
         message.crc = 0
+        message.reserve[0] = 17
+        message.reserve[1] = 0
+        message.reserve[2] = 123
+        message.reserve[3] = SONIC_LOWCMD_SYNC_MAGIC
         for index, motor in enumerate(message.motor_cmd):
             motor.mode = index % 2
             motor.q = 0.1 * index
@@ -163,6 +189,10 @@ class G1RobotDDSResetGraceTest(unittest.TestCase):
         self.assertEqual(command["mode_pr"], 3)
         self.assertEqual(command["mode_machine"], 0xA2)
         self.assertIn("receive_time_monotonic", command)
+        self.assertEqual(command["ack_state_tick"], 17)
+        self.assertEqual(command["ack_reset_epoch"], 0)
+        self.assertEqual(command["control_step_count"], 123)
+        self.assertEqual(command["sync_magic"], SONIC_LOWCMD_SYNC_MAGIC)
         motor_cmd = command["motor_cmd"]
         self.assertEqual(len(motor_cmd["modes"]), len(message.motor_cmd))
         for index in range(len(message.motor_cmd)):
@@ -172,6 +202,30 @@ class G1RobotDDSResetGraceTest(unittest.TestCase):
             self.assertAlmostEqual(motor_cmd["torques"][index], 0.3 * index, places=6)
             self.assertAlmostEqual(motor_cmd["kp"][index], 10.0 + index, places=6)
             self.assertAlmostEqual(motor_cmd["kd"][index], 1.0 + index, places=6)
+
+    def test_reset_epoch_is_published_only_with_the_newly_written_state(self) -> None:
+        old_payload = dict(self.payload)
+        old_payload["reset_epoch"] = 0
+        self.dds.input_shm.payload = old_payload
+
+        self.dds.begin_reset_epoch("test boundary")
+        self.dds.dds_publisher()
+        self.assertEqual(self.dds.low_state.reserve[0], 0)
+
+        self.dds.write_robot_state(
+            self.payload["joint_positions"],
+            self.payload["joint_velocities"],
+            self.payload["joint_torques"],
+            base_imu_data=self.payload["base_imu_data"],
+            torso_imu_data=self.payload["torso_imu_data"],
+            sample_seq=18,
+            sim_time_s=0.36,
+        )
+        self.dds.dds_publisher()
+
+        self.assertEqual(self.dds.low_state.tick, 18)
+        self.assertEqual(self.dds.low_state.reserve[0], 1)
+        self.assertEqual(self.dds.get_latest_written_state_info()["reset_epoch"], 1)
 
 
 if __name__ == "__main__":

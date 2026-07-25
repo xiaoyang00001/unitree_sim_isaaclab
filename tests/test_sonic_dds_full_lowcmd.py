@@ -12,7 +12,10 @@ os.environ.setdefault("UNITREE_DDS_DOMAIN", "91")
 os.environ.setdefault("UNITREE_DDS_INTERFACE", "lo")
 
 try:
-    from action_provider.action_provider_sonic_dds import SonicDDSActionProvider
+    from action_provider.action_provider_sonic_dds import (
+        SONIC_LOWCMD_SYNC_MAGIC,
+        SonicDDSActionProvider,
+    )
     from dds.dds_master import dds_manager
     from robots.g1_joint_order import G1_29DOF_DDS_JOINT_ORDER
     from robots.g1_sonic_urdf import DEX3_HAND_JOINT_NAMES
@@ -26,9 +29,16 @@ else:
 class _FakeDDS:
     def __init__(self, command):
         self.command = command
+        self.state_info = {
+            "sample_seq": 1,
+            "reset_epoch": 0,
+        }
 
     def get_robot_command(self):
         return self.command
+
+    def get_latest_written_state_info(self):
+        return self.state_info
 
 
 class _FakeActuator:
@@ -90,8 +100,10 @@ def _make_command(
     kp: list[float],
     kd: list[float],
     modes: list[int] | None = None,
+    ack_state_tick: int | None = None,
+    ack_reset_epoch: int | None = None,
 ):
-    return {
+    command = {
         "mode_machine": 0xA2,
         "receive_time_monotonic": time.monotonic(),
         "motor_cmd": {
@@ -103,6 +115,16 @@ def _make_command(
             "kd": kd,
         },
     }
+    if ack_state_tick is not None:
+        command.update(
+            {
+                "ack_state_tick": ack_state_tick,
+                "ack_reset_epoch": 0 if ack_reset_epoch is None else ack_reset_epoch,
+                "control_step_count": 1,
+                "sync_magic": SONIC_LOWCMD_SYNC_MAGIC,
+            }
+        )
+    return command
 
 
 @unittest.skipIf(
@@ -135,6 +157,7 @@ class SonicDDSFullLowCmdTest(unittest.TestCase):
             device="cpu",
             num_envs=1,
             action_manager=action_manager,
+            step_dt=0.02,
         )
         args = SimpleNamespace(
             sonic_lowcmd_timeout=0.1,
@@ -280,6 +303,80 @@ class SonicDDSFullLowCmdTest(unittest.TestCase):
             self.assertAlmostEqual(tau_target[joint_index].item(), 0.0)
             self.assertAlmostEqual(self.robot.written_kp[0, joint_index].item(), 0.0)
             self.assertAlmostEqual(self.robot.written_kd[0, joint_index].item(), 8.0)
+
+    def test_matching_lowstate_ack_allows_exactly_the_current_environment_step(self) -> None:
+        self.provider.sync_with_lowstate = True
+        self.provider._environment_step_ready = False
+        self.dds.state_info = {"sample_seq": 42, "reset_epoch": 3}
+        self.dds.command.update(
+            {
+                "ack_state_tick": 42,
+                "ack_reset_epoch": 3,
+                "control_step_count": 99,
+                "sync_magic": SONIC_LOWCMD_SYNC_MAGIC,
+            }
+        )
+
+        action = self.provider.get_action(None)
+
+        self.assertIsNotNone(action)
+        self.assertTrue(self.provider.can_step_environment())
+        self.assertEqual(self.provider._sync_last_ack_tick, 42)
+        self.assertEqual(self.provider._sync_last_ack_reset_epoch, 3)
+
+    def test_stale_lowstate_ack_pauses_environment_instead_of_reusing_command(self) -> None:
+        self.provider.sync_with_lowstate = True
+        self.provider.sync_wait_timeout_s = 0.01
+        self.provider.sync_poll_interval_s = 0.0002
+        self.provider._environment_step_ready = False
+        self.dds.state_info = {"sample_seq": 55, "reset_epoch": 4}
+        self.dds.command.update(
+            {
+                "ack_state_tick": 54,
+                "ack_reset_epoch": 4,
+                "control_step_count": 100,
+                "sync_magic": SONIC_LOWCMD_SYNC_MAGIC,
+            }
+        )
+
+        action = self.provider.get_action(None)
+        q_target, dq_target, tau_target = self._split_action(action)
+
+        self.assertFalse(self.provider.can_step_environment())
+        self.assertTrue(torch.equal(q_target, self.robot.data.default_joint_pos[0]))
+        self.assertTrue(torch.equal(dq_target, self.robot.data.default_joint_vel[0]))
+        self.assertTrue(torch.equal(tau_target, torch.zeros_like(tau_target)))
+        self.assertEqual(self.provider._sync_timeout_count, 1)
+
+    def test_arm_target_step_limit_does_not_slow_leg_balance_targets(self) -> None:
+        self.provider.group_max_target_step["arms"] = 0.05
+        positions = []
+        for joint_name in G1_29DOF_DDS_JOINT_ORDER:
+            joint_index = self.joint_names.index(joint_name)
+            positions.append(
+                float(self.robot.data.default_joint_pos[0, joint_index].item()) + 1.0
+            )
+        self.dds.command = _make_command(
+            positions=positions,
+            velocities=[0.0] * 29,
+            torques=[0.0] * 29,
+            kp=[30.0] * 29,
+            kd=[3.0] * 29,
+        )
+
+        action = self.provider.get_action(None)
+        q_target, _, _ = self._split_action(action)
+        leg_joint_index = self.joint_names.index(G1_29DOF_DDS_JOINT_ORDER[0])
+        arm_joint_index = self.joint_names.index(G1_29DOF_DDS_JOINT_ORDER[15])
+
+        self.assertAlmostEqual(q_target[leg_joint_index].item(), positions[0], places=6)
+        self.assertAlmostEqual(
+            q_target[arm_joint_index].item(),
+            self.robot.data.default_joint_pos[0, arm_joint_index].item() + 0.05,
+            places=6,
+        )
+        self.assertEqual(self.provider._group_limit_counts["legs"], 0)
+        self.assertGreater(self.provider._group_limit_counts["arms"], 0)
 
 
 if __name__ == "__main__":

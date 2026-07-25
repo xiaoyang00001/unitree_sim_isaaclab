@@ -16,6 +16,7 @@ from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.scene import InteractiveSceneCfg
+from isaaclab.sensors import ContactSensorCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import GroundPlaneCfg
 from isaaclab.utils import configclass
 
@@ -336,6 +337,17 @@ class G129Dex3SonicSceneCfg(InteractiveSceneCfg):
     )
 
     robot: ArticulationCfg = make_sonic_robot_cfg()
+
+    # Foot-only diagnostics used by the SONIC bridge metrics. Restricting the
+    # sensor to the two ankle-roll/sole bodies keeps overhead low while exposing
+    # contact force, support phase and slip-related information.
+    foot_contact = ContactSensorCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/.*_ankle_roll_link",
+        history_length=4,
+        track_air_time=True,
+        force_threshold=5.0,
+        debug_vis=False,
+    )
 
 
 @configclass

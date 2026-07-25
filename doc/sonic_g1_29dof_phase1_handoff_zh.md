@@ -1,11 +1,11 @@
 # Gear SONIC → Isaac Lab G1 本体 29DoF / 43DoF 载体非 VR 阶段交接与验证记录
 
-> 文档日期：2026-07-24
+> 文档日期：2026-07-25
 > 当前系统：Ubuntu 22.04、Isaac Sim 5.1、Isaac Lab
 > Isaac 桥接仓库：`/home/nolovr/Documents/unitree_sim_isaaclab`
 > GR00T/SONIC 仓库：`/home/nolovr/GR00T-WholeBodyControl`
 > Isaac Lab：`/home/nolovr/IsaacLab`
-> 当前结论：非 VR 的 G1 本体 29DoF 闭环已经完成键盘慢走、停步、0.8→0.5 m 分级深蹲、0.5→0.8 m 分级起身和正常退出的历史验证。默认任务仍为“29 个 SONIC 本体关节 + 14 个保持默认张开姿态的 Dex3 关节”的 43DoF articulation；SONIC LowCmd 的 `mode/q/dq/tau/kp/kd` 全部接入 Isaac；手动/自动倒地复位及 reset 后 deploy 存活保护继续保留。当前代码已经回到 MuJoCo 第 3～7 项对齐之前的动力学/接触基线：左右脚恢复训练 URDF 的 7 个 cylinder/capsule 碰撞条，不再保留单平底 box；上肢/腰/踝 MuJoCo armature、frictionloss 映射、六 hip 统一 88 Nm、`enable_external_forces_every_iteration=True` 和 MuJoCo torso 合成惯量均未保留。PICO manager 保持 GR00T Git 原版本，不额外加入“允许更钝来换稳定”的新滤波；C++ policy/reference 和 GUI 均保持约 50 Hz，`LowState.tick` 只用于诊断。OpenXR 按键和夹爪映射仍留到后续阶段。
+> 当前结论：非 VR 的 G1 本体 29DoF 闭环已经完成键盘慢走、停步、0.8→0.5 m 分级深蹲、0.5→0.8 m 分级起身和正常退出的历史验证。默认任务仍为“29 个 SONIC 本体关节 + 14 个保持默认张开姿态的 Dex3 关节”的 43DoF articulation；SONIC LowCmd 的 `mode/q/dq/tau/kp/kd` 全部接入 Isaac；手动/自动倒地复位及 reset 后 deploy 存活保护继续保留。动力学/接触仍保持 MuJoCo 第 3～7 项对齐之前的回退基线，PICO manager 也保持 GR00T Git 原版本。2026-07-25 新增了双向 LowState/LowCmd tick+reset-epoch 握手：低性能 Isaac 可以降低墙钟速度，但同一物理状态不会被 policy/reference 重复消费；现场反馈协调性和稳定性明显提升。随后确认 streamed motion 原有 200 帧容差会在 PICO 快于慢速 PhysX 时积累数秒参考延迟，现已增加 Isaac 专用的 20 源帧有界滞后和过期参考逐帧跳过，仍待真实动作复测。OpenXR 按键和夹爪映射仍留到后续阶段。
 
 ## 1. 本阶段需求与边界
 
@@ -331,7 +331,16 @@ Isaac 侧发布：
 - DDS 线程可以在两个物理样本之间重复发布最新状态，但重复包保持相同 tick；
 - SONIC 任务的观测端不再使用“墙钟间隔至少 20 ms”的限速判断。该判断在调度器提前几百微秒时会跳过当前样本，实测曾把 50 Hz 混叠为约 31～32 Hz；现在 SONIC 每个环境步必定写入一个新样本。
 
-`sample_seq/LowState.tick` 当前只用于诊断 100 Hz DDS 包中哪些是新环境状态、哪些是重复发布。现场验证表明，用 tick 直接门控 C++ policy/history/reference 会在 Isaac 稍慢或 PICO 流持续前进时积累明显延迟，因此该门控已经删除。C++ 恢复固定 50 Hz 控制循环；后续若需要解决状态重复问题，必须采用有界、可测量且不会让实时输入队列持续落后的方案。
+当前已改为完整的状态驱动握手，而不是早期实验中“仅在 C++ 单边用 tick 降低 policy 频率”的做法：
+
+- LowState `reserve[0]` 携带 reset epoch，`reserve[3]` 携带 Isaac 同步标记；
+- C++ 高频轮询 LowState，但每个唯一 `tick` 只执行一次 policy/history/reference；重复发布包只作为 DDS keepalive；
+- C++ 完成该次控制后，在 LowCmd `reserve[0:4]` 回写已消费 tick、reset epoch、累计控制步数和同步标记；
+- Isaac 只有收到与当前状态 tick/epoch 完全匹配的 LowCmd 才执行下一次 `env.step()`；不匹配或超时时暂停 PhysX，不重复执行旧命令；
+- planner 每 5 个已完成控制步执行一次，因此保持 10 Hz 仿真时间语义；
+- ZMQ 接收端只保留最新待解码消息，不建立无界网络队列；Isaac state-sync 模式下 streamed motion merger 还会把“最新收到帧 - 当前参考帧”的滞后限制在默认 20 个源帧，逐帧跳过过期参考，不执行额外 policy/physics 步。
+
+这套握手解决的是“低性能 Isaac 中，同一个物理状态被固定 50 Hz policy 多次消费、参考帧继续前进”的闭环失配。它会降低墙钟播放速度，但不会重复执行同一状态。首次现场测试稳定性明显提升，但也暴露了独立的 reference backlog：原 merger 允许当前参考最多落后约 200 帧才硬追帧，50 Hz 下理论上就是约 4 秒。当前保持物理锁步不变，只把 Isaac 流式参考改为有界滞后；默认 20 帧用于保留 policy 最大约 20 帧的多帧前视，预期参考延迟约为 0.4 秒（PICO 实际 40 Hz 时约 0.5 秒），而不是数秒。可用 Isaac 的 `--no-sonic-sync-with-lowstate` 和 C++ 的 `--disable-isaac-state-sync` 做成对回归，但正常验证时两端必须同时开启。
 
 SONIC policy 实际使用的关键基座观测包括：
 
@@ -387,26 +396,27 @@ SONIC policy 实际使用的关键基座观测包括：
 | 文件 | 作用 |
 |---|---|
 | `robots/g1_sonic_urdf.py` | 从 43DoF 源 URDF、训练 URDF 和指定 STL 目录生成确定性的 Isaac 适配 URDF；校验 29+14 关节集合、身体运动学/源惯量、限位和网格路径，并原样复制训练 URDF 的本体碰撞几何，不再改写脚底或 torso 惯量 |
-| `tasks/g1_tasks/g1_29dof_dex3_sonic/g1_29dof_dex3_sonic_env_cfg.py` | 注册默认 43DoF 载体任务和精确 29DoF 回归任务；对齐 SONIC 时序、训练执行器、自碰撞和阶段一 Dex3 参数；提供按 `q/dq/tau` 排列的三类 action term，并为 SONIC 状态观测显式关闭墙钟限速，保证每个环境步生成一个新 LowState tick |
-| `action_provider/action_provider_sonic_dds.py` | 将 29 个 SONIC LowCmd `mode/q/dq/tau/kp/kd` 显式映射到 articulation；动态应用 PhysX drive gains，处理生命周期、完整命令校验、超时、damping-only packet、Root 单向释放、倒地复位后的安全再接管和运行指标 |
+| `tasks/g1_tasks/g1_29dof_dex3_sonic/g1_29dof_dex3_sonic_env_cfg.py` | 注册默认 43DoF 载体任务和精确 29DoF 回归任务；对齐 SONIC 时序、训练执行器、自碰撞和阶段一 Dex3 参数；提供按 `q/dq/tau` 排列的三类 action term，为 SONIC 状态观测显式关闭墙钟限速，并增加双脚接触传感器诊断 |
+| `action_provider/action_provider_sonic_dds.py` | 将 29 个 SONIC LowCmd `mode/q/dq/tau/kp/kd` 显式映射到 articulation；动态应用 PhysX drive gains，执行 LowState/LowCmd tick+epoch 握手，处理生命周期、超时、damping-only packet、Root 单向释放和倒地复位；提供腿/腰/臂分组 q 目标步长保护以及姿态、足底力、滑移、预测 PD 力矩指标，分组保护默认关闭以保留下肢平衡控制权限 |
 | `robots/g1_joint_order.py` | Python 侧唯一的 G1 29DoF DDS 硬件顺序 |
 | `tasks/common_observations/g1_29dof_state.py` | 按同一协议回传 29DoF LowState，生成 pelvis/torso IMU，并为每个新 PhysX/环境步生成单调 `sample_seq` |
-| `dds/g1_robot_dds.py` | LowCmd CRC 接收并完整保留 motor `mode/q/dq/tau/kp/kd`，发布 LowState CRC、secondary IMU 和频率统计；将 `sample_seq` 写入 `LowState.tick`，分别统计新 PhysX 样本与 100 Hz 重复发布；在明确执行 Isaac reset 的短暂窗口内抑制非物理的 `dq/tau_est` 瞬态 |
+| `dds/g1_robot_dds.py` | LowCmd CRC 接收并完整保留 motor `mode/q/dq/tau/kp/kd`，发布 LowState CRC、secondary IMU 和频率统计；将 `sample_seq`/reset epoch 写入 LowState 同步字段，解析 LowCmd ack；分别统计新 PhysX 样本、重复发布和匹配/过期 ack；在明确执行 Isaac reset 的短暂窗口内抑制非物理的 `dq/tau_est` 瞬态 |
 | `dds/dds_master.py` | 可配置 domain/interface、100 Hz 发布调度和正常清理 |
-| `layeredcontrol/robot_control_system.py` | 基于 monotonic deadline 的墙钟限频；fallback action 按 ActionManager 总维度创建，支持 43DoF/129 维和 29DoF/87 维动作 |
-| `sim_main.py` | SONIC 任务默认 50 Hz、domain 1/lo、无相机服务、基于 monotonic deadline 的不补帧调度、任务原始渲染频率、真正关闭渲染的 `--no_render`、自动倒地检测/复位以及集中式信号退出 |
+| `layeredcontrol/robot_control_system.py` | 基于 monotonic deadline 的墙钟轮询；fallback action 按 ActionManager 总维度创建；同步 LowCmd 未就绪时跳过 `env.step()`，避免旧动作重复推进 PhysX |
+| `sim_main.py` | SONIC 任务默认 50 Hz、domain 1/lo、无相机服务；DDS 创建后显式播种第一帧 LowState；提供同步开关/等待参数、低频完整场景导出、自动倒地检测/复位以及集中式信号退出 |
 | `tools/diagnose_sonic_model.py` | 输出关节数、刚体数、总质量、关键刚体质量、关节 effort/armature/friction 和 PhysX 外力更新开关 |
 | `tools/monitor_sonic_tracking.py` | 订阅 C++ ZMQ debug 流，测量参考动作与 PhysX 实测关节的误差、频率、丢帧和滞后 |
-| `tests/test_g1_sonic_urdf.py` | 验证适配模型严格为 29+14 可动关节、左右脚底为精确尺寸/位置的 MuJoCo box、手部阶段一无碰撞、限位正确、网格路径正确且生成过程不修改源文件 |
-| `tests/test_g1_robot_dds_reset_grace.py` | 验证 reset 保护窗口只将 LowState 的 `dq/tau_est` 置零，关节位置和 IMU 仍实时发布，窗口结束后自动恢复实时速度和力矩 |
-| `tests/test_sonic_dds_full_lowcmd.py` | 验证乱序 articulation 下 `q/dq/tau/kp/kd` 仍按关节名正确映射，motor mode 在混合期间仍硬禁用，超时会清除旧 `dq/tau`，并确认 damping-only packet 会执行而不是被 position-only 逻辑拦截 |
+| `tests/test_g1_sonic_urdf.py` | 验证适配模型严格为 29+14 可动关节、左右脚完整保留训练 URDF 的多段碰撞几何、手部阶段一无碰撞、限位正确、网格路径正确且生成过程不修改源文件 |
+| `tests/test_g1_robot_dds_reset_grace.py` | 验证 reset 保护窗口、LowState 同步标记、LowCmd ack 解析，以及新 reset epoch 只与复位后新写入的状态一起发布 |
+| `tests/test_sonic_dds_full_lowcmd.py` | 验证完整 LowCmd 映射、motor 硬禁用、超时和 damping-only；验证匹配 ack 才允许物理步、过期 ack 会暂停 PhysX，以及上肢目标限幅不会削弱腿部目标 |
 
 ### 7.2 GR00T/SONIC 仓库
 
 | 文件 | 作用 |
 |---|---|
 | `gear_sonic_deploy/deploy.sh` | 新增 `isaac` profile、DDS domain/CRC/init duration/initial motion/frame 参数 |
-| `g1_deploy_onnx_ref.cpp` | 可配置 DDS domain、生命周期标记、双状态流新鲜度检查、绝对关节速度安全检查和显式初始 motion/frame；当前恢复固定 50 Hz policy/reference 推进，不再由 `LowState.tick` 降速 |
+| `g1_deploy_onnx_ref.cpp` | 可配置 DDS domain、生命周期标记、双状态流新鲜度检查、绝对关节速度安全检查和显式初始 motion/frame；Isaac profile 下每个唯一 LowState tick 执行一次控制、每 5 步执行一次 planner，并用 LowCmd reserve 回写 ack；reset epoch 变化时使旧 ack 失效并清空跨复位 observation/last_action 历史 |
+| `state_logger.hpp/.cpp` | 增加只清空内存历史环、不破坏 CSV 和单调日志索引的 `ClearHistory()`，用于隔离倒地复位前后的策略历史 |
 | `gear_sonic/scripts/pico_manager_thread_server.py` | 恢复仓库稳定版本：用相邻 PICO 样本对 50 Hz 目标时刻做姿态/关节插值，每次新源样本最多推进一个 streamed frame；不使用后来实验的多帧追赶式重采样 |
 | `gear_sonic/utils/mujoco_sim/base_sim.py` / `unitree_sdk2py_bridge.py` | 输出 MuJoCo physics/viewer/fresh LowState/LowCmd/RTF/超期统计，明确区分“画面帧率低”与“物理或状态更新低” |
 | `keyboard_handler.hpp` | 只有控制状态机实际进入 CONTROL 后才允许开启 planner；输出 motion set、mode、速度和高度变更日志 |
@@ -455,7 +465,7 @@ UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo \
 [g1_robot] DDS publish: lowstate≈99Hz, secondary_imu≈99Hz, fresh_physx≈50Hz, repeats≈49Hz, ...
 ```
 
-`lowstate` 高于 `fresh_physx` 是预期行为：前者是 DDS 保活/刷新，后者才是新环境状态。`LowState.tick` 目前只服务这组诊断，C++ 不再据此暂停 policy/reference。
+`lowstate` 高于 `fresh_physx` 是预期行为：前者是 DDS 保活/刷新，后者才是新环境状态。同步开启后，C++ 的 `unique/duplicate/processed` 中 `processed` 应与 unique tick 一一对应；Isaac 的匹配 ack 应持续增长，timeout 应为零或极少。新状态刚写出到新 ack 返回之间短暂看到旧 ack 是正常握手过渡，不能仅凭 `ack_stale` 非零判故障。低性能机器上 `fresh_physx` 的墙钟频率可以低于 50 Hz，但每一步仍代表固定 20 ms 仿真时间。
 
 如果 43DoF 载体出现异常，需要与训练模型做 A/B 对比，只把任务名替换为：
 
@@ -559,7 +569,8 @@ body_q_measured = Isaac/PhysX 反馈回 C++ 的 29DoF 实测位置
 
 ```bash
 cd /home/nolovr/GR00T-WholeBodyControl/gear_sonic_deploy
-bash deploy.sh --input-type zmq_manager --zmq-host localhost isaac
+bash deploy.sh --input-type zmq_manager --zmq-host localhost \
+  --isaac-stream-lag-frames 20 isaac
 ```
 
 终端 C：
@@ -570,7 +581,7 @@ source .venv_teleop/bin/activate
 python gear_sonic/scripts/pico_manager_thread_server.py --manager --port 5556
 ```
 
-PICO manager 当前与 GR00T Git 提交中的原文件一致，没有额外保留后来“允许更钝来换稳定”的修改。该原版本本身使用前后源样本对目标时刻做插值并维护 5 帧窗口；这是第 3～7 项对齐之前已有的行为，不属于本轮新加稳定化逻辑。
+PICO manager 当前与 GR00T Git 提交中的原文件一致，没有额外保留后来“允许更钝来换稳定”的修改。该原版本本身使用前后源样本对目标时刻做插值并维护 5 帧窗口；这是第 3～7 项对齐之前已有的行为，不属于本轮新加稳定化逻辑。`deploy.sh` 的 Isaac profile 已默认传入 `--isaac-stream-lag-frames 20`，命令中显式写出只是为了让现场参数可见。
 
 每约 5 秒应看到：
 
@@ -586,7 +597,7 @@ manager 只在设备时间戳推进时生成下一帧；退出并重新进入 po
 
 ### 9.1 静态和构建检查
 
-2026-07-24 完成第 3～7 项回退和完整 LowCmd 接入后的检查：
+2026-07-24 完成第 3～7 项回退和完整 LowCmd 接入后的检查；2026-07-25 又完成状态驱动握手实现的静态验证：
 
 - 回退后关键 Python 文件通过语法检查；模型生成、DDS/reset 和完整 LowCmd 共 14/14 通过；GR00T C++ `just build` 全量构建通过，两个仓库 `git diff --check` 通过；固定时间网格重采样器及其 4 个测试已随高延迟方案一起删除；
 - 真实 PhysX 审计确认：hip pitch/roll 为 139 Nm、hip yaw 为 88 Nm、knee 为 139 Nm；本体 armature 恢复 SONIC 训练分组，所有本体关节 static/dynamic/viscous friction 为 0；
@@ -596,7 +607,8 @@ manager 只在设备时间戳推进时生成下一帧；退出并重新进入 po
 - 完整 `sim_main.py + SonicDDSActionProvider + DDS` 在隔离 domain 91 上运行，ActionManager 确认三个 action term 顺序严格为 `joint_pos/joint_vel/joint_effort`，29/29 身体映射和 14/14 Dex3 保持映射正确；
 - 使用真实 `deploy.sh --input-type zmq_manager ... isaac` 联调时，Isaac 收到 C++ 实际发布的完整 LowCmd：`enabled=29/29`、`max|dq_target|=0`、`max|tau_ff|=0`、`kp=[14.2506,99.0984]`、`kd=[0.9072,6.3088]`；这验证了真实 DDS/CRC/字段传输以及动态 gain 写入；
 - 该次 PICO manager 没有收到人体跟踪数据，C++ 停留在 A0/A1，未进入 A2，因此这不是默认 43DoF 动态动作矩阵验收；
-- 曾在隔离 DDS domain 124 上验证过 tick 门控实验的 A2 CONTROL 和短时站立，但用户现场测试确认该方案没有改善平衡、行走或摆臂扰动，并产生明显延迟；该结果只作为已否决实验记录，不能代表当前回退版本的性能；
+- 旧的“C++ 单边 tick 门控”实验曾在隔离 DDS domain 124 上完成 A2 和短时站立，但现场出现明显延迟且没有稳定性收益，已否决；2026-07-25 的新实现增加 LowCmd ack 和 Isaac 暂停推进，不能与该旧实验等同，仍需重新现场验证；
+- 新增同步协议、reset epoch、上肢分组目标保护和足底/预测 PD 指标后，Isaac 侧 18 个模型/DDS/完整 LowCmd/同步测试全部通过；GR00T `g1_deploy_onnx_ref` 目标重新编译通过；
 - 非零 `dq/tau`、motor mode 禁用和 `kp=0/kd=8` damping-only 执行使用独立测试包验证；当前 C++ active policy 的 `dq/tau` 本来就是零；
 - 没有 SONIC 发布端时持续显示 `HOLD: waiting for the first rt/lowcmd`，这是启动保护的预期行为；
 - Isaac/GR00T 两个源 URDF 的 SHA-256 在生成测试前后保持不变，STL 源目录也没有被修改；
@@ -624,7 +636,7 @@ manager 只在设备时间戳推进时生成下一帧；退出并重新进入 po
 - LowState 发布：约 98.8–99.2 Hz；
 - secondary IMU 发布：约 98.8–99.2 Hz；
 - 修正 SONIC 观测墙钟混叠后，新 PhysX 状态样本：约 49.9–50.1 Hz；100 Hz LowState 中其余约 49 Hz 为同 tick 重复发布；
-- 曾测试过的 C++ tick 门控实验为约 50 Hz 调度、48.2–49.8 Hz 新 tick 消费；该实验因现场延迟过大且稳定性无收益已经回退，当前 C++ 恢复每个 50 Hz 控制周期推进 policy/reference；
+- 以下 49.9–50.1 Hz 数据属于高性能条件下的历史回归。新状态驱动版本在机器跟不上实时速度时允许墙钟 `fresh_physx` 低于 50 Hz，但要求每个 unique tick 恰好对应一个 processed policy step，不能用墙钟 50 Hz 单项判失败；
 - C++ LowCmd writer：约 500 Hz；CONTROL 后 LowCmd 内容更新约 49 Hz；
 - C++ 持续收到 LowState 和 torso IMU，没有触发丢失状态安全停止；
 - 120 秒混合状态 ZMQ debug 监控收到 6001 个样本，50.00 Hz，`missing_index_steps=0`；
@@ -817,16 +829,16 @@ domain 96 的 1°阈值只用于强制覆盖自动 reset 分支，没有写入�
 
 ## 11. 建议的下一步验收计划
 
-### 11.1 当前重新判断：先解决控制时序，不再继续整包调动力学参数
+### 11.1 当前重新判断：先验证闭环状态同步，不继续整包调动力学参数
 
-现场结果已经否定“降低 GUI 刷新率、让 C++ 等待新 `LowState.tick`、在 PICO 端一次补齐多个固定网格帧”这一组合。当前没有保留这些修改，也没有在 PICO Git 原版本之上追加新的钝化/稳定滤波。
+现场已经否定旧的“只让 C++ 等新 tick、Isaac 仍按墙钟重复执行命令、PICO 再补追赶帧”组合。当前实现改为双向握手：C++ 只消费唯一状态并回写 ack，Isaac 收到匹配 ack 才推进下一物理步；PICO 不生成多帧追赶，ZMQ 接收只保留最新待处理包。第一轮应先验证这一结构是否消除了慢机器上的状态重复和 reference 超前，再决定是否调整接触或执行器参数。
 
 当前需要重点验证的结构差异是：
 
 - MuJoCo 的 `SIMULATE_DT=0.005`，每 5 ms 读取一次最新 LowCmd，按当前关节状态重新计算完整 `tau_ff + kp(q_des-q) + kd(dq_des-dq)`，随后执行一次 `mj_step`；viewer 独立按 `VIEWER_DT=0.02` 更新。因此画面约 50 Hz 时，物理、执行器和新状态仍是 200 Hz；
 - Isaac 同样使用 5 ms PhysX 步长，但当前 `decimation=4`。`SonicDDSActionProvider.get_action()` 只在每个 20 ms 环境步开始时读取一次最新 LowCmd，目标 `q/dq/tau/kp/kd` 随后保持 4 个 PhysX 子步；PhysX drive 仍会在每个子步依据当前状态计算反馈力矩，所以不能简单描述为“力矩只算 50 Hz”，但新目标、前馈力矩、动态增益和对外新状态的更新粒度目前只有 50 Hz；
-- C++ policy/reference 本身仍应保持发布设计的 50 Hz。下一步不是把 policy 提到 200 Hz，而是让 Isaac 的执行器桥和状态采样能够每 5 ms 使用最新数据，使 50 Hz policy 输出以更小的附加等待进入物理闭环；
-- `rt/sim_state` 当前按对齐前代码恢复为每主循环生成和发布；其开销继续由现有统计单独报告，不再作为本轮稳定化变量。
+- C++ policy/reference 的离散步长仍为 20 ms；在低性能机器上按 PhysX 状态驱动推进，不再强求墙钟 50 Hz。planner 每 5 个控制步执行一次，保持 100 ms 仿真时间步长；
+- `rt/sim_state` 对 SONIC 默认降为 5 Hz，避免每主循环序列化完整场景状态抢占物理和握手路径；可用 `--sim-state-export-hz` 调整或关闭。
 
 ### 11.2 第一步：确认低延迟回退基线并测清端到端延迟
 
@@ -843,12 +855,14 @@ domain 96 的 1°阈值只用于强制覆盖自动 reset 分支，没有写入�
 
 必须分开报告 P50、P95、最大值，不能只看平均频率。特别要新增两个 backlog 指标：`最新 ZMQ frame - C++ 当前消费 frame`，以及 `最新 LowCmd - Isaac 当前应用 LowCmd`。这样才能区分延迟来自 PICO/stream merger、policy、DDS、Isaac 命令保持还是单纯画面刷新。
 
-回退基线的最低确认项为：
+新同步基线的最低确认项为：
 
-- 启动日志不再出现按新 tick 门控 policy 的提示；
+- C++ 启动日志显示 `Isaac state-driven control synchronization: enabled`；Isaac 显示 `Isaac lock-step enabled`；
+- C++ `processed` 与 unique LowState tick 同步增长，duplicate 只增加 DDS keepalive 计数；
+- Isaac `expected epoch:tick` 与 `ack epoch:tick` 持续一致，正常运行 timeout 为零或极少且不会导致旧动作重复推进；
 - PICO 使用稳定版单帧插值，不存在一次生成多个追赶帧；
 - GUI 默认 `render_interval=4`，目标约 50 Hz；
-- 用户体感延迟恢复到本轮稳定优先实验之前；
+- 墙钟速度可以慢，但停止输入后不能持续消费历史队列；streamed frame lag 必须有界且 catch-up 次数可解释；
 - 完成站立、开始走、停止和摆臂各 3 次记录，作为后续 A/B 的同一基线。
 
 ### 11.3 第二步：验证 200 Hz Isaac 执行器/状态桥假设
@@ -868,11 +882,11 @@ domain 96 的 1°阈值只用于强制覆盖自动 reset 分支，没有写入�
 
 若 200 Hz A/B 对停止和下肢抖动没有可重复收益，则立即撤回，不继续围绕该假设调参。
 
-### 11.4 第三步：单独处理 streamed motion 的积压，不在生产端等待未来帧
+### 11.4 第三步：单独处理 streamed motion 的积压，不在生产端补发过期帧
 
-PICO 人体跟踪约 35–45 Hz，而 C++ reference 消费为 50 Hz；当前每包还携带 5 帧窗口，`StreamedMotionMerger` 保留历史帧并有 catch-up 逻辑。这里可能造成“新姿态已经到达，但 policy 仍消费旧全局 frame”的额外延迟。
+PICO 人体跟踪约 35–45 Hz，而低性能 Isaac state-sync 下 C++ reference 的墙钟消费可能只有 20–30 Hz；每包还携带最近 5 帧窗口。原 `StreamedMotionMerger` 为普通网络抖动保留了 200 帧 catch-up 容差，因此即使 ZMQ 只缓存最新包，policy 仍可能沿旧全局 frame 播放数秒。
 
-下一步先只增加 lag 观测，不立刻改变合并算法。如果确认长期积压，再在 C++ 消费端采用有界滞后策略，例如把允许落后限制在 1–2 个 reference frame，并在超限时受控快进。当前保留的生产端相邻样本插值每次最多生成一帧；不要恢复一次 manager 循环补发多个过期帧。任何快进策略都必须同时限制单帧关节目标变化，避免用降低延迟换来上肢冲击。
+现已在 C++ 消费端实现 Isaac 专用的有界滞后：正常滑窗合并后计算 `latest incoming frame - normal playback frame`，超过目标时只把 reference cursor 向前移到目标滞后，不额外执行 policy、planner 或 PhysX，也不触发 heading 重新初始化。日志会显示 `reference_lag=A->B frames` 和 `low_latency_rebase=1`。默认目标不是 1～2 帧，而是 20 帧，因为当前 observation 配置最多读取 `current + 4*5` 的未来参考；直接降到 1～2 帧会把大部分未来窗口夹到最后一帧，可能破坏刚获得的协调性。若 20 帧复测仍明显迟钝，可依次 A/B 测试 16、12、8；每次都必须同时复测站立、开始走、停步和大幅摆臂，不能只看手臂跟随速度。生产端仍保持相邻样本插值每次最多生成一帧，不恢复一次 manager 循环补发多个过期帧。
 
 ### 11.5 第四步：时序明确后再做单变量动力学 A/B
 
@@ -897,7 +911,7 @@ PICO 人体跟踪约 35–45 Hz，而 C++ reference 消费为 50 Hz；当前每�
 7. 20–30 分钟混合动作 soak；
 8. LowCmd、LowState、secondary IMU 暂停/恢复和 reset 故障注入。
 
-候选门槛仍包括：控制平均频率 49.5–50.5 Hz、ZMQ 不丢索引、reference joint MAE ≤ 0.10 rad、普通行走最大倾角 ≤ 10°、停步后 2 秒内回到倾角 ≤ 3°，并且跌倒、NaN、CRC 和异常安全停止均为 0。对于新增的 200 Hz 执行器桥，应另外验收 PhysX 子步频率、目标应用延迟 P95 和 streamed-frame lag，不能只用外层 50 Hz 平均值判定。
+候选门槛仍包括：高性能机器上墙钟控制平均频率 49.5–50.5 Hz；低性能机器上则验收 `processed == unique state`、仿真步长恒为 20 ms、无旧命令重复推进。其余门槛为 ZMQ 不丢索引、reference joint MAE ≤ 0.10 rad、普通行走最大倾角 ≤ 10°、停步后 2 秒仿真时间内回到倾角 ≤ 3°，并且跌倒、NaN、CRC 和异常安全停止均为 0。若后续新增 200 Hz 执行器桥，还需单独验收 PhysX 子步频率、目标应用延迟 P95 和 streamed-frame lag。
 
 ### 11.7 进入 OpenXR/夹爪阶段的门槛
 

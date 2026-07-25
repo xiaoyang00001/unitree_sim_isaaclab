@@ -49,6 +49,7 @@ class RobotController:
         
         # minimal statistics
         self.step_count = 0
+        self.wait_count = 0
         self._start_time = 0.0
         
         # minimal performance analysis
@@ -97,10 +98,10 @@ class RobotController:
         
         print("[SimpleController] the controller is stopped")
     
-    def step(self):
+    def step(self) -> bool:
         """minimal control step - zero thread competition"""
         if not self.is_running:
-            return
+            return False
         
         # use the cached function reference
         perf_counter = self._perf_counter
@@ -121,18 +122,29 @@ class RobotController:
             action = self._last_action
 
         action_time = perf_counter() - action_start
-        
+
+        environment_step_ready = True
+        if self.action_provider and hasattr(self.action_provider, "can_step_environment"):
+            environment_step_ready = bool(self.action_provider.can_step_environment())
+
         # 2. direct environment step
         env_start = perf_counter()
+        stepped = False
         with torch.inference_mode():
             if self.config.replay_mode or self.config.use_rl_action_mode:
-                pass
+                # These legacy modes intentionally render/step elsewhere.  Do
+                # not report them as SONIC synchronization stalls.
+                stepped = True
                 # self.env.sim.render()
-            else:
+            elif environment_step_ready:
                 self.env.step(action)
+                stepped = True
             env_time = perf_counter() - env_start
-            
-            self.step_count += 1
+
+            if stepped:
+                self.step_count += 1
+            else:
+                self.wait_count += 1
         
         # 3. deadline-based frequency control
         sleep_start = perf_counter()
@@ -153,8 +165,14 @@ class RobotController:
         self._profile_counter += 1
         if self._profile_counter >= self._profile_interval:
             total_time = perf_counter() - step_start
-            print(f"[Performance] A:{action_time*1000:.1f}ms, E:{env_time*1000:.1f}ms, S:{sleep_time*1000:.1f}ms, T:{total_time*1000:.1f}ms")
+            print(
+                f"[Performance] A:{action_time*1000:.1f}ms, "
+                f"E:{env_time*1000:.1f}ms, S:{sleep_time*1000:.1f}ms, "
+                f"T:{total_time*1000:.1f}ms, stepped={int(stepped)}, "
+                f"physics_steps={self.step_count}, sync_waits={self.wait_count}"
+            )
             self._profile_counter = 0
+        return stepped
     def cleanup(self):
         """clean up the resources"""
         self.stop()

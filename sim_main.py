@@ -78,6 +78,79 @@ parser.add_argument("--sonic_ramp_seconds", type=float, default=0.0,
                     help="optional extra blend from the USD default pose to SONIC targets; SONIC already performs its own INIT ramp")
 parser.add_argument("--sonic_max_target_step", type=float, default=0.0,
                     help="optional per-control-step joint-target limiter in radians; 0 preserves the raw SONIC policy target")
+parser.add_argument(
+    "--sonic_leg_max_target_step",
+    "--sonic-leg-max-target-step",
+    dest="sonic_leg_max_target_step",
+    type=float,
+    default=0.0,
+    help=(
+        "optional lower-body q-target step limit in rad per unique PhysX state; "
+        "0 disables it (recommended so balance corrections remain fast)"
+    ),
+)
+parser.add_argument(
+    "--sonic_waist_max_target_step",
+    "--sonic-waist-max-target-step",
+    dest="sonic_waist_max_target_step",
+    type=float,
+    default=0.0,
+    help="optional waist q-target step limit in rad per unique PhysX state; 0 disables it",
+)
+parser.add_argument(
+    "--sonic_arm_max_target_step",
+    "--sonic-arm-max-target-step",
+    dest="sonic_arm_max_target_step",
+    type=float,
+    default=0.0,
+    help=(
+        "optional shoulder/elbow/wrist q-target step limit in rad per unique "
+        "PhysX state; use for upper-body impulse A/B tests"
+    ),
+)
+sonic_sync_group = parser.add_mutually_exclusive_group()
+sonic_sync_group.add_argument(
+    "--sonic_sync_with_lowstate",
+    "--sonic-sync-with-lowstate",
+    dest="sonic_sync_with_lowstate",
+    action="store_true",
+    help="advance Isaac only after LowCmd acknowledges the latest unique LowState tick",
+)
+sonic_sync_group.add_argument(
+    "--no_sonic_sync_with_lowstate",
+    "--no-sonic-sync-with-lowstate",
+    dest="sonic_sync_with_lowstate",
+    action="store_false",
+    help="disable the Isaac/SONIC lock-step handshake for regression A/B tests",
+)
+parser.set_defaults(sonic_sync_with_lowstate=None)
+parser.add_argument(
+    "--sonic_sync_wait_timeout",
+    "--sonic-sync-wait-timeout",
+    dest="sonic_sync_wait_timeout",
+    type=float,
+    default=0.25,
+    help="wall-clock seconds to wait for the matching LowCmd before pausing PhysX",
+)
+parser.add_argument(
+    "--sonic_sync_poll_interval",
+    "--sonic-sync-poll-interval",
+    dest="sonic_sync_poll_interval",
+    type=float,
+    default=0.001,
+    help="LowCmd acknowledgement polling interval in seconds",
+)
+parser.add_argument(
+    "--sim_state_export_hz",
+    "--sim-state-export-hz",
+    dest="sim_state_export_hz",
+    type=float,
+    default=None,
+    help=(
+        "full scene-state DDS export rate; SONIC defaults to 5 Hz, other tasks "
+        "retain every-loop export, 0 disables export"
+    ),
+)
 
 fall_reset_group = parser.add_mutually_exclusive_group()
 fall_reset_group.add_argument(
@@ -205,6 +278,11 @@ if args_cli.auto_reset_on_fall is None:
     # tasks. All existing non-SONIC tasks retain their old behavior.
     args_cli.auto_reset_on_fall = is_sonic_task
 
+if args_cli.sonic_sync_with_lowstate is None:
+    args_cli.sonic_sync_with_lowstate = is_sonic_task
+if args_cli.sim_state_export_hz is None and is_sonic_task:
+    args_cli.sim_state_export_hz = 5.0
+
 if args_cli.step_hz is None:
     args_cli.step_hz = 50 if is_sonic_task else 100
 elif args_cli.step_hz <= 0:
@@ -214,6 +292,21 @@ if args_cli.physics_dt is not None and args_cli.physics_dt <= 0.0:
     parser.error("--physics_dt must be positive")
 if args_cli.render_interval is not None and args_cli.render_interval <= 0:
     parser.error("--render_interval must be positive")
+if args_cli.sonic_sync_wait_timeout <= 0.0:
+    parser.error("--sonic_sync_wait_timeout must be positive")
+if args_cli.sonic_sync_poll_interval <= 0.0:
+    parser.error("--sonic_sync_poll_interval must be positive")
+if args_cli.sim_state_export_hz is not None and args_cli.sim_state_export_hz < 0.0:
+    parser.error("--sim_state_export_hz must be non-negative")
+for option_name in (
+    "sonic_max_target_step",
+    "sonic_leg_max_target_step",
+    "sonic_waist_max_target_step",
+    "sonic_arm_max_target_step",
+):
+    option_value = float(getattr(args_cli, option_name))
+    if not math.isfinite(option_value) or option_value < 0.0:
+        parser.error(f"--{option_name} must be a finite non-negative value")
 
 if not 0.0 < args_cli.fall_reset_tilt_deg <= 180.0:
     parser.error("--fall_reset_tilt_deg must be in (0, 180]")
@@ -688,6 +781,25 @@ def main():
             print(f"Failed to create dds: {e}")
             return
         print("========= create dds success =========")
+        if is_sonic_task:
+            # The first env.reset happens before the DDS object is registered,
+            # so its observation cannot seed rt/lowstate. Lock-step control
+            # needs one real initial PhysX sample before it can request the
+            # first matching LowCmd; publish that sample explicitly here.
+            try:
+                from tasks.common_observations.g1_29dof_state import (
+                    get_robot_boy_joint_states,
+                )
+
+                get_robot_boy_joint_states(
+                    env,
+                    enable_dds=True,
+                    dds_min_interval_ms=0.0,
+                )
+                print("[sonic_dds] Initial PhysX state seeded for LowState lock-step")
+            except Exception as e:
+                print(f"Failed to seed initial SONIC LowState: {e}")
+                return
     else:
         print("========= create dds =========")
         try:
@@ -774,6 +886,8 @@ def main():
             return False
 
         robot_dds = dds_manager.get_object("g129")
+        if robot_dds is not None and hasattr(robot_dds, "begin_reset_epoch"):
+            robot_dds.begin_reset_epoch(reason)
         if robot_dds is not None and hasattr(robot_dds, "begin_reset_state_grace"):
             robot_dds.begin_reset_state_grace(
                 args_cli.fall_reset_lowstate_grace_seconds,
@@ -840,6 +954,29 @@ def main():
         recent_loop_times = []  # for calculating moving average frequency
         sim_state_update_count = 0
         sim_state_work_s = 0.0
+        if args_cli.sim_state_export_hz is None:
+            sim_state_export_enabled = True
+            sim_state_export_interval_s = 0.0  # legacy every-loop behavior
+        else:
+            sim_state_export_enabled = args_cli.sim_state_export_hz > 0.0
+            sim_state_export_interval_s = (
+                1.0 / args_cli.sim_state_export_hz
+                if sim_state_export_enabled
+                else 0.0
+            )
+        next_sim_state_export_time = last_stats_time
+        print(
+            "[sim-state] export "
+            + (
+                "disabled"
+                if not sim_state_export_enabled
+                else (
+                    "every loop"
+                    if sim_state_export_interval_s <= 0.0
+                    else f"at {args_cli.sim_state_export_hz:.2f} Hz"
+                )
+            )
+        )
         
         
         reward_interval = max(1, args_cli.reward_interval)
@@ -855,25 +992,31 @@ def main():
                 loop_count += 1
                 reset_performed = False
                 if not args_cli.replay_data:
-                    sim_state_work_start = monotonic()
-                    try:
-                        env_state = env.scene.get_state()
-                        env_state_json = sim_state_to_json(env_state)
-                        sim_state = {
-                            "init_state": env_state_json,
-                            "task_name": args_cli.task,
-                        }
-                    except Exception as e:
-                        print(f"Failed to get env state: {e}")
-                        raise e
-                    try:
-                        # sim_state = json.dumps(sim_state)
-                        sim_state_dds.write_sim_state_data(sim_state)
-                    except Exception as e:
-                        print(f"Failed to write sim state: {e}")
-                        raise e
-                    sim_state_update_count += 1
-                    sim_state_work_s += monotonic() - sim_state_work_start
+                    export_due = sim_state_export_enabled and (
+                        sim_state_export_interval_s <= 0.0
+                        or current_time >= next_sim_state_export_time
+                    )
+                    if export_due:
+                        sim_state_work_start = monotonic()
+                        try:
+                            env_state = env.scene.get_state()
+                            env_state_json = sim_state_to_json(env_state)
+                            sim_state = {
+                                "init_state": env_state_json,
+                                "task_name": args_cli.task,
+                            }
+                        except Exception as e:
+                            print(f"Failed to get env state: {e}")
+                            raise e
+                        try:
+                            sim_state_dds.write_sim_state_data(sim_state)
+                        except Exception as e:
+                            print(f"Failed to write sim state: {e}")
+                            raise e
+                        sim_state_update_count += 1
+                        sim_state_work_s += monotonic() - sim_state_work_start
+                        if sim_state_export_interval_s > 0.0:
+                            next_sim_state_export_time = current_time + sim_state_export_interval_s
 
                     try:
                         reset_pose_cmd = reset_pose_dds.get_reset_pose_command()
