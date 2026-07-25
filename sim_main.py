@@ -440,6 +440,7 @@ from layeredcontrol.robot_control_system import (
 from dds.reset_pose_dds import *
 import tasks
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
+from robots.g1_sonic_visuals import apply_g1_sonic_visual_materials
 
 from tools.augmentation_utils import (
     update_light,
@@ -625,6 +626,26 @@ def main():
         env_cfg.seed = args_cli.seed
         env = gym.make(args_cli.task, cfg=env_cfg).unwrapped
         env.seed(args_cli.seed)
+        if is_sonic_task and not args_cli.no_render:
+            try:
+                material_report = apply_g1_sonic_visual_materials()
+                print(
+                    "[g1_materials] reference appearance applied: "
+                    f"white={material_report.white_links}, "
+                    f"dark={material_report.dark_links}, "
+                    f"logo={material_report.logo_links}"
+                )
+                if material_report.unmapped_visual_links:
+                    print(
+                        "[g1_materials] unmapped visual links retained their "
+                        "imported material: "
+                        + ", ".join(material_report.unmapped_visual_links)
+                    )
+            except Exception as e:
+                # Appearance must never prevent the DDS/physics validation from
+                # starting.  A missing material asset is therefore reported but
+                # does not change the articulation or abort the simulation.
+                print(f"[g1_materials] failed to apply reference appearance: {e}")
         try:
             sensors_dict = getattr(env.scene, "sensors", {})
             if sensors_dict:
