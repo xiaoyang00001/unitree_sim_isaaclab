@@ -1,10 +1,10 @@
 """Direct Gear SONIC DDS control for floating-base G1 SONIC tasks.
 
-This provider owns the 29 G1 body joints.  A task may use either the exact
-29-DoF training articulation or the 29+14-DoF Dex3 articulation.  For every
-body motor it consumes the complete Unitree LowCmd tuple
-``mode, q, dq, tau, kp, kd``.  The 14 Dex3 joints, when present, remain at their
-configured defaults until the later OpenXR hand-control phase.
+This provider owns the 29 G1 body joints and, when present, the 14 articulated
+Dex3 joints.  It consumes the complete Unitree command tuple
+``mode, q, dq, tau, kp, kd`` for both LowCmd and the two Dex3 HandCmd topics.
+Body and hand freshness are checked independently so a stale hand packet can
+never pause or destabilize the locomotion loop.
 """
 
 from __future__ import annotations
@@ -18,9 +18,13 @@ import torch
 from action_provider.action_base import ActionProvider
 from dds.dds_master import dds_manager
 from robots.g1_joint_order import G1_29DOF_DDS_JOINT_ORDER
+from robots.g1_sonic_urdf import DEX3_HAND_JOINT_NAMES
 
 
 DEX3_JOINT_MARKERS = ("left_hand_", "right_hand_")
+DEX3_JOINTS_PER_HAND = 7
+DEX3_SIDES = ("left", "right")
+DEX3_COMMAND_FIELDS = ("modes", "positions", "velocities", "torques", "kp", "kd")
 SONIC_BRIDGE_CONTROL_MODE = 0xA2
 SONIC_ACTION_TERMS = ("joint_pos", "joint_vel", "joint_effort")
 SONIC_ACTION_FIELDS_PER_JOINT = 3
@@ -31,9 +35,46 @@ BODY_GROUP_RANGES = {
     "arms": range(15, 29),
 }
 
+# Fallback limits use the articulated Unitree URDF order. At runtime the
+# imported articulation limits take precedence. These constants keep command
+# validation deterministic in unit tests and if an Isaac version does not
+# expose joint position limits through ArticulationData.
+DEX3_FALLBACK_LOWER_LIMITS = (
+    -1.04719755,
+    -0.72431163,
+    0.0,
+    -1.57079632,
+    -1.74532925,
+    -1.57079632,
+    -1.74532925,
+    -1.04719755,
+    -1.04719755,
+    -1.74532925,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+)
+DEX3_FALLBACK_UPPER_LIMITS = (
+    1.04719755,
+    1.04719755,
+    1.74532925,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    1.04719755,
+    0.72431163,
+    0.0,
+    1.57079632,
+    1.74532925,
+    1.57079632,
+    1.74532925,
+)
+
 
 class SonicDDSActionProvider(ActionProvider):
-    """Map the complete 29-motor SONIC LowCmd to Isaac Lab commands."""
+    """Map complete SONIC body and optional Dex3 commands to Isaac Lab."""
 
     def __init__(self, env, args_cli):
         super().__init__("sonic_dds")
@@ -46,6 +87,15 @@ class SonicDDSActionProvider(ActionProvider):
             raise RuntimeError("G1 DDS object 'g129' is not registered")
 
         self.command_timeout_s = max(0.01, float(getattr(args_cli, "sonic_lowcmd_timeout", 0.10)))
+        self.hand_command_timeout_s = max(
+            0.01, float(getattr(args_cli, "sonic_handcmd_timeout", 0.20))
+        )
+        # Matches Dex3Hands::MAX_DELTA_Q in Gear SONIC. This bounds the
+        # instantaneous PD error against the actual simulated finger state,
+        # rather than adding latency with a wall-clock command filter.
+        self.hand_max_target_error = max(
+            0.0, float(getattr(args_cli, "sonic_hand_max_target_error", 0.25))
+        )
         self.ramp_duration_s = max(0.0, float(getattr(args_cli, "sonic_ramp_seconds", 0.0)))
         self.max_target_step = max(0.0, float(getattr(args_cli, "sonic_max_target_step", 0.0)))
         self.group_max_target_step = {
@@ -94,14 +144,29 @@ class SonicDDSActionProvider(ActionProvider):
         if len(set(body_indices)) != len(G1_29DOF_DDS_JOINT_ORDER):
             raise ValueError("SONIC 29-DoF mapping contains duplicate articulation indices")
 
-        dex3_indices = [
-            index for index, name in enumerate(joint_names) if name.startswith(DEX3_JOINT_MARKERS)
+        articulated_hand_names = [
+            name for name in joint_names if name.startswith(DEX3_JOINT_MARKERS)
         ]
-        if len(dex3_indices) not in (0, 14):
+        if len(articulated_hand_names) not in (0, 14):
             raise ValueError(
                 "SONIC tasks require either no articulated Dex3 joints or exactly 14; "
-                f"found {len(dex3_indices)}"
+                f"found {len(articulated_hand_names)}"
             )
+        if articulated_hand_names:
+            missing_hand_names = [
+                name for name in DEX3_HAND_JOINT_NAMES if name not in joint_to_index
+            ]
+            unexpected_hand_names = sorted(
+                set(articulated_hand_names) - set(DEX3_HAND_JOINT_NAMES)
+            )
+            if missing_hand_names or unexpected_hand_names:
+                raise ValueError(
+                    "Dex3 articulation does not match the Unitree 7+7 DDS mapping: "
+                    f"missing={missing_hand_names}, unexpected={unexpected_hand_names}"
+                )
+            dex3_indices = [joint_to_index[name] for name in DEX3_HAND_JOINT_NAMES]
+        else:
+            dex3_indices = []
 
         self._body_indices = torch.tensor(body_indices, dtype=torch.long, device=self.device)
         self._body_group_indices = {
@@ -113,6 +178,20 @@ class SonicDDSActionProvider(ActionProvider):
             for group_name, motor_range in BODY_GROUP_RANGES.items()
         }
         self._dex3_indices = torch.tensor(dex3_indices, dtype=torch.long, device=self.device)
+        self._dex3_side_indices = {
+            side: self._dex3_indices[
+                side_index * DEX3_JOINTS_PER_HAND : (side_index + 1) * DEX3_JOINTS_PER_HAND
+            ]
+            for side_index, side in enumerate(DEX3_SIDES)
+        }
+        self.dex3_dds = None
+        if dex3_indices:
+            self.dex3_dds = dds_manager.get_object("dex3")
+            if self.dex3_dds is None:
+                raise RuntimeError(
+                    "43-DoF SONIC task requires the Dex3 DDS object; "
+                    "sim_main should enable it automatically"
+                )
         self._foot_contact_sensor = None
         self._foot_body_indices = torch.empty(0, dtype=torch.long, device=self.device)
         try:
@@ -142,6 +221,28 @@ class SonicDDSActionProvider(ActionProvider):
         self._default_kd = self.robot.data.default_joint_damping[0].clone()
         self._default_root_state = self.robot.data.default_root_state.clone()
 
+        self._dex3_lower_limits = torch.tensor(
+            DEX3_FALLBACK_LOWER_LIMITS,
+            dtype=torch.float32,
+            device=self.device,
+        )
+        self._dex3_upper_limits = torch.tensor(
+            DEX3_FALLBACK_UPPER_LIMITS,
+            dtype=torch.float32,
+            device=self.device,
+        )
+        self._dex3_velocity_limits = torch.full(
+            (len(DEX3_HAND_JOINT_NAMES),),
+            float("inf"),
+            dtype=torch.float32,
+            device=self.device,
+        )
+        self._dex3_effort_limits = torch.full_like(
+            self._dex3_velocity_limits, float("inf")
+        )
+        if dex3_indices:
+            self._load_dex3_articulation_limits()
+
         self._last_position_target = self._default_position_target.clone()
         self._last_velocity_target = self._default_velocity_target.clone()
         self._last_effort_target = self._default_effort_target.clone()
@@ -158,6 +259,20 @@ class SonicDDSActionProvider(ActionProvider):
         self._incoming_torques = torch.empty(29, dtype=torch.float32, device=self.device)
         self._incoming_kp = torch.empty(29, dtype=torch.float32, device=self.device)
         self._incoming_kd = torch.empty(29, dtype=torch.float32, device=self.device)
+
+        self._hand_incoming = {
+            side: {
+                field_name: torch.empty(
+                    DEX3_JOINTS_PER_HAND,
+                    dtype=torch.float32,
+                    device=self.device,
+                )
+                for field_name in DEX3_COMMAND_FIELDS
+            }
+            for side in DEX3_SIDES
+        }
+        self._hand_last_warning_time = {side: 0.0 for side in DEX3_SIDES}
+        self._hand_first_command_logged = {side: False for side in DEX3_SIDES}
 
         self._first_valid_command_time: Optional[float] = None
         self._last_valid_command_time: Optional[float] = None
@@ -188,7 +303,7 @@ class SonicDDSActionProvider(ActionProvider):
         self._metrics_total_samples = 0
         self._reset_metrics_window()
 
-        hand_description = "default hold (14)" if dex3_indices else "not articulated (0)"
+        hand_description = "SONIC Dex3 DDS (14)" if dex3_indices else "not articulated (0)"
         print(
             "[sonic_dds] Control ownership: "
             f"articulation={self._num_joints}, G1 body=SONIC DDS (29), "
@@ -203,10 +318,20 @@ class SonicDDSActionProvider(ActionProvider):
             zip(G1_29DOF_DDS_JOINT_ORDER, body_indices)
         ):
             print(f"[sonic_dds] motor[{motor_index:02d}] -> joint[{articulation_index:02d}] {name}")
-        print(
-            f"[sonic_dds] Body mapping 29/29, Dex3 hold mapping "
-            f"{len(dex3_indices)}/{len(dex3_indices)}"
-        )
+        print(f"[sonic_dds] Body mapping 29/29, Dex3 mapping {len(dex3_indices)}/14")
+        if dex3_indices:
+            for hand_index, (name, articulation_index) in enumerate(
+                zip(DEX3_HAND_JOINT_NAMES, dex3_indices)
+            ):
+                print(
+                    f"[sonic_dds] dex3[{hand_index:02d}] -> "
+                    f"joint[{articulation_index:02d}] {name}"
+                )
+            print(
+                "[sonic_dds] Dex3 execution: mode/q/dq/tau/kp/kd enabled; "
+                f"timeout={self.hand_command_timeout_s:.3f}s, "
+                f"max_target_error={self.hand_max_target_error:.3f}rad"
+            )
         if self.sync_with_lowstate:
             print(
                 "[sonic_dds] Isaac lock-step enabled: one unique LowState tick -> "
@@ -240,6 +365,215 @@ class SonicDDSActionProvider(ActionProvider):
     def can_step_environment(self) -> bool:
         """Whether the current action is acknowledged for the latest PhysX state."""
         return self._environment_step_ready
+
+    def _load_dex3_articulation_limits(self) -> None:
+        """Cache hand limits in Unitree DDS order from the live articulation."""
+
+        position_limits = getattr(self.robot.data, "joint_pos_limits", None)
+        if position_limits is not None:
+            selected = position_limits[0].index_select(0, self._dex3_indices)
+            if selected.shape == (len(DEX3_HAND_JOINT_NAMES), 2):
+                finite = torch.isfinite(selected)
+                self._dex3_lower_limits = torch.where(
+                    finite[:, 0], selected[:, 0], self._dex3_lower_limits
+                ).to(dtype=torch.float32, device=self.device)
+                self._dex3_upper_limits = torch.where(
+                    finite[:, 1], selected[:, 1], self._dex3_upper_limits
+                ).to(dtype=torch.float32, device=self.device)
+
+        velocity_limits = getattr(self.robot.data, "joint_vel_limits", None)
+        if velocity_limits is not None:
+            selected = velocity_limits[0].index_select(0, self._dex3_indices)
+            valid = torch.isfinite(selected) & (selected > 0.0)
+            self._dex3_velocity_limits = torch.where(
+                valid,
+                selected.to(dtype=torch.float32, device=self.device),
+                self._dex3_velocity_limits,
+            )
+
+        effort_limits = getattr(self.robot.data, "joint_effort_limits", None)
+        if effort_limits is not None:
+            selected = effort_limits[0].index_select(0, self._dex3_indices)
+            valid = torch.isfinite(selected) & (selected > 0.0)
+            self._dex3_effort_limits = torch.where(
+                valid,
+                selected.to(dtype=torch.float32, device=self.device),
+                self._dex3_effort_limits,
+            )
+
+    def _warn_hand_command(self, side: str, now: float, reason: str) -> None:
+        if now - self._hand_last_warning_time[side] >= 1.0:
+            print(f"[sonic_dds][dex3:{side}] HOLD: {reason}")
+            self._hand_last_warning_time[side] = now
+
+    def _parse_hand_command(
+        self,
+        side: str,
+        command: dict,
+        now: float,
+    ) -> tuple[dict[str, torch.Tensor], torch.Tensor] | None:
+        """Validate one seven-motor HandCmd and decode its Unitree modes."""
+
+        received_at = command.get("receive_time_monotonic")
+        try:
+            received_at_value = float(received_at)
+        except (TypeError, ValueError):
+            self._warn_hand_command(side, now, "missing or invalid receive timestamp")
+            return None
+        command_age = now - received_at_value
+        if command_age > self.hand_command_timeout_s:
+            self._warn_hand_command(
+                side,
+                now,
+                f"HandCmd timed out (age={command_age * 1000.0:.1f}ms)",
+            )
+            return None
+        if command_age < -1.0:
+            self._warn_hand_command(side, now, "HandCmd timestamp is in the future")
+            return None
+        if (
+            self._fall_recovery_waiting_for_control
+            and self._fall_recovery_started_time is not None
+            and received_at_value <= self._fall_recovery_started_time
+        ):
+            self._warn_hand_command(side, now, "discarding pre-reset HandCmd")
+            return None
+
+        parsed: dict[str, torch.Tensor] = {}
+        for field_name in DEX3_COMMAND_FIELDS:
+            values = command.get(field_name, [])
+            if len(values) != DEX3_JOINTS_PER_HAND:
+                self._warn_hand_command(
+                    side,
+                    now,
+                    f"expected 7 {field_name} values, got {len(values)}",
+                )
+                return None
+            destination = self._hand_incoming[side][field_name]
+            try:
+                destination.copy_(
+                    torch.as_tensor(values, dtype=torch.float32, device=self.device)
+                )
+            except (TypeError, ValueError, RuntimeError) as exc:
+                self._warn_hand_command(side, now, f"invalid {field_name}: {exc}")
+                return None
+            if not bool(torch.isfinite(destination).all()):
+                self._warn_hand_command(side, now, f"{field_name} contains NaN or Inf")
+                return None
+            parsed[field_name] = destination
+
+        modes = parsed["modes"]
+        if not bool(torch.all(modes == torch.round(modes))):
+            self._warn_hand_command(side, now, "mode contains a non-integer value")
+            return None
+        mode_int = modes.to(dtype=torch.int64)
+        if bool(torch.any((mode_int < 0) | (mode_int > 0xFF))):
+            self._warn_hand_command(side, now, "mode is outside uint8 range")
+            return None
+        expected_motor_ids = torch.arange(
+            DEX3_JOINTS_PER_HAND, dtype=torch.int64, device=self.device
+        )
+        if not bool(torch.equal(mode_int & 0x0F, expected_motor_ids)):
+            self._warn_hand_command(side, now, "mode motor IDs do not match slots 0..6")
+            return None
+        if bool(torch.any(parsed["kp"] < 0.0)) or bool(torch.any(parsed["kd"] < 0.0)):
+            self._warn_hand_command(side, now, "negative kp or kd")
+            return None
+
+        status = (mode_int >> 4) & 0x07
+        timed_out = (mode_int & 0x80) != 0
+        motor_enabled = (status != 0) & ~timed_out
+        return parsed, motor_enabled
+
+    def _apply_dex3_commands(
+        self,
+        now: float,
+        position_target: torch.Tensor,
+        velocity_target: torch.Tensor,
+        effort_target: torch.Tensor,
+        kp_target: torch.Tensor,
+        kd_target: torch.Tensor,
+    ) -> torch.Tensor:
+        """Apply fresh left/right HandCmd snapshots without blocking the body."""
+
+        hard_disable_mask = torch.zeros(
+            len(DEX3_HAND_JOINT_NAMES), dtype=torch.bool, device=self.device
+        )
+        if self.dex3_dds is None or self._dex3_indices.numel() == 0:
+            return hard_disable_mask
+
+        commands = self.dex3_dds.get_hand_commands() or {}
+        actual_hand_q = self.robot.data.joint_pos[0].index_select(0, self._dex3_indices)
+
+        for side_index, side in enumerate(DEX3_SIDES):
+            side_slice = slice(
+                side_index * DEX3_JOINTS_PER_HAND,
+                (side_index + 1) * DEX3_JOINTS_PER_HAND,
+            )
+            side_indices = self._dex3_side_indices[side]
+            command = commands.get(f"{side}_hand_cmd")
+            if not command:
+                self._warn_hand_command(side, now, "waiting for first HandCmd")
+                continue
+
+            parsed_result = self._parse_hand_command(side, command, now)
+            if parsed_result is None:
+                continue
+            parsed, motor_enabled = parsed_result
+
+            lower_limits = self._dex3_lower_limits[side_slice]
+            upper_limits = self._dex3_upper_limits[side_slice]
+            q_target = torch.clamp(parsed["positions"], lower_limits, upper_limits)
+            side_actual_q = actual_hand_q[side_slice]
+            if self.hand_max_target_error > 0.0:
+                q_error = torch.clamp(
+                    q_target - side_actual_q,
+                    -self.hand_max_target_error,
+                    self.hand_max_target_error,
+                )
+                q_target = side_actual_q + q_error
+
+            velocity_limits = self._dex3_velocity_limits[side_slice]
+            dq_target = torch.maximum(
+                torch.minimum(parsed["velocities"], velocity_limits),
+                -velocity_limits,
+            )
+            effort_limits = self._dex3_effort_limits[side_slice]
+            tau_target = torch.maximum(
+                torch.minimum(parsed["torques"], effort_limits),
+                -effort_limits,
+            )
+
+            zeros = torch.zeros_like(q_target)
+            # A disabled/timeout motor is genuinely relaxed. Use actual q as a
+            # harmless bookkeeping target and hard-zero all active terms.
+            q_target = torch.where(motor_enabled, q_target, side_actual_q)
+            dq_target = torch.where(motor_enabled, dq_target, zeros)
+            tau_target = torch.where(motor_enabled, tau_target, zeros)
+            hand_kp = torch.where(motor_enabled, parsed["kp"], zeros)
+            hand_kd = torch.where(motor_enabled, parsed["kd"], zeros)
+
+            position_target.index_copy_(0, side_indices, q_target)
+            velocity_target.index_copy_(0, side_indices, dq_target)
+            effort_target.index_copy_(0, side_indices, tau_target)
+            kp_target.index_copy_(0, side_indices, hand_kp)
+            kd_target.index_copy_(0, side_indices, hand_kd)
+            hard_disable_mask[side_slice] = ~motor_enabled
+            if not self._hand_first_command_logged[side]:
+                enabled_count = int(torch.count_nonzero(motor_enabled).item())
+                print(
+                    f"[sonic_dds][dex3:{side}] First complete HandCmd applied: "
+                    f"enabled={enabled_count}/7, "
+                    f"q=[{float(q_target.min().item()):.3f}, "
+                    f"{float(q_target.max().item()):.3f}], "
+                    f"kp=[{float(hand_kp.min().item()):.3f}, "
+                    f"{float(hand_kp.max().item()):.3f}], "
+                    f"kd=[{float(hand_kd.min().item()):.3f}, "
+                    f"{float(hand_kd.max().item()):.3f}]"
+                )
+                self._hand_first_command_logged[side] = True
+
+        return hard_disable_mask
 
     def begin_fall_recovery(
         self,
@@ -480,14 +814,37 @@ class SonicDDSActionProvider(ActionProvider):
         kp_target.index_copy_(0, self._body_indices, body_kp)
         kd_target.index_copy_(0, self._body_indices, body_kd)
 
-        # Phase 1: Dex3 is articulated but receives no hand command yet.  The
-        # default clones above keep q/dq/tau/kp/kd at the configured hand hold.
+        hand_hard_disable_mask = torch.zeros(
+            len(DEX3_HAND_JOINT_NAMES), dtype=torch.bool, device=self.device
+        )
         if self._dex3_indices.numel() > 0:
+            # A missing/stale hand packet holds its last safe q and gains while
+            # stale dq/tau are removed. Hand freshness is intentionally
+            # independent of rt/lowcmd freshness.
             position_target.index_copy_(
                 0,
                 self._dex3_indices,
-                self._default_position_target.index_select(0, self._dex3_indices),
+                self._last_position_target.index_select(0, self._dex3_indices),
             )
+            kp_target.index_copy_(
+                0,
+                self._dex3_indices,
+                self._last_kp.index_select(0, self._dex3_indices),
+            )
+            kd_target.index_copy_(
+                0,
+                self._dex3_indices,
+                self._last_kd.index_select(0, self._dex3_indices),
+            )
+            if bridge_mode == SONIC_BRIDGE_CONTROL_MODE:
+                hand_hard_disable_mask = self._apply_dex3_commands(
+                    now,
+                    position_target,
+                    velocity_target,
+                    effort_target,
+                    kp_target,
+                    kd_target,
+                )
 
         if bridge_mode != SONIC_BRIDGE_CONTROL_MODE:
             self._pin_initial_root_state()
@@ -602,6 +959,27 @@ class SonicDDSActionProvider(ActionProvider):
                 0,
                 self._body_indices,
                 torch.where(motor_enabled, body_kd_target, 0.0),
+            )
+
+        if self._dex3_indices.numel() > 0 and bool(torch.any(hand_hard_disable_mask)):
+            hand_effort = effort_target.index_select(0, self._dex3_indices)
+            hand_kp_target = kp_target.index_select(0, self._dex3_indices)
+            hand_kd_target = kd_target.index_select(0, self._dex3_indices)
+            hand_enabled = ~hand_hard_disable_mask
+            effort_target.index_copy_(
+                0,
+                self._dex3_indices,
+                torch.where(hand_enabled, hand_effort, 0.0),
+            )
+            kp_target.index_copy_(
+                0,
+                self._dex3_indices,
+                torch.where(hand_enabled, hand_kp_target, 0.0),
+            )
+            kd_target.index_copy_(
+                0,
+                self._dex3_indices,
+                torch.where(hand_enabled, hand_kd_target, 0.0),
             )
 
         damping_only = (

@@ -74,6 +74,28 @@ parser.add_argument("--reward_interval", type=int, default=10, help="step interv
 parser.add_argument("--enable_wholebody_dds", action="store_true", default=False, help="enable wh dds")
 parser.add_argument("--sonic_lowcmd_timeout", type=float, default=0.10,
                     help="maximum age in seconds of a SONIC rt/lowcmd before holding the last safe target")
+parser.add_argument(
+    "--sonic_handcmd_timeout",
+    "--sonic-handcmd-timeout",
+    dest="sonic_handcmd_timeout",
+    type=float,
+    default=0.20,
+    help=(
+        "maximum age in seconds of either Dex3 HandCmd; a stale hand holds "
+        "its last q/gains and clears dq/tau without pausing body control"
+    ),
+)
+parser.add_argument(
+    "--sonic_hand_max_target_error",
+    "--sonic-hand-max-target-error",
+    dest="sonic_hand_max_target_error",
+    type=float,
+    default=0.25,
+    help=(
+        "maximum Dex3 q target error from actual joint state in radians; "
+        "0 disables it, 0.25 matches Gear SONIC Dex3Hands"
+    ),
+)
 parser.add_argument("--sonic_ramp_seconds", type=float, default=0.0,
                     help="optional extra blend from the USD default pose to SONIC targets; SONIC already performs its own INIT ramp")
 parser.add_argument("--sonic_max_target_step", type=float, default=0.0,
@@ -271,7 +293,28 @@ sonic_task_names = {
     "Isaac-G1-29DoF-Dex3-Sonic",
     "Isaac-G1-29DoF-Training-Sonic",
 }
+sonic_dex3_task_names = {
+    "Isaac-G1-29DoF-Sonic",
+    "Isaac-G1-29DoF-Dex3-Sonic",
+}
 is_sonic_task = args_cli.task in sonic_task_names
+
+enabled_hand_dds_count = sum(
+    bool(value)
+    for value in (
+        args_cli.enable_dex1_dds,
+        args_cli.enable_dex3_dds,
+        args_cli.enable_inspire_dds,
+    )
+)
+if enabled_hand_dds_count > 1:
+    parser.error("only one of --enable_dex1_dds, --enable_dex3_dds and --enable_inspire_dds may be enabled")
+if args_cli.task in sonic_dex3_task_names:
+    if args_cli.enable_dex1_dds or args_cli.enable_inspire_dds:
+        parser.error("the 43-DoF SONIC task requires Dex3 DDS, not Dex1/Inspire DDS")
+    if not args_cli.enable_dex3_dds:
+        args_cli.enable_dex3_dds = True
+        print("[sonic_dds] Auto-enabling Dex3 command/state DDS for the 43-DoF task")
 
 if args_cli.auto_reset_on_fall is None:
     # The new behavior is enabled by default only for dedicated SONIC bridge
@@ -296,6 +339,13 @@ if args_cli.sonic_sync_wait_timeout <= 0.0:
     parser.error("--sonic_sync_wait_timeout must be positive")
 if args_cli.sonic_sync_poll_interval <= 0.0:
     parser.error("--sonic_sync_poll_interval must be positive")
+if not math.isfinite(args_cli.sonic_handcmd_timeout) or args_cli.sonic_handcmd_timeout <= 0.0:
+    parser.error("--sonic_handcmd_timeout must be a finite positive value")
+if (
+    not math.isfinite(args_cli.sonic_hand_max_target_error)
+    or args_cli.sonic_hand_max_target_error < 0.0
+):
+    parser.error("--sonic_hand_max_target_error must be a finite non-negative value")
 if args_cli.sim_state_export_hz is not None and args_cli.sim_state_export_hz < 0.0:
     parser.error("--sim_state_export_hz must be non-negative")
 for option_name in (
@@ -377,12 +427,6 @@ elif args_cli.livestream_type != 0:
     os.environ["PUBLIC_IP"] = args_cli.public_ip
 else:
     os.environ["LIVESTREAM"] = "0"
-
-if args_cli.enable_dex3_dds and args_cli.enable_dex1_dds and args_cli.enable_inspire_dds:
-    print("Error: enable_dex3_dds and enable_dex1_dds and enable_inspire_dds cannot be enabled at the same time")
-    print("Please select one of the options")
-    sys.exit(1)
-
 
 import pinocchio                 
 app_launcher = AppLauncher(args_cli)
@@ -797,6 +841,17 @@ def main():
                     dds_min_interval_ms=0.0,
                 )
                 print("[sonic_dds] Initial PhysX state seeded for LowState lock-step")
+                if args_cli.task in sonic_dex3_task_names:
+                    from tasks.common_observations.dex3_state import (
+                        get_robot_dex3_joint_states,
+                    )
+
+                    get_robot_dex3_joint_states(
+                        env,
+                        enable_dds=True,
+                        dds_min_interval_ms=0.0,
+                    )
+                    print("[sonic_dds] Initial PhysX Dex3 state seeded")
             except Exception as e:
                 print(f"Failed to seed initial SONIC LowState: {e}")
                 return

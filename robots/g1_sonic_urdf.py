@@ -11,7 +11,8 @@ temporary URDF with the parts that matter for the current validation phase:
 * body collision geometry and body effort/velocity limits come unchanged from
   the exact SONIC training URDF;
 * body inertias remain identical to the articulated source/training model;
-* Dex3 collision geometry is omitted until the later OpenXR manipulation phase.
+* Dex3 visuals keep the requested STL meshes, while dynamic collision uses
+  low-complexity palm boxes and finger capsules suitable for PhysX contact.
 
 Only the generated file is written.  The two GR00T source URDFs and their mesh
 directories remain untouched.
@@ -230,9 +231,8 @@ def _copy_training_body_collisions(
         for collision in list(articulated_link.findall("collision")):
             articulated_link.remove(collision)
 
-        # Hands remain articulated and visible, but their collision meshes are
-        # intentionally excluded during the body-only validation phase.
         if link_name.startswith(_HAND_LINK_PREFIXES):
+            _append_dex3_collision_proxy(articulated_link)
             continue
 
         training_link = training_links.get(link_name)
@@ -240,6 +240,103 @@ def _copy_training_body_collisions(
             continue
         for collision in training_link.findall("collision"):
             articulated_link.append(copy.deepcopy(collision))
+
+
+def _append_collision(
+    link: ET.Element,
+    *,
+    xyz: str,
+    rpy: str,
+    geometry_tag: str,
+    geometry_attributes: dict[str, str],
+) -> None:
+    collision = ET.SubElement(
+        link,
+        "collision",
+        {"name": f"{link.get('name', 'dex3')}_physics_proxy"},
+    )
+    ET.SubElement(collision, "origin", {"xyz": xyz, "rpy": rpy})
+    geometry = ET.SubElement(collision, "geometry")
+    ET.SubElement(geometry, geometry_tag, geometry_attributes)
+
+
+def _append_dex3_collision_proxy(link: ET.Element) -> None:
+    """Add one stable primitive collider matching the hand-link STL bounds.
+
+    The URDF importer is configured with ``replace_cylinders_with_capsules``;
+    therefore finger cylinders become rounded PhysX capsules in the generated
+    USD.  The proxies are deliberately inset from the visual STL envelope to
+    avoid adjacent-link contact chatter while retaining useful object contact.
+    """
+
+    link_name = link.get("name", "")
+    is_left = link_name.startswith("left_hand_")
+    is_right = link_name.startswith("right_hand_")
+    if not (is_left or is_right):
+        return
+
+    if link_name.endswith("palm_link"):
+        _append_collision(
+            link,
+            xyz="0.043 0 0",
+            rpy="0 0 0",
+            geometry_tag="box",
+            geometry_attributes={"size": "0.080 0.034 0.075"},
+        )
+        return
+
+    thumb_y_sign = -1.0 if is_left else 1.0
+    if link_name.endswith("thumb_0_link"):
+        _append_collision(
+            link,
+            xyz=f"0 {thumb_y_sign * 0.014:.3f} 0",
+            rpy="0 0 0",
+            geometry_tag="box",
+            geometry_attributes={"size": "0.020 0.026 0.018"},
+        )
+        return
+
+    if link_name.endswith("thumb_1_link"):
+        _append_collision(
+            link,
+            xyz=f"0 {thumb_y_sign * 0.024:.3f} 0",
+            rpy="1.57079632679 0 0",
+            geometry_tag="cylinder",
+            geometry_attributes={"radius": "0.012", "length": "0.036"},
+        )
+        return
+
+    if link_name.endswith("thumb_2_link"):
+        _append_collision(
+            link,
+            xyz=f"0 {thumb_y_sign * 0.0225:.4f} 0",
+            rpy="1.57079632679 0 0",
+            geometry_tag="cylinder",
+            geometry_attributes={"radius": "0.0115", "length": "0.036"},
+        )
+        return
+
+    if link_name.endswith(("middle_0_link", "index_0_link")):
+        _append_collision(
+            link,
+            xyz="0.024 0 0",
+            rpy="0 1.57079632679 0",
+            geometry_tag="cylinder",
+            geometry_attributes={"radius": "0.012", "length": "0.036"},
+        )
+        return
+
+    if link_name.endswith(("middle_1_link", "index_1_link")):
+        _append_collision(
+            link,
+            xyz="0.0225 0 0",
+            rpy="0 1.57079632679 0",
+            geometry_tag="cylinder",
+            geometry_attributes={"radius": "0.0115", "length": "0.036"},
+        )
+        return
+
+    raise ValueError(f"no Dex3 collision proxy specification for link {link_name!r}")
 
 
 def _copy_training_body_limits(

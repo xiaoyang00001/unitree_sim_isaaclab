@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import time
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -13,17 +15,27 @@ os.environ.setdefault("UNITREE_DDS_INTERFACE", "lo")
 
 try:
     from action_provider.action_provider_sonic_dds import (
+        DEX3_FALLBACK_LOWER_LIMITS,
+        DEX3_FALLBACK_UPPER_LIMITS,
         SONIC_LOWCMD_SYNC_MAGIC,
         SonicDDSActionProvider,
     )
     from dds.dds_master import dds_manager
+    from dds.dex3_dds import Dex3DDS
     from robots.g1_joint_order import G1_29DOF_DDS_JOINT_ORDER
     from robots.g1_sonic_urdf import DEX3_HAND_JOINT_NAMES
+    from unitree_sdk2py.idl.default import unitree_hg_msg_dds__HandCmd_
 except ModuleNotFoundError as import_error:
     SonicDDSActionProvider = None
     IMPORT_ERROR = import_error
 else:
     IMPORT_ERROR = None
+    dex3_state_spec = importlib.util.spec_from_file_location(
+        "dex3_state_test_module",
+        Path(__file__).parents[1] / "tasks/common_observations/dex3_state.py",
+    )
+    dex3_state = importlib.util.module_from_spec(dex3_state_spec)
+    dex3_state_spec.loader.exec_module(dex3_state)
 
 
 class _FakeDDS:
@@ -41,6 +53,22 @@ class _FakeDDS:
         return self.state_info
 
 
+class _FakeDex3DDS:
+    def __init__(self, commands):
+        self.commands = commands
+
+    def get_hand_commands(self):
+        return self.commands
+
+
+class _FakeDex3StateWriter:
+    def __init__(self):
+        self.last_write = None
+
+    def write_hand_states(self, *values):
+        self.last_write = values
+
+
 class _FakeActuator:
     def __init__(self, joint_indices: torch.Tensor, kp: torch.Tensor, kd: torch.Tensor):
         self.joint_indices = joint_indices
@@ -52,9 +80,24 @@ class _FakeRobot:
     def __init__(self, joint_names: list[str]):
         joint_count = len(joint_names)
         default_q = torch.linspace(-0.2, 0.2, joint_count).unsqueeze(0)
+        for joint_index, joint_name in enumerate(joint_names):
+            if joint_name.startswith(("left_hand_", "right_hand_")):
+                default_q[0, joint_index] = 0.0
         default_dq = torch.zeros(1, joint_count)
         default_kp = torch.linspace(10.0, 20.0, joint_count).unsqueeze(0)
         default_kd = torch.linspace(1.0, 2.0, joint_count).unsqueeze(0)
+        joint_pos_limits = torch.empty(1, joint_count, 2)
+        joint_pos_limits[:, :, 0] = -10.0
+        joint_pos_limits[:, :, 1] = 10.0
+        joint_vel_limits = torch.full((1, joint_count), 100.0)
+        joint_effort_limits = torch.full((1, joint_count), 200.0)
+        for hand_index, hand_name in enumerate(DEX3_HAND_JOINT_NAMES):
+            joint_index = joint_names.index(hand_name)
+            joint_pos_limits[0, joint_index, 0] = DEX3_FALLBACK_LOWER_LIMITS[hand_index]
+            joint_pos_limits[0, joint_index, 1] = DEX3_FALLBACK_UPPER_LIMITS[hand_index]
+            joint_vel_limits[0, joint_index] = 3.14 if hand_name.endswith("thumb_0_joint") else 12.0
+            joint_effort_limits[0, joint_index] = 2.45 if hand_name.endswith("thumb_0_joint") else 0.7
+
         self.data = SimpleNamespace(
             joint_names=joint_names,
             default_joint_pos=default_q,
@@ -67,7 +110,10 @@ class _FakeRobot:
             root_quat_w=torch.tensor([[1.0, 0.0, 0.0, 0.0]]),
             root_pos_w=torch.tensor([[0.0, 0.0, 0.76]]),
             computed_torque=torch.zeros(1, joint_count),
-            joint_effort_limits=torch.full((1, joint_count), 200.0),
+            applied_torque=torch.zeros(1, joint_count),
+            joint_pos_limits=joint_pos_limits,
+            joint_vel_limits=joint_vel_limits,
+            joint_effort_limits=joint_effort_limits,
         )
         split = joint_count // 2
         self.actuators = {
@@ -127,6 +173,31 @@ def _make_command(
     return command
 
 
+def _make_hand_command(
+    *,
+    positions: list[float],
+    velocities: list[float] | None = None,
+    torques: list[float] | None = None,
+    kp: list[float] | None = None,
+    kd: list[float] | None = None,
+    modes: list[int] | None = None,
+    receive_time_monotonic: float | None = None,
+):
+    return {
+        "modes": modes if modes is not None else [0x10 | index for index in range(7)],
+        "positions": positions,
+        "velocities": velocities if velocities is not None else [0.0] * 7,
+        "torques": torques if torques is not None else [0.0] * 7,
+        "kp": kp if kp is not None else [1.5] * 7,
+        "kd": kd if kd is not None else [0.1] * 7,
+        "receive_time_monotonic": (
+            time.monotonic()
+            if receive_time_monotonic is None
+            else receive_time_monotonic
+        ),
+    }
+
+
 @unittest.skipIf(
     SonicDDSActionProvider is None,
     f"SONIC DDS dependencies unavailable: {IMPORT_ERROR}",
@@ -148,6 +219,26 @@ class SonicDDSFullLowCmdTest(unittest.TestCase):
                 kd=[3.0 + 0.1 * index for index in range(29)],
             )
         )
+        self.left_hand_positions = [0.10, 0.10, 0.20, -0.10, -0.20, -0.10, -0.20]
+        self.right_hand_positions = [-0.10, -0.10, -0.20, 0.10, 0.20, 0.10, 0.20]
+        self.dex3_dds = _FakeDex3DDS(
+            {
+                "left_hand_cmd": _make_hand_command(
+                    positions=self.left_hand_positions,
+                    velocities=[0.20] * 7,
+                    torques=[0.10] * 7,
+                    kp=[1.50] * 7,
+                    kd=[0.10] * 7,
+                ),
+                "right_hand_cmd": _make_hand_command(
+                    positions=self.right_hand_positions,
+                    velocities=[-0.20] * 7,
+                    torques=[-0.10] * 7,
+                    kp=[1.60] * 7,
+                    kd=[0.12] * 7,
+                ),
+            }
+        )
         action_manager = SimpleNamespace(
             active_terms=["joint_pos", "joint_vel", "joint_effort"],
             total_action_dim=3 * len(self.joint_names),
@@ -163,9 +254,18 @@ class SonicDDSFullLowCmdTest(unittest.TestCase):
             sonic_lowcmd_timeout=0.1,
             sonic_ramp_seconds=0.0,
             sonic_max_target_step=0.0,
+            sonic_handcmd_timeout=0.2,
+            sonic_hand_max_target_error=0.25,
             stats_interval=1000.0,
         )
-        with mock.patch.object(dds_manager, "get_object", return_value=self.dds):
+        with mock.patch.object(
+            dds_manager,
+            "get_object",
+            side_effect=lambda name: {
+                "g129": self.dds,
+                "dex3": self.dex3_dds,
+            }.get(name),
+        ):
             self.provider = SonicDDSActionProvider(env, args)
 
     def _split_action(self, action: torch.Tensor):
@@ -200,14 +300,34 @@ class SonicDDSFullLowCmdTest(unittest.TestCase):
                 self.robot.written_kd[0, joint_index].item(), command["kd"][motor_index], places=6
             )
 
-        for hand_name in DEX3_HAND_JOINT_NAMES:
+        hand_positions = self.left_hand_positions + self.right_hand_positions
+        hand_velocities = [0.20] * 7 + [-0.20] * 7
+        hand_torques = [0.10] * 7 + [-0.10] * 7
+        hand_kp = [1.50] * 7 + [1.60] * 7
+        hand_kd = [0.10] * 7 + [0.12] * 7
+        for hand_motor_index, hand_name in enumerate(DEX3_HAND_JOINT_NAMES):
             hand_index = self.joint_names.index(hand_name)
             self.assertAlmostEqual(
                 q_target[hand_index].item(),
-                self.robot.data.default_joint_pos[0, hand_index].item(),
+                hand_positions[hand_motor_index],
+                places=6,
             )
-            self.assertAlmostEqual(dq_target[hand_index].item(), 0.0)
-            self.assertAlmostEqual(tau_target[hand_index].item(), 0.0)
+            self.assertAlmostEqual(
+                dq_target[hand_index].item(), hand_velocities[hand_motor_index], places=6
+            )
+            self.assertAlmostEqual(
+                tau_target[hand_index].item(), hand_torques[hand_motor_index], places=6
+            )
+            self.assertAlmostEqual(
+                self.robot.written_kp[0, hand_index].item(),
+                hand_kp[hand_motor_index],
+                places=6,
+            )
+            self.assertAlmostEqual(
+                self.robot.written_kd[0, hand_index].item(),
+                hand_kd[hand_motor_index],
+                places=6,
+            )
 
         for actuator in self.robot.actuators.values():
             self.assertTrue(
@@ -284,6 +404,77 @@ class SonicDDSFullLowCmdTest(unittest.TestCase):
         self.assertTrue(torch.equal(held_tau, torch.zeros_like(held_tau)))
         self.assertTrue(torch.equal(self.robot.written_kp, first_kp))
         self.assertTrue(torch.equal(self.robot.written_kd, first_kd))
+
+    def test_hand_timeout_does_not_pause_or_replace_body_lowcmd(self) -> None:
+        first_action = self.provider.get_action(None)
+        first_q, _, _ = self._split_action(first_action)
+        first_kp = self.robot.written_kp.clone()
+        first_kd = self.robot.written_kd.clone()
+
+        stale_time = time.monotonic() - 1.0
+        for command in self.dex3_dds.commands.values():
+            command["receive_time_monotonic"] = stale_time
+        self.dds.command["receive_time_monotonic"] = time.monotonic()
+
+        action = self.provider.get_action(None)
+        q_target, dq_target, tau_target = self._split_action(action)
+
+        body_joint = self.joint_names.index(G1_29DOF_DDS_JOINT_ORDER[0])
+        self.assertGreater(abs(dq_target[body_joint].item()), 0.0)
+        self.assertGreater(abs(tau_target[body_joint].item()), 0.0)
+        for hand_name in DEX3_HAND_JOINT_NAMES:
+            hand_joint = self.joint_names.index(hand_name)
+            self.assertAlmostEqual(q_target[hand_joint].item(), first_q[hand_joint].item())
+            self.assertAlmostEqual(dq_target[hand_joint].item(), 0.0)
+            self.assertAlmostEqual(tau_target[hand_joint].item(), 0.0)
+            self.assertAlmostEqual(
+                self.robot.written_kp[0, hand_joint].item(), first_kp[0, hand_joint].item()
+            )
+            self.assertAlmostEqual(
+                self.robot.written_kd[0, hand_joint].item(), first_kd[0, hand_joint].item()
+            )
+
+    def test_hand_timeout_mode_relaxes_only_that_motor(self) -> None:
+        modes = [0x10 | index for index in range(7)]
+        modes[0] |= 0x80
+        self.dex3_dds.commands["left_hand_cmd"] = _make_hand_command(
+            positions=self.left_hand_positions,
+            velocities=[1.0] * 7,
+            torques=[0.5] * 7,
+            kp=[1.5] * 7,
+            kd=[0.1] * 7,
+            modes=modes,
+        )
+
+        action = self.provider.get_action(None)
+        q_target, dq_target, tau_target = self._split_action(action)
+        disabled_joint = self.joint_names.index(DEX3_HAND_JOINT_NAMES[0])
+        enabled_joint = self.joint_names.index(DEX3_HAND_JOINT_NAMES[1])
+
+        self.assertAlmostEqual(q_target[disabled_joint].item(), 0.0)
+        self.assertAlmostEqual(dq_target[disabled_joint].item(), 0.0)
+        self.assertAlmostEqual(tau_target[disabled_joint].item(), 0.0)
+        self.assertAlmostEqual(self.robot.written_kp[0, disabled_joint].item(), 0.0)
+        self.assertAlmostEqual(self.robot.written_kd[0, disabled_joint].item(), 0.0)
+        self.assertAlmostEqual(q_target[enabled_joint].item(), self.left_hand_positions[1])
+        self.assertAlmostEqual(dq_target[enabled_joint].item(), 1.0)
+        self.assertAlmostEqual(tau_target[enabled_joint].item(), 0.5)
+
+    def test_hand_target_error_and_effort_are_safety_limited(self) -> None:
+        self.dex3_dds.commands["left_hand_cmd"] = _make_hand_command(
+            positions=[1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0],
+            torques=[10.0] * 7,
+        )
+
+        action = self.provider.get_action(None)
+        q_target, _, tau_target = self._split_action(action)
+        thumb_0_joint = self.joint_names.index("left_hand_thumb_0_joint")
+        thumb_1_joint = self.joint_names.index("left_hand_thumb_1_joint")
+
+        self.assertAlmostEqual(q_target[thumb_0_joint].item(), 0.25, places=6)
+        self.assertAlmostEqual(q_target[thumb_1_joint].item(), 0.25, places=6)
+        self.assertAlmostEqual(tau_target[thumb_0_joint].item(), 2.45, places=6)
+        self.assertAlmostEqual(tau_target[thumb_1_joint].item(), 0.7, places=6)
 
     def test_damping_only_packet_is_executed_instead_of_held(self) -> None:
         self.dds.command = _make_command(
@@ -377,6 +568,73 @@ class SonicDDSFullLowCmdTest(unittest.TestCase):
         )
         self.assertEqual(self.provider._group_limit_counts["legs"], 0)
         self.assertGreater(self.provider._group_limit_counts["arms"], 0)
+
+
+@unittest.skipIf(
+    SonicDDSActionProvider is None,
+    f"SONIC DDS dependencies unavailable: {IMPORT_ERROR}",
+)
+class Dex3DDSAndStateTest(unittest.TestCase):
+    def test_dex3_dds_preserves_complete_handcmd_and_receive_time(self) -> None:
+        message = unitree_hg_msg_dds__HandCmd_()
+        for motor_index, motor in enumerate(message.motor_cmd):
+            motor.mode = 0x10 | motor_index
+            motor.q = 0.1 * motor_index
+            motor.dq = 0.2 * motor_index
+            motor.tau = 0.3 * motor_index
+            motor.kp = 1.5 + motor_index
+            motor.kd = 0.1 + 0.01 * motor_index
+
+        before = time.monotonic()
+        command = Dex3DDS.process_hand_command(
+            SimpleNamespace(node_name="test"), message, "left"
+        )
+        after = time.monotonic()
+
+        self.assertEqual(command["modes"], [0x10 | index for index in range(7)])
+        self.assertEqual(len(command["positions"]), 7)
+        self.assertEqual(len(command["velocities"]), 7)
+        self.assertEqual(len(command["torques"]), 7)
+        self.assertEqual(len(command["kp"]), 7)
+        self.assertEqual(len(command["kd"]), 7)
+        self.assertGreaterEqual(command["receive_time_monotonic"], before)
+        self.assertLessEqual(command["receive_time_monotonic"], after)
+
+    def test_dex3_state_uses_name_mapping_and_dds_order(self) -> None:
+        joint_names = list(reversed(G1_29DOF_DDS_JOINT_ORDER)) + list(
+            reversed(DEX3_HAND_JOINT_NAMES)
+        )
+        values = torch.arange(len(joint_names), dtype=torch.float32).unsqueeze(0)
+        robot = SimpleNamespace(
+            data=SimpleNamespace(
+                joint_names=joint_names,
+                joint_pos=values,
+                joint_vel=values + 100.0,
+                applied_torque=values + 200.0,
+            )
+        )
+        env = SimpleNamespace(scene={"robot": robot})
+        writer = _FakeDex3StateWriter()
+
+        with mock.patch.object(dex3_state, "_get_dex3_dds_instance", return_value=writer):
+            hand_positions = dex3_state.get_robot_dex3_joint_states(
+                env,
+                enable_dds=True,
+                dds_min_interval_ms=0.0,
+            )
+
+        expected = torch.tensor(
+            [joint_names.index(name) for name in DEX3_HAND_JOINT_NAMES],
+            dtype=torch.float32,
+        )
+        self.assertTrue(torch.equal(hand_positions[0], expected))
+        self.assertIsNotNone(writer.last_write)
+        self.assertEqual(writer.last_write[0], expected[:7].tolist())
+        self.assertEqual(writer.last_write[3], expected[7:].tolist())
+        self.assertEqual(writer.last_write[1], (expected[:7] + 100.0).tolist())
+        self.assertEqual(writer.last_write[4], (expected[7:] + 100.0).tolist())
+        self.assertEqual(writer.last_write[2], (expected[:7] + 200.0).tolist())
+        self.assertEqual(writer.last_write[5], (expected[7:] + 200.0).tolist())
 
 
 if __name__ == "__main__":

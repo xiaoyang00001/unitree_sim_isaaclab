@@ -1,290 +1,269 @@
 # Copyright (c) 2025, Unitree Robotics Co., Ltd. All Rights Reserved.
 # License: Apache License, Version 2.0
-"""
-Dex3 DDS communication class
-Handle the state publishing and command receiving of the hand (left and right)
-"""
+"""Dex3 DDS command subscriber and simulated-state publisher."""
+
+from __future__ import annotations
 
 import threading
-from typing import Any, Dict, Optional, Tuple
+import time
+from typing import Any, Dict, Optional
+
 from dds.dds_base import DDSObject
 from unitree_sdk2py.core.channel import ChannelPublisher, ChannelSubscriber
-from unitree_sdk2py.idl.unitree_hg.msg.dds_ import HandState_, HandCmd_
-from unitree_sdk2py.idl.default import unitree_hg_msg_dds__HandState_, unitree_hg_msg_dds__HandCmd_
+from unitree_sdk2py.idl.default import unitree_hg_msg_dds__HandState_
+from unitree_sdk2py.idl.unitree_hg.msg.dds_ import HandCmd_, HandState_
 
 
 class Dex3DDS(DDSObject):
-    """Hand DDS communication class - singleton pattern
-    
-    Features:
-    - Publish the state of the hand to DDS (rt/dex3/left/state, rt/dex3/right/state)
-    - Receive the control command of the hand (rt/dex3/left/cmd, rt/dex3/right/cmd)
-    """
-    
-    def __init__(self,node_name:str="dex3"):
-        """Initialize the hand DDS node"""
-        # avoid duplicate initialization
-        if hasattr(self, '_initialized'):
+    """Bridge both seven-motor Dex3 hands between DDS and Isaac Lab."""
+
+    def __init__(self, node_name: str = "dex3"):
+        if hasattr(self, "_initialized"):
             return
-            
+
         super().__init__()
         self.node_name = node_name
-        
-        # initialize the state message of the hand
         self.left_hand_state = unitree_hg_msg_dds__HandState_()
         self.right_hand_state = unitree_hg_msg_dds__HandState_()
-        
-        # initialize the publisher and subscriber
+
         self.left_state_publisher = None
         self.right_state_publisher = None
         self.left_cmd_subscriber = None
         self.right_cmd_subscriber = None
-        
-        self._initialized = True
+
         self.existing_data = {"left_hand_cmd": {}, "right_hand_cmd": {}}
-        # setup shared memory
+        self._command_lock = threading.Lock()
         self.setup_shared_memory(
-            input_shm_name="isaac_dex3_state",  # read the state of the hand from Isaac Lab
-            input_size=1180,
-            output_shm_name="isaac_dex3_cmd",  # output the command to Isaac Lab
-            output_size=1180,  # output the command to Isaac Lab
+            input_shm_name="isaac_dex3_state",
+            input_size=4096,
+            output_shm_name="isaac_dex3_cmd",
+            output_size=4096,
         )
-        
+        self._initialized = True
         print(f"[{self.node_name}] Hand DDS node initialized")
-    
+
     def setup_publisher(self) -> bool:
-        """Setup the publisher of the hand"""
         try:
-            # left hand state publisher
-            self.left_state_publisher = ChannelPublisher("rt/dex3/left/state", HandState_)
+            self.left_state_publisher = ChannelPublisher(
+                "rt/dex3/left/state", HandState_
+            )
             self.left_state_publisher.Init()
-            
-            # right hand state publisher
-            self.right_state_publisher = ChannelPublisher("rt/dex3/right/state", HandState_)
+            self.right_state_publisher = ChannelPublisher(
+                "rt/dex3/right/state", HandState_
+            )
             self.right_state_publisher.Init()
-            
             print(f"[{self.node_name}] Hand state publisher initialized")
             return True
-        except Exception as e:
-            print(f"dex3_dds [{self.node_name}] Hand state publisher initialization failed: {e}")
+        except Exception as exc:
+            print(
+                f"dex3_dds [{self.node_name}] "
+                f"Hand state publisher initialization failed: {exc}"
+            )
             return False
-    
+
     def setup_subscriber(self) -> bool:
-        """Setup the subscriber of the hand"""
         try:
-            # left hand command subscriber
-            self.left_cmd_subscriber = ChannelSubscriber("rt/dex3/left/cmd", HandCmd_)
+            self.left_cmd_subscriber = ChannelSubscriber(
+                "rt/dex3/left/cmd", HandCmd_
+            )
             self.left_cmd_subscriber.Init(
-                lambda msg: self.dds_subscriber(msg, "left"), 32
+                lambda message: self.dds_subscriber(message, "left"), 32
             )
-            
-            # right hand command subscriber
-            self.right_cmd_subscriber = ChannelSubscriber("rt/dex3/right/cmd", HandCmd_)
+            self.right_cmd_subscriber = ChannelSubscriber(
+                "rt/dex3/right/cmd", HandCmd_
+            )
             self.right_cmd_subscriber.Init(
-                lambda msg: self.dds_subscriber(msg, "right"), 32
+                lambda message: self.dds_subscriber(message, "right"), 32
             )
-            
             print(f"[{self.node_name}] Hand command subscriber initialized")
             return True
-        except Exception as e:
-            print(f"dex3_dds [{self.node_name}] Hand command subscriber initialization failed: {e}")
+        except Exception as exc:
+            print(
+                f"dex3_dds [{self.node_name}] "
+                f"Hand command subscriber initialization failed: {exc}"
+            )
             return False
-    
-    def dds_subscriber(self, msg: HandCmd_, datatype:str=None):
-        """Handle the command of the hand"""
+
+    def dds_subscriber(self, msg: HandCmd_, datatype: str = None) -> None:
+        """Store one complete hand command with a precise receive timestamp."""
+
         try:
-            # process the command of the hand and write to the shared memory
-            cmd_data = self.process_hand_command(msg, datatype)
-            if cmd_data and self.output_shm:
-                # write to shared memory
-                self.existing_data[f"{datatype}_hand_cmd"] = cmd_data
-                self.output_shm.write_data(self.existing_data)
-        except Exception as e:
-            print(f"dex3_dds [{self.node_name}] Error handling {datatype} hand command: {e}")
-    
-    def process_hand_command(self, msg: HandCmd_, datatype:str=None) -> Dict[str, Any]:
-        """Process the command of the hand"""
+            if datatype not in ("left", "right"):
+                raise ValueError(f"invalid hand side: {datatype!r}")
+            command = self.process_hand_command(msg, datatype)
+            if command and self.output_shm:
+                # DDS callbacks can execute concurrently. Publish both side
+                # snapshots atomically so the action provider never observes
+                # a half-updated payload.
+                with self._command_lock:
+                    self.existing_data[f"{datatype}_hand_cmd"] = command
+                    self.output_shm.write_data(self.existing_data)
+        except Exception as exc:
+            print(
+                f"dex3_dds [{self.node_name}] "
+                f"Error handling {datatype} hand command: {exc}"
+            )
+
+    def process_hand_command(
+        self, msg: HandCmd_, datatype: str = None
+    ) -> Dict[str, Any]:
+        """Convert HandCmd into a JSON/shared-memory-safe dictionary."""
+
         try:
-            cmd_data = {
-                "positions": [float(msg.motor_cmd[i].q) for i in range(len(msg.motor_cmd))],
-                "velocities": [float(msg.motor_cmd[i].dq) for i in range(len(msg.motor_cmd))],
-                "torques": [float(msg.motor_cmd[i].tau) for i in range(len(msg.motor_cmd))],
-                "kp": [float(msg.motor_cmd[i].kp) for i in range(len(msg.motor_cmd))],
-                "kd": [float(msg.motor_cmd[i].kd) for i in range(len(msg.motor_cmd))]
+            motors = msg.motor_cmd
+            return {
+                "modes": [int(motor.mode) for motor in motors],
+                "positions": [float(motor.q) for motor in motors],
+                "velocities": [float(motor.dq) for motor in motors],
+                "torques": [float(motor.tau) for motor in motors],
+                "kp": [float(motor.kp) for motor in motors],
+                "kd": [float(motor.kd) for motor in motors],
+                # SharedMemoryManager's metadata timestamp has one-second
+                # resolution; control safety needs a monotonic subsecond age.
+                "receive_time_monotonic": time.monotonic(),
             }
-            return cmd_data
-        except Exception as e:
-            print(f"dex3_dds [{self.node_name}] Error processing {datatype} hand command data: {e}")
+        except Exception as exc:
+            print(
+                f"dex3_dds [{self.node_name}] "
+                f"Error processing {datatype} hand command data: {exc}"
+            )
             return {}
-    
+
     def dds_publisher(self) -> Any:
-        """Process the publish data: convert the hand state of Isaac Lab to DDS message
-        
-        Expected data format:
-        {
-            "left_hand": {
-                "positions": [7 left hand joint positions],
-                "velocities": [7 left hand joint velocities],
-                "torques": [7 left hand joint torques]
-            },
-            "right_hand": {
-                "positions": [7 right hand joint positions],
-                "velocities": [7 right hand joint velocities],
-                "torques": [7 right hand joint torques]
-            }
-        }
-        """
+        """Publish the latest simulated states for both hands."""
+
         try:
             data = self.input_shm.read_data() or {}
-            
-            # process the left hand data
             if "left_hand" in data:
-                left_data = data["left_hand"]
-                self._update_hand_state(self.left_hand_state, left_data)
+                self._update_hand_state(self.left_hand_state, data["left_hand"])
                 if self.left_state_publisher:
                     self.left_state_publisher.Write(self.left_hand_state)
-            
-            # process the right hand data
             if "right_hand" in data:
-                right_data = data["right_hand"]
-                self._update_hand_state(self.right_hand_state, right_data)
+                self._update_hand_state(self.right_hand_state, data["right_hand"])
                 if self.right_state_publisher:
                     self.right_state_publisher.Write(self.right_hand_state)
-        except Exception as e:
-            print(f"dex3_dds [{self.node_name}] Error processing publish data: {e}")
-            return None
-    
-    def _update_hand_state(self, hand_state, hand_data: Dict[str, Any]):
-        """Update the hand state"""
-        try:
-            if all(key in hand_data for key in ["positions", "velocities", "torques"]):
-                positions = hand_data["positions"]
-                velocities = hand_data["velocities"]
-                torques = hand_data["torques"]
-                
-                for i in range(min(7, len(positions))):  # at most 7 fingers
-                    if i < len(positions):
-                        hand_state.motor_state[i].q = float(positions[i])
-                    if i < len(velocities):
-                        hand_state.motor_state[i].dq = float(velocities[i])
-                    if i < len(torques):
-                        hand_state.motor_state[i].tau_est = float(torques[i])
-        except Exception as e:
-            print(f"dex3_dds [{self.node_name}] Error updating hand state: {e}")
-    
+        except Exception as exc:
+            print(
+                f"dex3_dds [{self.node_name}] Error processing publish data: {exc}"
+            )
+        return None
 
-    
+    def _update_hand_state(self, hand_state, hand_data: Dict[str, Any]) -> None:
+        try:
+            positions = hand_data["positions"]
+            velocities = hand_data["velocities"]
+            torques = hand_data["torques"]
+            motor_count = min(
+                7,
+                len(hand_state.motor_state),
+                len(positions),
+                len(velocities),
+                len(torques),
+            )
+            for motor_index in range(motor_count):
+                motor_state = hand_state.motor_state[motor_index]
+                motor_state.q = float(positions[motor_index])
+                motor_state.dq = float(velocities[motor_index])
+                motor_state.tau_est = float(torques[motor_index])
+        except (KeyError, TypeError, ValueError, IndexError) as exc:
+            print(
+                f"dex3_dds [{self.node_name}] Error updating hand state: {exc}"
+            )
+
     def get_hand_commands(self) -> Optional[Dict[str, Any]]:
-        """Get the hand control commands
-        
-        Returns:
-            Dict: the dictionary containing the commands of the left and right hands, the format is as follows:
-            {
-                "left_hand_cmd": {left hand command},
-                "right_hand_cmd": {right hand command}
-            }
-        """
         if self.output_shm:
             return self.output_shm.read_data()
         return None
-    
+
     def get_left_hand_command(self) -> Optional[Dict[str, Any]]:
-        """Get the left hand command"""
         commands = self.get_hand_commands()
-        if commands and "left_hand_cmd" in commands:
-            return commands["left_hand_cmd"]
+        if commands:
+            return commands.get("left_hand_cmd")
         return None
-    
+
     def get_right_hand_command(self) -> Optional[Dict[str, Any]]:
-        """Get the right hand command"""
         commands = self.get_hand_commands()
-        if commands and "right_hand_cmd" in commands:
-            return commands["right_hand_cmd"]
+        if commands:
+            return commands.get("right_hand_cmd")
         return None
-    
-    def publish_hand_states(self, left_hand_data: Dict[str, Any], right_hand_data: Dict[str, Any]):
-        """Publish the left and right hand states
-        
-        Args:
-            left_hand_data: the data of the left hand
-            right_hand_data: the data of the right hand
-        """
+
+    def publish_hand_states(
+        self,
+        left_hand_data: Dict[str, Any],
+        right_hand_data: Dict[str, Any],
+    ) -> None:
         try:
-            combined_data = {
-                "left_hand": left_hand_data,
-                "right_hand": right_hand_data
-            }
-            
-            # write to the input shared memory for publishing
             if self.input_shm:
-                self.input_shm.write_data(combined_data)
-                
-        except Exception as e:
-            print(f"dex3_dds [{self.node_name}] Error publishing hand states: {e}")
-    
-    def write_hand_states(self, left_positions, left_velocities, left_torques, 
-                         right_positions, right_velocities, right_torques):
-        """Write the hand states to the shared memory directly
-        
-        Args:
-            left_positions: the list or torch.Tensor of the left hand joint positions
-            left_velocities: the list or torch.Tensor of the left hand joint velocities
-            left_torques: the list or torch.Tensor of the left hand joint torques
-            right_positions: the list or torch.Tensor of the right hand joint positions
-            right_velocities: the list or torch.Tensor of the right hand joint velocities
-            right_torques: the list or torch.Tensor of the right hand joint torques
-        """
-        try:
-            # prepare the left hand data
-            left_hand_data = {
-                "positions": left_positions.tolist() if hasattr(left_positions, 'tolist') else left_positions,
-                "velocities": left_velocities.tolist() if hasattr(left_velocities, 'tolist') else left_velocities,
-                "torques": left_torques.tolist() if hasattr(left_torques, 'tolist') else left_torques
-            }
-            
-            # prepare the right hand data
-            right_hand_data = {
-                "positions": right_positions.tolist() if hasattr(right_positions, 'tolist') else right_positions,
-                "velocities": right_velocities.tolist() if hasattr(right_velocities, 'tolist') else right_velocities,
-                "torques": right_torques.tolist() if hasattr(right_torques, 'tolist') else right_torques
-            }
-            
-            # publish the states
-            self.publish_hand_states(left_hand_data, right_hand_data)
-            
-        except Exception as e:
-            print(f"dex3_dds [{self.node_name}] Error writing hand states: {e}")
-    
-    def write_single_hand_state(self, hand_side: str, positions, velocities, torques):
-        """Write the single hand state
-        
-        Args:
-            hand_side: the side of the hand ("left" or "right")
-            positions: the list or torch.Tensor of the hand joint positions
-            velocities: the list or torch.Tensor of the hand joint velocities
-            torques: the list or torch.Tensor of the hand joint torques
-        """
-        try:
-            hand_data = {
-                "positions": positions.tolist() if hasattr(positions, 'tolist') else positions,
-                "velocities": velocities.tolist() if hasattr(velocities, 'tolist') else velocities,
-                "torques": torques.tolist() if hasattr(torques, 'tolist') else torques
-            }
-            
-            # decide how to publish based on the hand side
-            if hand_side == "left":
-                # get the existing right hand data or use the default value
-                existing_data = self.input_shm.read_data() if self.input_shm else {}
-                right_data = existing_data.get("right_hand", {"positions": [0], "velocities": [0], "torques": [0]})
-                self.publish_hand_states(hand_data, right_data)
-            elif hand_side == "right":
-                # get the existing left hand data or use the default value
-                existing_data = self.input_shm.read_data() if self.input_shm else {}
-                left_data = existing_data.get("left_hand", {"positions": [0], "velocities": [0], "torques": [0]})
-                self.publish_hand_states(left_data, hand_data)
-            else:
-                print(f"dex3_dds [{self.node_name}] Invalid hand side: {hand_side}")
-                
-        except Exception as e:
-            print(f"dex3_dds [{self.node_name}] Error writing {hand_side} hand state: {e}")
-    
+                self.input_shm.write_data(
+                    {
+                        "left_hand": left_hand_data,
+                        "right_hand": right_hand_data,
+                    }
+                )
+        except Exception as exc:
+            print(
+                f"dex3_dds [{self.node_name}] Error publishing hand states: {exc}"
+            )
+
+    @staticmethod
+    def _to_list(values):
+        return values.tolist() if hasattr(values, "tolist") else list(values)
+
+    def write_hand_states(
+        self,
+        left_positions,
+        left_velocities,
+        left_torques,
+        right_positions,
+        right_velocities,
+        right_torques,
+    ) -> None:
+        """Write actual q/dq/tau for both hands to the publisher buffer."""
+
+        self.publish_hand_states(
+            {
+                "positions": self._to_list(left_positions),
+                "velocities": self._to_list(left_velocities),
+                "torques": self._to_list(left_torques),
+            },
+            {
+                "positions": self._to_list(right_positions),
+                "velocities": self._to_list(right_velocities),
+                "torques": self._to_list(right_torques),
+            },
+        )
+
+    def write_single_hand_state(
+        self,
+        hand_side: str,
+        positions,
+        velocities,
+        torques,
+    ) -> None:
+        """Update one side while preserving the latest state of the other."""
+
+        if hand_side not in ("left", "right"):
+            print(f"dex3_dds [{self.node_name}] Invalid hand side: {hand_side}")
+            return
+        hand_data = {
+            "positions": self._to_list(positions),
+            "velocities": self._to_list(velocities),
+            "torques": self._to_list(torques),
+        }
+        existing = self.input_shm.read_data() if self.input_shm else {}
+        existing = existing or {}
+        zero_state = {
+            "positions": [0.0] * 7,
+            "velocities": [0.0] * 7,
+            "torques": [0.0] * 7,
+        }
+        if hand_side == "left":
+            self.publish_hand_states(
+                hand_data,
+                existing.get("right_hand", zero_state),
+            )
+        else:
+            self.publish_hand_states(
+                existing.get("left_hand", zero_state),
+                hand_data,
+            )

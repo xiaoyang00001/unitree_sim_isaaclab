@@ -27,6 +27,7 @@ from robots.g1_sonic_urdf import (
 )
 from tasks.common_config import G1RobotPresets
 from tasks.common_event.event_manager import SimpleEvent, SimpleEventManager
+from tasks.common_observations.dex3_state import get_robot_dex3_joint_states
 from tasks.common_observations.g1_29dof_state import get_robot_boy_joint_states
 
 
@@ -132,7 +133,9 @@ def make_sonic_robot_cfg() -> ArticulationCfg:
     # The adapted carrier adds 14 hand joints and many hand bodies that are not
     # part of the released 29-DoF training articulation.  Keep whole-body
     # self-collision disabled for this carrier to avoid unnecessary collision
-    # work and discrete arm/torso contact impulses.  The exact 29-DoF A/B task
+    # work and discrete arm/torso contact impulses. This does not disable hand
+    # contact with external rigid objects: the URDF hand proxies still
+    # participate in normal PhysX contact solving. The exact 29-DoF A/B task
     # replaces this spawn configuration and keeps its training setting.
     cfg.spawn.articulation_props.enabled_self_collisions = False
 
@@ -269,9 +272,9 @@ def make_sonic_robot_cfg() -> ArticulationCfg:
                 ".*_wrist_yaw_joint": SONIC_ARMATURE_4010,
             },
         ),
-        # Phase 1 keeps the 14 joints articulated and open, but does not consume
-        # PICO/Dex3 commands yet.  The non-thumb 0.7 Nm safety cap follows the
-        # working MuJoCo loop; the source URDF retains its 1.4 Nm physical limit.
+        # Runtime q/dq/tau/kp/kd come from the two Dex3 HandCmd topics. The
+        # non-thumb 0.7 Nm safety cap follows the working MuJoCo loop; the
+        # source URDF retains its 1.4 Nm physical limit.
         "hands": ImplicitActuatorCfg(
             joint_names_expr=list(DEX3_HAND_JOINT_NAMES),
             effort_limit_sim=DEX3_PHASE1_EFFORT_LIMITS,
@@ -352,7 +355,7 @@ class G129Dex3SonicSceneCfg(InteractiveSceneCfg):
 
 @configclass
 class G129SonicSceneCfg(G129Dex3SonicSceneCfg):
-    """Default SONIC scene: 29 controlled body joints plus 14 held Dex3 joints."""
+    """Default SONIC scene: 29 body joints plus 14 DDS-controlled Dex3 joints."""
 
 
 @configclass
@@ -401,6 +404,31 @@ class ObservationsCfg:
         # existing G1 DDS shared-memory publisher.  Publish once per 50 Hz
         # environment step: wall-clock throttling aliases a slightly early
         # 19.x ms step into an unintended 25--33 Hz state stream.
+        robot_body_state = ObsTerm(
+            func=get_robot_boy_joint_states,
+            params={"dds_min_interval_ms": 0.0},
+        )
+        # Publish actual q/dq/applied-torque in the same seven-joint-per-hand
+        # order consumed by Gear SONIC. Dex3Hands uses this feedback to clamp
+        # each outgoing position target to current_q +/- 0.25 rad.
+        robot_dex3_state = ObsTerm(
+            func=get_robot_dex3_joint_states,
+            params={"dds_min_interval_ms": 0.0},
+        )
+
+        def __post_init__(self):
+            self.enable_corruption = False
+            self.concatenate_terms = False
+
+    policy: PolicyCfg = PolicyCfg()
+
+
+@configclass
+class TrainingObservationsCfg:
+    """Body-only observation set for the exact 29-DoF regression task."""
+
+    @configclass
+    class PolicyCfg(ObsGroup):
         robot_body_state = ObsTerm(
             func=get_robot_boy_joint_states,
             params={"dds_min_interval_ms": 0.0},
@@ -504,3 +532,4 @@ class G129TrainingSonicEnvCfg(G129Dex3SonicEnvCfg):
         env_spacing=0.0,
         replicate_physics=True,
     )
+    observations: TrainingObservationsCfg = TrainingObservationsCfg()

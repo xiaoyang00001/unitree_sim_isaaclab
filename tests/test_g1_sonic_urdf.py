@@ -80,7 +80,7 @@ class SonicG143DoFUrdfTest(unittest.TestCase):
             set(G1_29DOF_DDS_JOINT_ORDER) | set(DEX3_HAND_JOINT_NAMES),
         )
 
-    def test_training_sole_collisions_and_phase_one_hand_collision_policy(self) -> None:
+    def test_training_sole_collisions_and_primitive_hand_proxies(self) -> None:
         left_sole_collisions = self._link("left_ankle_roll_link").findall("collision")
         right_sole_collisions = self._link("right_ankle_roll_link").findall("collision")
         self.assertEqual(len(left_sole_collisions), 7)
@@ -104,10 +104,34 @@ class SonicG143DoFUrdfTest(unittest.TestCase):
             ]
             self.assertEqual(generated_origins, expected_origins)
 
-        for link in self.root.findall("link"):
+        hand_links = [
+            link
+            for link in self.root.findall("link")
+            if link.get("name", "").startswith(("left_hand_", "right_hand_"))
+        ]
+        self.assertEqual(len(hand_links), 16)
+        for link in hand_links:
             link_name = link.get("name", "")
-            if link_name.startswith(("left_hand_", "right_hand_")):
-                self.assertEqual(link.findall("collision"), [])
+            collisions = link.findall("collision")
+            self.assertEqual(len(collisions), 1, link_name)
+            geometry = collisions[0].find("geometry")
+            self.assertIsNotNone(geometry, link_name)
+            self.assertIsNone(geometry.find("mesh"), link_name)
+            if link_name.endswith(("palm_link", "thumb_0_link")):
+                self.assertIsNotNone(geometry.find("box"), link_name)
+                self.assertIsNone(geometry.find("cylinder"), link_name)
+            else:
+                self.assertIsNotNone(geometry.find("cylinder"), link_name)
+                self.assertIsNone(geometry.find("box"), link_name)
+
+        left_thumb_origin = self._link("left_hand_thumb_1_link").find(
+            "collision/origin"
+        )
+        right_thumb_origin = self._link("right_hand_thumb_1_link").find(
+            "collision/origin"
+        )
+        self.assertEqual(left_thumb_origin.get("xyz"), "0 -0.024 0")
+        self.assertEqual(right_thumb_origin.get("xyz"), "0 0.024 0")
 
     def test_body_limits_are_copied_and_hand_limits_are_preserved(self) -> None:
         for side in ("left", "right"):
