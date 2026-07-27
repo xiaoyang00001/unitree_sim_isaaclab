@@ -125,3 +125,12 @@ assets
 
 ${data}
 *.etli
+# g1_29dof_sonic_conveyor 场景物理包装资产（体积小，须入库；大 USD 见任务 README）
+!tasks/g1_tasks/g1_29dof_sonic_conveyor/scene_assets/**/*.usda
+!tasks/g1_tasks/g1_29dof_sonic_conveyor/scene_assets/*.usda
+
+# 镜像机器人 USD 为 derived 产物（tools/build_peer_robot_usd.py 生成），不入库
+tasks/g1_tasks/g1_29dof_sonic_conveyor/scene_assets/peer_robot/
+
+# ConveyorBelt02.usd 46.7MB 体积过大不入库（warehouse USD 相对引用它，换机需手拷，见任务 README）
+tasks/g1_tasks/g1_29dof_sonic_conveyor/scene_assets/ConveyorBelt02.usd

@@ -1,0 +1,86 @@
+#usda 1.0
+(
+    defaultPrim = "CartBoxD05"
+    metersPerUnit = 1
+    upAxis = "Z"
+    doc = """Physics wrapper for SM_CardBoxD_05.
+
+    The referenced warehouse prop is visual-only. This wrapper keeps that visual
+    asset and authors the rigid body, mass, and convex-hull collision schema
+    on prims that IsaacLab can resolve during RigidObjectCfg initialization."""
+)
+
+def Xform "CartBoxD05" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "PhysxRigidBodyAPI"]
+)
+{
+    bool physics:rigidBodyEnabled = 1
+    bool physics:kinematicEnabled = 0
+    float physics:mass = 1.5
+    float physxRigidBody:angularDamping = 0.1
+    bool physxRigidBody:disableGravity = 0
+    bool physxRigidBody:enableCCD = 0
+    bool physxRigidBody:enableGyroscopicForces = 1
+    float physxRigidBody:linearDamping = 0.1
+    float physxRigidBody:maxDepenetrationVelocity = 0.5
+    int physxRigidBody:solverPositionIterationCount = 8
+    int physxRigidBody:solverVelocityIterationCount = 2
+
+    def Xform "Visual" (
+        prepend references = @https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Environments/Simple_Warehouse/Props/SM_CardBoxD_05.usd@
+    )
+    {
+        over "SM_CardBoxD_05" (
+            delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+        )
+        {
+        }
+    }
+
+    def Material "GraspPhysicsMaterial" (
+        prepend apiSchemas = ["PhysicsMaterialAPI", "PhysxMaterialAPI"]
+    )
+    {
+        float physics:dynamicFriction = 1.1
+        float physics:restitution = 0
+        float physics:staticFriction = 1.4
+        token physxMaterial:frictionCombineMode = "multiply"
+        token physxMaterial:restitutionCombineMode = "min"
+    }
+
+    def Mesh "ConvexHullCollider" (
+        prepend apiSchemas = ["MaterialBindingAPI", "PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "PhysxCollisionAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+        int[] faceVertexIndices = [
+            0, 1, 2, 3,
+            4, 7, 6, 5,
+            0, 4, 5, 1,
+            1, 5, 6, 2,
+            2, 6, 7, 3,
+            3, 7, 4, 0,
+        ]
+        # 碰撞体尺寸必须与视觉资产 SM_CardBoxD_05 的缩放后尺寸一致。
+        # 视觉 mesh extent = (-19,-12.5,0)~(19,12.5,14.875)，xformOp:scale=(0.01,0.01,0.01)
+        # → 实际尺寸 = 0.38 × 0.25 × 0.149 m
+        # 详见 KB: NVIDIA/IsaacLab/PickPlace搬运场景三问题修复记-G1-XR遥操
+        point3f[] points = [
+            (-0.19, -0.125, 0),
+            (0.19, -0.125, 0),
+            (0.19, 0.125, 0),
+            (-0.19, 0.125, 0),
+            (-0.19, -0.125, 0.149),
+            (0.19, -0.125, 0.149),
+            (0.19, 0.125, 0.149),
+            (-0.19, 0.125, 0.149),
+        ]
+        bool physics:collisionEnabled = 1
+        uniform token physics:approximation = "convexHull"
+        float physxCollision:contactOffset = 0.005
+        float physxCollision:restOffset = 0
+        rel material:binding:physics = </CartBoxD05/GraspPhysicsMaterial>
+        uniform token subdivisionScheme = "none"
+        token visibility = "invisible"
+    }
+}

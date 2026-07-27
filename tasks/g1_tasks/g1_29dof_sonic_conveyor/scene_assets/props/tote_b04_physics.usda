@@ -1,0 +1,43 @@
+#usda 1.0
+(
+    defaultPrim = "ToteB04"
+    metersPerUnit = 1
+    upAxis = "Z"
+    doc = """Physics wrapper for the NVIDIA SimReady Tote_B04 visual asset.
+    See box_a01_physics.usda for the rationale. convexDecomposition keeps the
+    tote's open-container concavity so items can be placed inside.
+
+    GraspPhysicsMaterial mirrors the test_box grasp tuning (2.0/1.6, combine=min)
+    so the tote can be held by the G1 hands instead of sliding on the sim-default
+    0.5 friction. Mass here is a base value; the spawn cfg overrides it with
+    ISAACLAB_GRASP_OBJECT_MASS."""
+)
+
+def Xform "ToteB04" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    prepend references = @https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/NVIDIA/Assets/DigitalTwin/Assets/Warehouse/Storage/Totes/Tote_B/Tote_B04_60x40x30cm_PR_V_NVD_01.usd@
+)
+{
+    float physics:mass = 1.0
+
+    def Material "GraspPhysicsMaterial" (
+        prepend apiSchemas = ["PhysicsMaterialAPI", "PhysxMaterialAPI"]
+    )
+    {
+        float physics:staticFriction = 2.0
+        float physics:dynamicFriction = 1.6
+        float physics:restitution = 0.0
+        uniform token physxMaterial:frictionCombineMode = "min"
+        uniform token physxMaterial:restitutionCombineMode = "min"
+    }
+
+    over "Tote_B04_01" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+    )
+    {
+        uniform token physics:approximation = "convexDecomposition"
+        rel material:binding:physics = </ToteB04/GraspPhysicsMaterial> (
+            bindMaterialAs = "strongerThanDescendants"
+        )
+    }
+}

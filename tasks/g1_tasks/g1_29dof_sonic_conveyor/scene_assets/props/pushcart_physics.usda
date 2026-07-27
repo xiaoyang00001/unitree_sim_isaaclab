@@ -1,0 +1,27 @@
+#usda 1.0
+(
+    defaultPrim = "Pushcart"
+    metersPerUnit = 1
+    upAxis = "Z"
+    doc = """Physics wrapper for SM_PushcartA_02.
+
+    The cloud asset already declares CollisionAPI + MeshCollisionAPI on its mesh,
+    so the UsdFileCfg spawner can attach RigidBodyAPI on top via modify_rigid_body_properties.
+    This wrapper just adds MassAPI on the root (and re-applies RigidBodyAPI as a noop)
+    so the cart behaves as a single dynamic body that crates/boxes can rest on."""
+)
+
+def Xform "Pushcart" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    prepend references = @https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Environments/Simple_Warehouse/Props/SM_PushcartA_02.usd@
+)
+{
+    float physics:mass = 15.0
+
+    over "SM_PushcartA_02" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+    )
+    {
+        uniform token physics:approximation = "convexHull"
+    }
+}
