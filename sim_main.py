@@ -10,6 +10,7 @@ os.environ["PROJECT_ROOT"] = project_root
 
 import argparse
 import contextlib
+import gc
 import math
 import time
 import sys
@@ -31,6 +32,16 @@ parser.add_argument("--action_source", type=str, default="dds",
 
 
 parser.add_argument("--robot_type", type=str, default="g129", help="robot type")
+parser.add_argument(
+    "--teleop_device",
+    type=str,
+    choices=("none", "motion_controllers"),
+    default="none",
+    help=(
+        "optional teleoperation device; motion_controllers currently enables "
+        "only the OpenXR view anchor and right-controller B yaw recenter"
+    ),
+)
 parser.add_argument("--enable_dex1_dds", action="store_true", help="enable gripper DDS")
 parser.add_argument("--enable_dex3_dds", action="store_true", help="enable dexterous hand DDS")
 parser.add_argument("--enable_inspire_dds", action="store_true", help="enable inspire hand DDS")
@@ -299,6 +310,16 @@ sonic_dex3_task_names = {
 }
 is_sonic_task = args_cli.task in sonic_task_names
 
+if args_cli.teleop_device == "motion_controllers":
+    if args_cli.task not in sonic_dex3_task_names:
+        parser.error(
+            "--teleop_device motion_controllers is currently supported only by "
+            "Isaac-G1-29DoF-Sonic and Isaac-G1-29DoF-Dex3-Sonic"
+        )
+    # Follow Isaac Lab's teleoperation runner behavior: selecting an OpenXR
+    # device implies XR, while an explicit --xr remains accepted as well.
+    args_cli.xr = True
+
 enabled_hand_dds_count = sum(
     bool(value)
     for value in (
@@ -409,6 +430,9 @@ print(
     f"domain={args_cli.dds_domain}, interface={args_cli.dds_interface or 'auto'}"
 )
 
+if args_cli.no_render and args_cli.xr:
+    parser.error("--no_render cannot be combined with --xr")
+
 from dds.dds_create import create_dds_objects, create_dds_objects_replay
 
 if args_cli.no_render and args_cli.livestream_type != 0:
@@ -439,6 +463,7 @@ from layeredcontrol.robot_control_system import (
 
 from dds.reset_pose_dds import *
 import tasks
+from isaaclab.devices.teleop_device_factory import create_teleop_device
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 from robots.g1_sonic_visuals import apply_g1_sonic_visual_materials
 
@@ -553,6 +578,7 @@ def main():
     # profiler = cProfile.Profile()
     # profiler.enable()
     image_server = None
+    teleop_interface = None
     shutdown_event = threading.Event()
     print("=" * 60)
     print("robot control system started")
@@ -564,6 +590,17 @@ def main():
     try:
         env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=1)
         env_cfg.env_name = args_cli.task
+        if args_cli.teleop_device != "none":
+            configured_devices = getattr(
+                getattr(env_cfg, "teleop_devices", None),
+                "devices",
+                {},
+            )
+            if args_cli.teleop_device not in configured_devices:
+                raise ValueError(
+                    f"teleop device {args_cli.teleop_device!r} is not configured "
+                    f"for task {args_cli.task!r}"
+                )
         if args_cli.physics_dt is not None:
             env_cfg.sim.dt = float(args_cli.physics_dt)
 
@@ -810,6 +847,31 @@ def main():
         )
     env.sim.reset()
     env.reset()
+
+    if args_cli.teleop_device != "none":
+        print("========= create OpenXR teleop device =========")
+        try:
+            teleop_interface = create_teleop_device(
+                args_cli.teleop_device,
+                env_cfg.teleop_devices.devices,
+            )
+            teleop_interface.reset()
+            xr_cfg = env_cfg.teleop_devices.devices[args_cli.teleop_device].xr_cfg
+            print(
+                "[xr] OpenXR view control enabled: "
+                f"device={args_cli.teleop_device}, "
+                f"position_anchor={xr_cfg.anchor_prim_path}, "
+                f"rotation_anchor={xr_cfg.anchor_rotation_prim_path}"
+            )
+            print(
+                "[xr] Release right-controller B to recenter view yaw; "
+                "OpenXR commands are not connected to robot actions"
+            )
+        except Exception as e:
+            print(f"Failed to create OpenXR teleop device: {e}")
+            env.close()
+            return
+        print("========= create OpenXR teleop device success =========")
     
     # create simplified control configuration
     try:    
@@ -1250,6 +1312,18 @@ def main():
             dds_manager.cleanup()
         if image_server is not None:
             image_server.stop()
+        # Isaac Lab's current OpenXRDevice has no public close() method.  Its
+        # destructor is an idempotent cleanup hook that explicitly releases
+        # the XR message-bus and button subscriptions.  Invoke it while the
+        # SimulationContext still exists; merely dropping our local reference
+        # is insufficient because those subscriptions also retain callbacks to
+        # the device.
+        if teleop_interface is not None:
+            teleop_cleanup = getattr(teleop_interface, "__del__", None)
+            if callable(teleop_cleanup):
+                teleop_cleanup()
+            teleop_interface = None
+            gc.collect()
         env.close()
         print("cleanup completed")
     # profiler.disable()
@@ -1292,6 +1366,8 @@ if __name__ == "__main__":
 
 # Gear SONIC -> DDS -> Isaac Lab floating-base G1-29DoF body validation.
 # python sim_main.py --task Isaac-G1-29DoF-Sonic --robot_type g129 --action_source sonic_dds --device cpu --no_render
+# OpenXR view anchoring and right-controller B yaw recenter (robot control remains SONIC DDS).
+# python sim_main.py --task Isaac-G1-29DoF-Sonic --robot_type g129 --action_source sonic_dds --device cpu --teleop_device motion_controllers --xr
 
 
 # python sim_main.py --device cpu  --enable_cameras  --task Isaac-PickPlace-Cylinder-H12-27dof-Inspire-Joint  --enable_inspire_dds --robot_type h1_2

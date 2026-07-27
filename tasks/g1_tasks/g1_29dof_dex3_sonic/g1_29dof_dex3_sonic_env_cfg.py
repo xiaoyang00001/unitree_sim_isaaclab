@@ -10,15 +10,18 @@ import torch
 import isaaclab.sim as sim_utils
 import isaaclab.envs.mdp as mdp
 from isaaclab.actuators import ImplicitActuatorCfg
-from isaaclab.assets import ArticulationCfg, AssetBaseCfg
+from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
+from isaaclab.devices import DevicesCfg
+from isaaclab.devices.openxr import OpenXRDeviceCfg, XrAnchorRotationMode, XrCfg
 from isaaclab.envs import ManagerBasedRLEnv, ManagerBasedRLEnvCfg
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import ContactSensorCfg
-from isaaclab.sim.spawners.from_files.from_files_cfg import GroundPlaneCfg
+from isaaclab.sim.spawners.from_files.from_files_cfg import GroundPlaneCfg, UsdFileCfg
 from isaaclab.utils import configclass
+from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
 from robots.g1_sonic_urdf import (
     DEX3_HAND_JOINT_NAMES,
@@ -70,6 +73,56 @@ DEX3_VELOCITY_LIMITS = {
     name: 3.14 if name.endswith("thumb_0_joint") else 12.0
     for name in DEX3_HAND_JOINT_NAMES
 }
+
+# Use the same current Isaac PackingTable asset as the reference
+# locomanipulation task.  The repository's older collected copy is missing
+# three metal-material textures and therefore emits RTX/MDL errors in XR mode.
+# Isaac's asset client caches this official resource after the first load.
+SONIC_PACKING_TABLE_USD = (
+    f"{ISAAC_NUCLEUS_DIR}/Props/PackingTable/packing_table.usd"
+)
+SONIC_TABLE_TOP_Z = 0.6996
+SONIC_CUBE_SIZE = (0.05, 0.05, 0.05)
+SONIC_CUBE_INITIAL_Z = SONIC_TABLE_TOP_Z + 0.5 * SONIC_CUBE_SIZE[2] + 0.002
+
+
+def _make_sonic_cube_cfg(
+    prim_name: str,
+    initial_pos: tuple[float, float, float],
+    color: tuple[float, float, float],
+) -> RigidObjectCfg:
+    """Create one dynamic 5 cm cube using the reference scene's contact settings."""
+
+    return RigidObjectCfg(
+        prim_path=f"{{ENV_REGEX_NS}}/{prim_name}",
+        init_state=RigidObjectCfg.InitialStateCfg(
+            pos=initial_pos,
+            rot=(1.0, 0.0, 0.0, 0.0),
+        ),
+        spawn=sim_utils.CuboidCfg(
+            size=SONIC_CUBE_SIZE,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                kinematic_enabled=False,
+                disable_gravity=False,
+                max_depenetration_velocity=3.0,
+            ),
+            collision_props=sim_utils.CollisionPropertiesCfg(
+                collision_enabled=True,
+                contact_offset=0.003,
+                rest_offset=0.0,
+            ),
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.08),
+            visual_material=sim_utils.PreviewSurfaceCfg(
+                diffuse_color=color,
+                roughness=0.70,
+            ),
+            physics_material=sim_utils.RigidBodyMaterialCfg(
+                static_friction=1.2,
+                dynamic_friction=0.9,
+                restitution=0.0,
+            ),
+        ),
+    )
 
 
 def _groot_root() -> Path:
@@ -355,7 +408,44 @@ class G129Dex3SonicSceneCfg(InteractiveSceneCfg):
 
 @configclass
 class G129SonicSceneCfg(G129Dex3SonicSceneCfg):
-    """Default SONIC scene: 29 body joints plus 14 DDS-controlled Dex3 joints."""
+    """Default SONIC scene with the 43-DoF robot and one manipulation table."""
+
+    # The reference locomanipulation robot starts at +90 degrees yaw, while the
+    # SONIC bridge robot intentionally starts at identity so its policy/world
+    # convention remains unchanged.  Rotate the table layout -90 degrees
+    # instead: the table stays in front of the robot (+X) and its long edge
+    # remains lateral to the robot.
+    packing_table = AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/PackingTable",
+        init_state=AssetBaseCfg.InitialStateCfg(
+            pos=(0.55, 0.0, -0.3),
+            rot=(0.70710678, 0.0, 0.0, -0.70710678),
+        ),
+        spawn=UsdFileCfg(
+            usd_path=str(SONIC_PACKING_TABLE_USD),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+        ),
+    )
+
+    # The source locomanipulation scene contains two cubes and one long box.
+    # This SONIC phase explicitly requests three equal dynamic cubes, so the
+    # third cube keeps the reference object's center while using the same 5 cm
+    # geometry and mass as the first two.
+    cube_1 = _make_sonic_cube_cfg(
+        prim_name="Cube1",
+        initial_pos=(0.31243, -0.00553, SONIC_CUBE_INITIAL_Z),
+        color=(0.82, 0.66, 0.36),
+    )
+    cube_2 = _make_sonic_cube_cfg(
+        prim_name="Cube2",
+        initial_pos=(0.31397, 0.10565, SONIC_CUBE_INITIAL_Z),
+        color=(0.88, 0.72, 0.40),
+    )
+    cube_3 = _make_sonic_cube_cfg(
+        prim_name="Cube3",
+        initial_pos=(0.41625, 0.04810, SONIC_CUBE_INITIAL_Z),
+        color=(0.76, 0.56, 0.28),
+    )
 
 
 @configclass
@@ -506,12 +596,16 @@ class G129Dex3SonicEnvCfg(ManagerBasedRLEnvCfg):
 
 @configclass
 class G129SonicEnvCfg(G129Dex3SonicEnvCfg):
-    """Default non-VR SONIC task using the adapted 43-DoF articulation."""
+    """Default SONIC task using the adapted 43-DoF articulation."""
 
     scene: G129SonicSceneCfg = G129SonicSceneCfg(
         num_envs=1,
         env_spacing=0.0,
         replicate_physics=True,
+    )
+    xr: XrCfg = XrCfg(
+        anchor_pos=(0.0, 0.0, 0.0),
+        anchor_rot=(1.0, 0.0, 0.0, 0.0),
     )
 
     def __post_init__(self):
@@ -521,6 +615,37 @@ class G129SonicEnvCfg(G129Dex3SonicEnvCfg):
         # equivalent of MuJoCo's Newton solver, and it showed no measured
         # benefit in the current closed loop.
         self.sim.physx.enable_external_forces_every_iteration = False
+
+        # The URDF importer merges the fixed head link below torso_link, so the
+        # active SONIC stage path differs from the reference Robot_1/head_link
+        # hierarchy.  Position follows the physical head while yaw follows the
+        # pelvis, avoiding torso roll/pitch from tilting the XR world.
+        self.xr.anchor_prim_path = "/World/envs/env_0/Robot/torso_link/head_link"
+        self.xr.anchor_rotation_prim_path = "/World/envs/env_0/Robot/pelvis"
+        self.xr.fixed_anchor_height = False
+        self.xr.anchor_rotation_mode = XrAnchorRotationMode.FOLLOW_PRIM_SMOOTHED
+
+        # Match the reference PICO/OpenXR calibration: release right-controller
+        # B to align the headset's horizontal forward direction with the robot
+        # pelvis yaw.  This is view recentering only, not an environment reset.
+        self.xr.recenter_yaw_button = ("/user/hand/right", "b")
+        self.xr.recenter_yaw_button_event = "release"
+        self.xr.recenter_anchor_forward_axis = (-1.0, 0.0, 0.0)
+        self.xr.recenter_headset_forward_axis = (0.0, -1.0, 0.0)
+        self.xr.recenter_headset_fallback_axis = (1.0, 0.0, 0.0)
+
+        # No retargeter is installed in this phase: OpenXR owns only the view
+        # anchor and B-button recenter event.  SONIC DDS remains the sole source
+        # of body and Dex3 joint commands.
+        self.teleop_devices = DevicesCfg(
+            devices={
+                "motion_controllers": OpenXRDeviceCfg(
+                    retargeters=[],
+                    sim_device="cpu",
+                    xr_cfg=self.xr,
+                )
+            }
+        )
 
 
 @configclass
