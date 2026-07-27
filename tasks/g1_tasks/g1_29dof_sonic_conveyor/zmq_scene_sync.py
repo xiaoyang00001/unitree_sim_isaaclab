@@ -133,6 +133,11 @@ class ZmqSceneStateSyncActionCfg(ActionTermCfg):
     （如两次复位间隔太近、事件包全部丢失）就会无限期拒收携带新 reset_id 的帧，
     表现为镜像整体冻结 + 误报 Stream stale。"""
 
+    external_pump: bool = False
+    """True = 收发不挂 env.step（apply_actions 变 no-op），由宿主主循环每迭代调一次
+    pump()。SONIC 锁步下 deploy 停发 lowcmd 时 env.step 停摆，ActionTerm 挂载的
+    同步会随之冻结；主循环挂载不受影响（方案 b）。"""
+
     def __post_init__(self):
         self.class_type = ZmqSceneStateSyncAction
 
@@ -315,8 +320,19 @@ class ZmqSceneStateSyncAction(ActionTerm):
             logger.info("[ZMQ Scene Sync] Mirror waiting for reset_id=%s", self._expected_reset_id)
 
     def apply_actions(self):
+        # 主循环挂载模式：收发由宿主每迭代调 pump()，不跟随 env.step——SONIC 锁步下
+        # deploy 停发 lowcmd 时 env.step 停摆，ActionTerm 挂载的同步会随之冻结。
+        if self.cfg.external_pump:
+            return
+        self.pump()
+
+    def pump(self):
+        """执行一轮收发。ActionTerm 模式下由 apply_actions 每物理步调用；
+        主循环模式（external_pump=True）下由 sim_main 每迭代（step_hz）调用。"""
+
         if self._publish_enabled and self._pub_socket is not None:
-            # 计数节流：物理 200 Hz、decimation=4 → 50 Hz 发布，与 env step 同频。
+            # 计数节流：ActionTerm 模式 = 物理 200 Hz、decimation=4 → 50 Hz 发布；
+            # 主循环模式 = pump 本身就是 step_hz（50 Hz），decimation 默认 1。
             self._publish_tick += 1
             if self._publish_tick >= self._publish_decimation:
                 self._publish_tick = 0
@@ -557,6 +573,11 @@ class ZmqEnvResetSyncActionCfg(ActionTermCfg):
     receive_hwm: int = 3
     """Subscriber high-water mark."""
 
+    external_pump: bool = False
+    """True = 收发不挂 env.step，由宿主主循环每迭代调一次 pump()（方案 b）。
+    注意 repeat_frames 的语义随之从物理步（200Hz，10 帧≈50ms）变为主循环迭代
+    （50Hz，10 帧≈200ms）——重发窗口反而更宽。"""
+
     def __post_init__(self):
         self.class_type = ZmqEnvResetSyncAction
 
@@ -700,6 +721,13 @@ class ZmqEnvResetSyncAction(ActionTerm):
         return reset_id
 
     def apply_actions(self):
+        if self.cfg.external_pump:
+            return
+        self.pump()
+
+    def pump(self):
+        """执行一轮复位事件收发（挂载模式见 external_pump 说明）。"""
+
         if self._socket is None:
             return
         if self.role == "publisher":

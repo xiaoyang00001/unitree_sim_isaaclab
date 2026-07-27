@@ -47,8 +47,9 @@ python sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor \
 - **只有 ID=1 侧机器人能与物体发生物理交互**（镜像体无碰撞；物体在 ID=2 侧是 kinematic）。
 - ID=1 出生朝向是 yaw 180°（面对面布局）；SONIC 底座任务刻意保持 identity 朝向，
   **deploy 行走在 180° 出生下是否正常需实测**，异常先设 `ISAACLAB_ROBOT_YAW_IDENTITY=1` 兜底。
-- 同步收发挂在 ActionTerm 上，跟随 SONIC 锁步：**deploy 停发 lowcmd 时本机 env.step
-  停摆，同步（含镜像画面）随之冻结**。主循环挂载版（方案 b）在另一分支。
+- 同步挂载模式（`ISAACLAB_SCENE_SYNC_MAINLOOP`，本分支默认 1）：主循环挂载下
+  deploy 断连/锁步暂停时镜像仍活着；置 0 退回 ActionTerm 挂载（方案 a——
+  deploy 停发 lowcmd 时 env.step 停摆，同步随之冻结）。
 - 镜像端仅限 `--device cpu`：GPU pipeline 下 tensor API 写位姿驱不动 kinematic 体，
   镜像物体会静默冻结（启动时有告警）。
 - 筐在带上被拖拽滑行（碰撞板静止 + μd=0.6），实测平均速度 ≈0.25 m/s 且会缓慢自转（源分支已知）。

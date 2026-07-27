@@ -73,6 +73,18 @@ def main() -> int:
     watched = {name: env.scene[name] for name in tote_names}
     peer = env.scene["peer_robot"]
 
+    # 方案 b（主循环挂载）：apply_actions 是 no-op，宿主要自己 pump。
+    # 本脚本没有 sim_main 主循环，就在每个 env.step 后代跑一轮（≈200Hz pump，
+    # 发布经 publish_decimation 节流，行为与 50Hz 主循环等价）。
+    pump_terms = []
+    for term_name in ("scene_state_sync", "env_reset_sync"):
+        try:
+            term = env.action_manager.get_term(term_name)
+        except (AttributeError, KeyError, ValueError):
+            continue
+        if getattr(term.cfg, "external_pump", False):
+            pump_terms.append(term)
+
     def snapshot(tag: str) -> None:
         parts = []
         for name, obj in watched.items():
@@ -88,6 +100,8 @@ def main() -> int:
     t0 = monotonic()
     for step in range(1, args.steps + 1):
         env.step(action)
+        for term in pump_terms:
+            term.pump()
         if step % max(1, args.report_every) == 0:
             snapshot(f"step={step}")
     elapsed = monotonic() - t0

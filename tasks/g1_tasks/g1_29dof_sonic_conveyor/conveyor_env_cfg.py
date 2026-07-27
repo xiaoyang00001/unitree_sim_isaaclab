@@ -239,6 +239,12 @@ SYNC_OBJECT_NAMES = _env_str_tuple(
 )
 
 
+# 方案 b（本分支默认）：同步收发挂 sim_main 主循环而非 ActionTerm——SONIC 锁步下
+# deploy 停发 lowcmd 时 env.step 停摆，ActionTerm 挂载的同步会随之冻结；主循环
+# 挂载不受影响。置 0 退回方案 a（ActionTerm 每物理步收发、发布按 decimation 节流）。
+SCENE_SYNC_MAINLOOP = _env_bool("ISAACLAB_SCENE_SYNC_MAINLOOP", True)
+
+
 def _scene_state_sync_cfg() -> ZmqSceneStateSyncActionCfg:
     """对等场景同步：各发布本机机器人；物体只有权威端发布、镜像端应用。"""
 
@@ -254,7 +260,9 @@ def _scene_state_sync_cfg() -> ZmqSceneStateSyncActionCfg:
         apply_robots={PEER_ROBOT_GLOBAL_NAME: "peer_robot"},
         publish_object_names=SYNC_OBJECT_NAMES if OBJECT_AUTHORITY else (),
         apply_object_names=() if OBJECT_AUTHORITY else SYNC_OBJECT_NAMES,
-        publish_decimation=_env_int("ISAACLAB_SCENE_SYNC_PUBLISH_DECIMATION", 4),
+        external_pump=SCENE_SYNC_MAINLOOP,
+        # 主循环模式 pump 频率本身就是 step_hz（50Hz），不再需要 4:1 节流。
+        publish_decimation=_env_int("ISAACLAB_SCENE_SYNC_PUBLISH_DECIMATION", 1 if SCENE_SYNC_MAINLOOP else 4),
         send_hwm=_env_int("ISAACLAB_SCENE_SYNC_SEND_HWM", 3),
         receive_hwm=_env_int("ISAACLAB_SCENE_SYNC_RECEIVE_HWM", 3),
         stale_timeout_s=_env_float("ISAACLAB_SCENE_SYNC_STALE_TIMEOUT_S", 0.5),
@@ -272,6 +280,7 @@ def _env_reset_sync_cfg() -> ZmqEnvResetSyncActionCfg:
         role="publisher" if OBJECT_AUTHORITY else "subscriber",
         endpoint=SCENE_SYNC_BIND_ENDPOINT if OBJECT_AUTHORITY else SCENE_SYNC_CONNECT_ENDPOINT,
         topic=_env_str("ISAACLAB_ENV_RESET_SYNC_TOPIC", "env_reset"),
+        external_pump=SCENE_SYNC_MAINLOOP,
         repeat_frames=_env_int("ISAACLAB_ENV_RESET_SYNC_REPEAT_FRAMES", 10),
         send_hwm=_env_int("ISAACLAB_SCENE_SYNC_SEND_HWM", 3),
         receive_hwm=_env_int("ISAACLAB_SCENE_SYNC_RECEIVE_HWM", 3),

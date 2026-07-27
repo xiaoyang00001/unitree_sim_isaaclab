@@ -1226,6 +1226,12 @@ def main():
                             print(f"Failed to write reset pose command: {e}")
                             raise e
 
+                    # 方案 b：同步收发挂主循环——deploy 断连/锁步暂停时镜像仍活着
+                    if scene_sync_term is not None and getattr(scene_sync_term.cfg, "external_pump", False):
+                        scene_sync_term.pump()
+                    if env_reset_sync_term is not None and getattr(env_reset_sync_term.cfg, "external_pump", False):
+                        env_reset_sync_term.pump()
+
                     # 镜像端（ID=2）：跟随权威端的整环境复位事件
                     if consume_remote_sync_reset():
                         reset_performed = True
