@@ -124,10 +124,23 @@ class SonicDDSActionProvider(ActionProvider):
         expected_action_dim = SONIC_ACTION_FIELDS_PER_JOINT * self._num_joints
         if action_manager is not None:
             active_terms = tuple(action_manager.active_terms)
-            if active_terms != SONIC_ACTION_TERMS:
+            # 前三项必须是 q/dq/tau；其后允许追加零维辅助 term（如 conveyor 任务的
+            # ZMQ 场景同步）——action_dim=0 不占动作切片，total_action_dim 校验仍保证
+            # 三段切片语义不变。
+            if active_terms[: len(SONIC_ACTION_TERMS)] != SONIC_ACTION_TERMS:
                 raise ValueError(
                     "SONIC action terms must be ordered as "
                     f"{SONIC_ACTION_TERMS}, got {active_terms}"
+                )
+            nonzero_extras = [
+                name
+                for name in active_terms[len(SONIC_ACTION_TERMS):]
+                if action_manager.get_term(name).action_dim != 0
+            ]
+            if nonzero_extras:
+                raise ValueError(
+                    "SONIC action layout allows only zero-dim auxiliary terms after "
+                    f"{SONIC_ACTION_TERMS}, got non-zero terms {nonzero_extras}"
                 )
             if action_manager.total_action_dim != expected_action_dim:
                 raise ValueError(

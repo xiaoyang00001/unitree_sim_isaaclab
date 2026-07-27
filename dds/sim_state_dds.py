@@ -33,7 +33,10 @@ class SimStateDDS(DDSObject):
         # setup the shared memory
         self.setup_shared_memory(
             input_shm_name="isaac_sim_state",  # read sim state data for publishing
-            input_size=4096,
+            # conveyor 双机场景（2 台 43-DoF articulation + 10 个刚体）的 get_state
+            # JSON 约 7KB，4096 会被 sharedmemorymanager 的上限检查静默拒写，
+            # rt/sim_state 从此一帧不发。放大到 16384 覆盖当前所有任务。
+            input_size=16384,
             outputshm_flag=False
         )
 

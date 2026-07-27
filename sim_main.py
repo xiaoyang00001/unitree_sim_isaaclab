@@ -303,10 +303,12 @@ sonic_task_names = {
     "Isaac-G1-29DoF-Sonic",
     "Isaac-G1-29DoF-Dex3-Sonic",
     "Isaac-G1-29DoF-Training-Sonic",
+    "Isaac-G1-29DoF-Sonic-Conveyor",
 }
 sonic_dex3_task_names = {
     "Isaac-G1-29DoF-Sonic",
     "Isaac-G1-29DoF-Dex3-Sonic",
+    "Isaac-G1-29DoF-Sonic-Conveyor",
 }
 is_sonic_task = args_cli.task in sonic_task_names
 
@@ -314,7 +316,7 @@ if args_cli.teleop_device == "motion_controllers":
     if args_cli.task not in sonic_dex3_task_names:
         parser.error(
             "--teleop_device motion_controllers is currently supported only by "
-            "Isaac-G1-29DoF-Sonic and Isaac-G1-29DoF-Dex3-Sonic"
+            "Isaac-G1-29DoF-Sonic, Isaac-G1-29DoF-Dex3-Sonic and Isaac-G1-29DoF-Sonic-Conveyor"
         )
     # Follow Isaac Lab's teleoperation runner behavior: selecting an OpenXR
     # device implies XR, while an explicit --xr remains accepted as well.
@@ -678,6 +680,9 @@ def main():
                         "imported material: "
                         + ", ".join(material_report.unmapped_visual_links)
                     )
+                if args_cli.task == "Isaac-G1-29DoF-Sonic-Conveyor":
+                    # 对端镜像 G1 也上涂装，避免双机时看到通体白模误判机型
+                    apply_g1_sonic_visual_materials("/World/envs/env_0/PeerRobot")
             except Exception as e:
                 # Appearance must never prevent the DDS/physics validation from
                 # starting.  A missing material asset is therefore reported but
@@ -1017,10 +1022,31 @@ def main():
     elif sonic_reset_supported:
         print("[fall_reset] automatic detection disabled; safe manual reset recovery remains available")
 
+    # ZMQ 双机场景同步（Isaac-G1-29DoF-Sonic-Conveyor 任务才有这两个 term）。
+    # 复位编排：ID=1 是复位权威，本机整环境复位后广播 reset_id；镜像端（ID=2）
+    # 在主循环里消费该事件并跟随复位，scene_state 帧按 reset_id 门控丢弃复位前旧帧。
+    def _get_scene_sync_term(term_name: str):
+        try:
+            return env.action_manager.get_term(term_name)
+        except (AttributeError, KeyError, ValueError):
+            return None
+
+    scene_sync_term = _get_scene_sync_term("scene_state_sync")
+    env_reset_sync_term = _get_scene_sync_term("env_reset_sync")
+
+    def broadcast_sync_reset() -> None:
+        """权威端（复位事件 term 为 publisher 角色）广播一次整环境复位。"""
+        if env_reset_sync_term is None:
+            return
+        sync_reset_id = env_reset_sync_term.request_local_reset()
+        if sync_reset_id and scene_sync_term is not None:
+            scene_sync_term.set_publisher_reset_id(sync_reset_id)
+
     def trigger_robot_reset(event_name: str, reason: str) -> bool:
         """Reset state and controller history as one operation for SONIC tasks."""
         if not sonic_reset_supported:
             env_cfg.event_manager.trigger(event_name, env)
+            broadcast_sync_reset()
             return False
 
         robot_dds = dds_manager.get_object("g129")
@@ -1058,6 +1084,19 @@ def main():
             f"[fall_reset] reset #{fall_reset_monitor.reset_count} complete: "
             "default standing state restored; waiting for safe SONIC re-entry"
         )
+        broadcast_sync_reset()
+        return True
+
+    def consume_remote_sync_reset() -> bool:
+        """镜像端消费权威端的整环境复位事件；无事件或非镜像端返回 False。"""
+        if env_reset_sync_term is None:
+            return False
+        sync_reset_id = env_reset_sync_term.consume_remote_reset_request()
+        if not sync_reset_id:
+            return False
+        if scene_sync_term is not None:
+            scene_sync_term.expect_reset_id(sync_reset_id)
+        trigger_robot_reset("reset_all_self", f"remote scene-sync reset {sync_reset_id}")
         return True
     
     # configure performance analysis
@@ -1186,6 +1225,10 @@ def main():
                         except Exception as e:
                             print(f"Failed to write reset pose command: {e}")
                             raise e
+
+                    # 镜像端（ID=2）：跟随权威端的整环境复位事件
+                    if consume_remote_sync_reset():
+                        reset_performed = True
                 else:
                     if action_provider.get_start_loop() and data_idx<len(data_json_list):
                         print(f"data_idx: {data_idx}")
