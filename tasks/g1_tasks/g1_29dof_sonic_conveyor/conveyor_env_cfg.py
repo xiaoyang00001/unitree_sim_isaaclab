@@ -531,8 +531,12 @@ def _make_peer_robot_cfg() -> ArticulationCfg:
             rigid_props=sim_utils.RigidBodyPropertiesCfg(**_PEER_RIGID_PROPS),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
                 enabled_self_collisions=False,
-                solver_position_iteration_count=8,
-                solver_velocity_iteration_count=4,
+                # 镜像体关节/root 每帧由 scene_state 硬写,PD 只在两帧间兜底,
+                # 求解精度不影响语义。默认 1/1:8/4 时第二台 43-DoF articulation
+                # 的 CPU 求解要多吃 ~2-3ms/步,是闭环 50Hz 预算的大头之一
+                # (2026-07-28 实测,闭环 E 14→11.5ms)。
+                solver_position_iteration_count=_env_int("ISAACLAB_PEER_SOLVER_POS_ITERS", 1),
+                solver_velocity_iteration_count=_env_int("ISAACLAB_PEER_SOLVER_VEL_ITERS", 1),
             ),
         )
     else:
@@ -714,6 +718,25 @@ class ConveyorEventsCfg:
     )
 
 
+# 性能 A/B 诊断开关（默认全关，不影响任务语义）。用途:拆分 conveyor 相对底座
+# SONIC 任务多出的 env.step 成本。取值逗号分隔,如 ISAACLAB_CONVEYOR_PERF_AB=no_peer,no_props:
+#   no_peer      摘掉对端镜像机器人(第二台 43-DoF articulation)
+#   no_props     摘掉流水线道具(双拖车/纸箱/测试箱/两筐,连带关 drive_totes)
+#   plain_ground warehouse 背景换回底座的无限地平面(连带关 lock_sorting_bins)
+# ⚠️ no_peer/no_props 只能配 ISAACLAB_SCENE_SYNC=0 用(同步 term 会引用被摘的实体)。
+_PERF_AB = {
+    item.strip()
+    for item in os.environ.get("ISAACLAB_CONVEYOR_PERF_AB", "").split(",")
+    if item.strip()
+}
+if _PERF_AB and SCENE_SYNC_ENABLED:
+    raise RuntimeError(
+        "ISAACLAB_CONVEYOR_PERF_AB 是诊断开关,必须与 ISAACLAB_SCENE_SYNC=0 联用"
+    )
+
+_PROP_NAMES = ("pushcart", "cart_box1", "cart_box2", "test_box", "pushcart_2", "cart2_tote1", "cart2_tote2")
+
+
 @configclass
 class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
     """SONIC DDS 控制 + warehouse 流水线场景 + ZMQ 双机同步。"""
@@ -728,6 +751,33 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
 
     def __post_init__(self):
         super().__post_init__()
+        # GUI 开局相机对准流水线工位(默认相机看世界原点,工作区在 (-5,14) 附近,
+        # 打开就是空镜头还得手动飞过去)。
+        self.viewer.eye = (-2.4, 11.9, 2.6)
+        self.viewer.lookat = (-5.3, 14.5, 1.0)
+        if _PERF_AB:
+            print(f"[conveyor_env_cfg] ⚠️ 性能 A/B 诊断开关生效: {sorted(_PERF_AB)}")
+            if "no_peer" in _PERF_AB:
+                self.scene.peer_robot = None
+            if "no_props" in _PERF_AB:
+                for _name in _PROP_NAMES:
+                    setattr(self.scene, _name, None)
+                self.events.drive_totes = None
+            if "plain_ground" in _PERF_AB:
+                self.scene.background = None
+                self.events.lock_sorting_bins = None
+                self.scene.ground = AssetBaseCfg(
+                    prim_path="/World/GroundPlane",
+                    spawn=sim_utils.GroundPlaneCfg(
+                        physics_material=sim_utils.RigidBodyMaterialCfg(
+                            friction_combine_mode="multiply",
+                            restitution_combine_mode="multiply",
+                            static_friction=1.0,
+                            dynamic_friction=1.0,
+                            restitution=0.0,
+                        )
+                    ),
+                )
         # fail-fast 放在任务被实际选中时（import 期不能抛，会连坐其他任务的注册）：
         # 回退的 URDF 直转 peer 带碰撞体，会被地面弹出后无重力恒速上飘。
         if not _PEER_ROBOT_USD.exists():
