@@ -1,0 +1,167 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## 项目概览
+
+基于 Isaac Lab 的 Unitree G1 / H1-2 仿真环境。核心特点：**仿真器收发与真机完全相同的 DDS 话题**
+（`rt/lowcmd`、`rt/lowstate`、`rt/dex3/*` 等），因此可直接对接 `xr_teleoperate` 做数据采集、回放、
+数据增强生成，也可以接入外部控制器（当前分支 `xiaoyang01` 的重点是 Gear SONIC 全身控制闭环）。
+
+⚠️ 运行仿真时会往网络里发真机同名 DDS 话题；同一网段有真机时务必用 `UNITREE_DDS_DOMAIN` /
+`UNITREE_DDS_INTERFACE` 隔离。
+
+## 本机环境（已实测）
+
+| 项目 | 路径 / 值 |
+|---|---|
+| conda 环境 | `env_isaaclab`（Python 3.11），`conda activate env_isaaclab` |
+| `isaaclab` 包实际来源 | `/home/nolo/xiaoyang_IssacLab/IsaacLab`（可编辑安装，分支 `07241`）—— **不是** `/home/nolo/IsaacLab` |
+| `isaacsim` | pip 安装在 conda 环境内，故可直接 `python sim_main.py`，无需 `isaaclab.sh -p` |
+| GR00T/SONIC 仓库 | `/home/nolo/GR00T-WholeBodyControl` |
+| `assets/` | 符号链接到外部盘；资产由 `fetch_assets.sh`（HuggingFace + git-lfs）下载 |
+
+要改 Isaac Lab 本身的行为时，改的是 `/home/nolo/xiaoyang_IssacLab/IsaacLab` 下的源码。
+
+## 常用命令
+
+```bash
+conda activate env_isaaclab
+
+# 遥操作（普通任务）：--enable_dex1_dds / --enable_dex3_dds / --enable_inspire_dds 三选一
+python sim_main.py --device cpu --enable_cameras \
+  --task Isaac-PickPlace-Cylinder-G129-Dex1-Joint --enable_dex1_dds --robot_type g129
+
+# 数据回放 / 数据生成
+python sim_main.py --device cpu --enable_cameras --task Isaac-Stack-RgyBlock-G129-Dex1-Joint \
+  --enable_dex1_dds --robot_type g129 --replay_data --file_path <数据集目录> \
+  [--generate_data --generate_data_dir ./data2] [--modify_light] [--modify_camera]
+
+# SONIC 43DoF 闭环（另一终端跑 GR00T 的 deploy.sh isaac profile）
+GR00T_WBC_ROOT=/home/nolo/GR00T-WholeBodyControl \
+UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo \
+python sim_main.py --task Isaac-G1-29DoF-Sonic --robot_type g129 \
+  --action_source sonic_dds --device cpu --stats_interval 5 --profile_interval 250
+
+# 无渲染 A/B（排除渲染负载，物理步长不变），或 WebRTC 直播（二者互斥）
+--no_render     |     --livestream_type 1|2 [--public_ip x.x.x.x]
+
+# SONIC 资产/跟踪诊断
+python tools/diagnose_sonic_model.py --task Isaac-G1-29DoF-Sonic [--summary-only]
+python tools/monitor_sonic_tracking.py     # 订阅 C++ ZMQ debug 流比对参考动作与实测关节
+```
+
+任务名清单见 `README_zh-CN.md` 的表格；带 `Wholebody` 的任务支持移动（配 `send_commands_8bit.py` /
+`send_commands_keyboard.py` 发速度指令）。
+
+## 测试
+
+测试是纯 unittest + mock，**不启动 Isaac Sim**，跑得很快（<1s）：
+
+```bash
+python -m unittest discover -s tests                       # 全部（23 用例）
+python -m unittest tests.test_sonic_dds_full_lowcmd -v     # 单个文件
+python -m unittest tests.test_g1_robot_dds_reset_grace.G1RobotDDSResetGraceTest.test_reset_grace_can_be_rearmed_after_a_slow_reset
+
+# URDF 相关 6 个用例默认因缺 GR00T 源资产而 skip，需显式指路径
+GR00T_WBC_ROOT=/home/nolo/GR00T-WholeBodyControl python -m unittest tests.test_g1_sonic_urdf
+```
+
+测试里 DDS 固定用 `UNITREE_DDS_DOMAIN=91` / `lo` 与真实运行隔离，新增 DDS 测试请沿用。
+
+## 架构要点
+
+### 控制主循环（单线程渲染 + 后台 DDS 线程）
+
+```
+sim_main.py main() 主循环（必须在主线程，Isaac 渲染要求）
+  └─ RobotController.step()          layeredcontrol/robot_control_system.py
+       ├─ ActionProvider.get_action(env)   同步调用，拿到 action tensor
+       ├─ [可选] can_step_environment()    返回 False 则本轮跳过 env.step（SONIC 锁步握手）
+       ├─ env.step(action)
+       └─ 基于 monotonic deadline 的定频休眠（--step_hz，SONIC 默认 50，其他 100）
+```
+
+`ActionProvider`（`action_provider/action_base.py`）另有一个后台线程 `_run_loop` 做接收/解码，
+`get_action` 只做取值，避免与主线程抢锁。拿不到新动作时沿用 `_last_action`。
+
+### DDS 层：共享内存双向桥
+
+`dds/dds_master.py` 的 `DDSManager` 是全局单例，按名字注册对象（`g129`/`dex3`/`dex1`/`inspire`/
+`run_command`/`reset_pose`/`sim_state`/`rewards`），有独立发布线程按对象各自频率（默认 100 Hz）调度。
+每个 `DDSObject` 持有两块共享内存：
+
+- **Isaac → DDS（状态）**：`tasks/common_observations/*.py` 里的观测函数在被 `ObsTerm` 调用时，
+  **顺带把状态写进 `input_shm`**（如 `g1_robot_dds` 的 `isaac_robot_state`），发布线程再读出来发 DDS。
+  ⚠️ 这些"观测函数"有副作用，不是纯函数——删掉某个 ObsTerm 会直接让对应话题停发。
+- **DDS → Isaac（命令）**：订阅回调把命令写进 `output_shm`（如 `dds_robot_cmd`），
+  ActionProvider 通过 `dds_manager.get_object("g129").get_robot_command()` 读取并组装 action。
+
+话题：`rt/lowcmd`(订)、`rt/lowstate`+`rt/secondary_imu`(发)、`rt/dex3/{left,right}/{cmd,state}`、
+`rt/dex1/{left,right}/{cmd,state}`、`rt/inspire/{cmd,state}`、`rt/reset_pose/cmd`(订)、
+`rt/run_command/cmd`(订)、`rt/sim_state`、`rt/rewards_state`。
+
+### action_source 会被 sim_main.py 自动改写
+
+`--action_source` 显式传 `dds` 时仍可能被覆盖，排查行为时注意启动日志：
+SONIC 任务 → `sonic_dds`；任务名含 `Wholebody` 或 `--enable_wholebody_dds` → `dds_wholebody`
+（并打开 `use_rl_action_mode`）；`--replay_data` → `replay`。
+provider 在 `action_provider/create_action_provider.py` 里按需惰性导入。
+
+### 任务注册与配置复用
+
+- `tasks/__init__.py` 用 `import_packages` 递归导入注册 gym 环境，但黑名单含 `pick_place`，
+  **新任务必须同时加进 `tasks/g1_tasks/__init__.py` 的显式 import 和 `__all__`**，否则 `gym.make` 找不到。
+- 每个任务目录：`__init__.py`(gym.register) + `<name>_env_cfg.py`(场景/动作/观测/事件) + `mdp/`。
+  `mdp/__init__.py` 做 `from isaaclab.envs.mdp import *` 再叠加本地 `observations/terminations/rewards`
+  的 re-export，于是 env_cfg 里统一写 `mdp.xxx`，官方项与自定义项混用无缝。
+- 横向复用层：`tasks/common_scene/`（除机器人外的场景）、`tasks/common_config/`
+  （`G1RobotPresets` / `H12RobotPresets` / `CameraPresets`）、`tasks/common_observations/`、
+  `tasks/common_termination/`（物体越界判定）、`tasks/common_event/`（reset 事件）。
+- 机器人本体 `ArticulationCfg` 与 USD 路径集中在 `robots/unitree.py`。
+- 新增任务的完整步骤见 `README_zh-CN.md` §3.2。
+
+### SONIC 43DoF 桥接（`Isaac-G1-29DoF-{Sonic,Dex3-Sonic,Training-Sonic}`）
+
+- **载体**：29 本体关节 + 14 个 Dex3 关节。URDF 由 `robots/g1_sonic_urdf.py` 在运行时从 GR00T 源
+  资产合成到 `/tmp/unitree_sim_isaaclab_sonic_<uid>/`，再经 `UrdfFileCfg(force_usd_conversion=True)`
+  转 USD。GR00T 根目录默认硬编码为 `/home/nolovr/GR00T-WholeBodyControl`（另一台机器的路径），
+  **本机必须设 `GR00T_WBC_ROOT=/home/nolo/GR00T-WholeBodyControl`**，否则静默 fallback 到旧的
+  tmp 产物或在 URDF 导入时才报缺文件。
+- **action 布局**：三个 action term（`joint_pos`/`joint_vel`/`joint_effort`）field-major 拼接 ⇒
+  43×3 = 129 维；`RobotController` 的 fallback action 按 `action_manager.total_action_dim` 分配，
+  不要假设 action 维度 == 关节数。
+- **锁步握手**：LowState 带 `sample_seq`/reset epoch，C++ 侧用 LowCmd reserve 回 ack；ack 未匹配时
+  `can_step_environment()` 返回 False，PhysX 暂停而非重复推进旧动作（日志里 `sync_waits`）。
+- **倒地复位**：`SonicFallResetMonitor`（倾角/根高 + 去抖 + 冷却）→ `trigger_robot_reset()`：
+  开 reset epoch → 抑制非物理 dq/tau 的 grace 窗口 → 事件复位 → `env.reset` → 重新武装 grace。
+- **SONIC 任务的默认值与普通任务不同**（`sim_main.py` 里按 `is_sonic_task` 分支）：step_hz 50、
+  DDS domain 1 + `lo`、`sim_state` 导出降到 5 Hz、自动倒地复位开、跳过图像服务（无相机）、
+  强制 Dex3 DDS。改这些默认值前先读 `doc/sonic_g1_29dof_phase1_handoff_zh.md`。
+
+## 约定与陷阱
+
+- **关节顺序**：`robots/g1_joint_order.py` 的 `G1_29DOF_DDS_JOINT_ORDER` 是 Python 侧唯一的 DDS
+  硬件顺序真源。Isaac articulation 的关节顺序与之**不同**，任何映射都必须按关节名建索引，
+  不能按下标假设。
+- **`__pycache__` 曾被误跟踪**（87 个 `.pyc`，因 `.gitignore` 规则是后加的），已用
+  `git rm -r --cached` 移除跟踪，磁盘文件保留。之后若再在 diff 里看到 `.pyc`，说明有人用
+  `git add -f` 强加了，应当剔除而不是提交。
+- `sim_main.py` 大量用 `try/except` + `print` 包裹可选功能（材质、相机、physx 参数、奖励等），
+  **失败会静默降级**。排查问题先核对启动日志里的关键行：`[DDS Config]`、`[sim] control timing`、
+  `[sonic_dds] Body mapping`、`[fall_reset] enabled`。
+- 手部 DDS 三选一互斥（`--enable_dex1_dds` / `--enable_dex3_dds` / `--enable_inspire_dds`）。
+- `--device cpu` 是单机器人场景的推荐值（尤其 SONIC：PhysX 走 CPU，把 GPU 留给外部
+  TensorRT/ONNX 推理进程）。
+- `teleimager` 是 git submodule，图像服务在运行时把 `teleimager/src` 插入 `sys.path` 后导入。
+- 首次启动会加载/转换资产，等待时间较长属正常；GUI 里需点 PerspectiveCamera → Cameras →
+  PerspectiveCamera 才能看到主视图。
+
+## 参考文档
+
+- `README_zh-CN.md` / `README.md`：任务清单、环境安装（`auto_setup_env.sh 4.5|5.0|5.1 <env_name>`）、
+  docker 构建、新增任务步骤。
+- `doc/sonic_g1_29dof_phase1_handoff_zh.md`：SONIC 阶段一的权威交接记录——动力学对齐取舍、
+  DDS 协议顺序、生命周期与安全降级、启动顺序、已验证结论与**明确未覆盖的范围**。
+  改 SONIC 相关动力学/时序参数前必读，避免重跑已被否决的实验。
+- `doc/isaacsim{4.5,5.0,5.1}_install_zh.md`：分版本手工安装步骤。
