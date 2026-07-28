@@ -486,5 +486,12 @@ class G1RobotDDS(DDSObject):
                 "reset_epoch": self._latest_written_reset_epoch,
             }
             self.input_shm.write_data(state_data)
+            # lock-step latency path: wake the publish loop so the fresh
+            # sample leaves immediately instead of waiting for the next
+            # scheduled slot (no-op unless enabled via the DDS manager)
+            registered_name = getattr(self, "_dds_registered_name", None)
+            if registered_name is not None:
+                from dds.dds_master import dds_manager
+                dds_manager.notify_fresh_sample(registered_name)
         except Exception as e:
             print(f"g1_robot_dds [{self.node_name}] Error writing robot state: {e}")

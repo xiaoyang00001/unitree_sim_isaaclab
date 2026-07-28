@@ -174,6 +174,18 @@ parser.add_argument(
     help="LowCmd acknowledgement polling interval in seconds",
 )
 parser.add_argument(
+    "--lowstate_pub_hz",
+    "--lowstate-pub-hz",
+    dest="lowstate_pub_hz",
+    type=float,
+    default=None,
+    help=(
+        "manual rt/lowstate DDS publish rate override (default: keep 100 Hz; "
+        "SONIC lock-step already publishes fresh samples immediately via an "
+        "event-driven wake-up, so raising this is normally unnecessary)"
+    ),
+)
+parser.add_argument(
     "--sim_state_export_hz",
     "--sim-state-export-hz",
     dest="sim_state_export_hz",
@@ -265,6 +277,19 @@ parser.add_argument(
 parser.add_argument("--physics_dt", type=float, default=None, help="physics time step, e.g., 0.005")
 parser.add_argument("--render_interval", type=int, default=None, help="render interval steps (>=1)")
 parser.add_argument("--camera_write_interval", type=int, default=None, help="camera write interval steps (>=1)")
+parser.add_argument(
+    "--keep_kit_loop_pacing",
+    "--keep-kit-loop-pacing",
+    dest="keep_kit_loop_pacing",
+    action="store_true",
+    default=False,
+    help=(
+        "keep Isaac's kit loop runner manual-mode pacing (wall-clock locks every "
+        "app.update() to rendering_dt); by default sim_main disables it because "
+        "RobotController already enforces step_hz and the two limiters stack "
+        "additively (GUI main loop drops to ~37 Hz instead of 50 Hz)"
+    ),
+)
 
 
 parser.add_argument(
@@ -853,6 +878,27 @@ def main():
     env.sim.reset()
     env.reset()
 
+    # isaacsim 的 SimulationContext 会把 kit loop runner 设成 manual mode,
+    # 每次 app.update()(即每次 sim.render())都被墙钟定步到 rendering_dt=20ms,
+    # 其中约 15ms 是纯睡眠;与 RobotController 的 step_hz deadline 定频串联后,
+    # GUI 主循环被压到 ~37Hz。sim_main 自己负责定频,这里解除 Kit 层节拍。
+    if not args_cli.keep_kit_loop_pacing:
+        try:
+            import omni.kit.loop._loop as _omni_loop
+            import carb.settings as _carb_settings
+
+            _omni_loop.acquire_loop_interface().set_manual_mode(False)
+            _carb_settings.get_settings().set(
+                "/app/runLoops/main/rateLimitEnabled", False
+            )
+            print(
+                "[sim] kit loop pacing disabled: app.update() no longer "
+                "wall-clock locked to rendering_dt (use --keep_kit_loop_pacing "
+                "to restore)"
+            )
+        except Exception as e:
+            print(f"[sim] failed to disable kit loop pacing: {e}")
+
     if args_cli.teleop_device != "none":
         print("========= create OpenXR teleop device =========")
         try:
@@ -913,6 +959,21 @@ def main():
             print(f"Failed to create dds: {e}")
             return
         print("========= create dds success =========")
+        # 锁步的关键路径是 env.step 写完新样本后等 rt/lowstate 出门:100Hz 调度
+        # 平均白等 5ms(最坏 10ms),直接吃掉每帧 ack 往返预算。SONIC 锁步改为
+        # "新样本即发"(事件唤醒发布线程),保活重发节奏保持 100Hz 不变——
+        # 单纯拉高发布频率会让序列化抢 GIL,省下的等待又亏在 env.step 里。
+        if args_cli.lowstate_pub_hz:
+            try:
+                dds_manager.set_publish_rate("g129", float(args_cli.lowstate_pub_hz))
+                print(f"[sim] rt/lowstate publish rate set to {args_cli.lowstate_pub_hz:.0f} Hz")
+            except Exception as e:
+                print(f"[sim] failed to set lowstate publish rate: {e}")
+        if is_sonic_task and args_cli.sonic_sync_with_lowstate:
+            try:
+                dds_manager.enable_immediate_publish("g129")
+            except Exception as e:
+                print(f"[sim] failed to enable immediate lowstate publish: {e}")
         if is_sonic_task:
             # The first env.reset happens before the DDS object is registered,
             # so its observation cannot seed rt/lowstate. Lock-step control

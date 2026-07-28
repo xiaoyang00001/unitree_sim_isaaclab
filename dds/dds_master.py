@@ -39,6 +39,10 @@ class DDSManager:
         self._pub_interval: Dict[str, float] = {}
         self._pub_next_ts: Dict[str, float] = {}
         self._default_pub_interval: float = 0.01  # 100Hz default
+        # objects whose fresh samples should be published immediately instead
+        # of waiting for the next scheduled slot (lock-step latency path)
+        self._immediate_pub_names: set = set()
+        self._wake_event = threading.Event()
 
         self.dds_initialized = False
         self._init_dds()
@@ -96,7 +100,8 @@ class DDSManager:
             category, obj_name = self._parse_object_name(name)
             
             self.objects[name] = obj
-            
+            obj._dds_registered_name = name
+
             print(f"[DDSManager] register object '{name}' success (category: {category or 'No category'})")
             
             # default frequency
@@ -150,6 +155,17 @@ class DDSManager:
             self._pub_next_ts[name] = 0.0
             print(f"[DDSManager] set publish rate for '{name}' to {hz}Hz")
     
+    def enable_immediate_publish(self, name: str) -> None:
+        """Publish this object's fresh samples immediately on notify_fresh_sample."""
+        self._immediate_pub_names.add(name)
+        print(f"[DDSManager] immediate publish on fresh sample enabled for '{name}'")
+
+    def notify_fresh_sample(self, name: str) -> None:
+        """Mark an object due now and wake the publish loop (no-op unless enabled)."""
+        if name in self._immediate_pub_names:
+            self._pub_next_ts[name] = 0.0
+            self._wake_event.set()
+
     def set_default_publish_rate(self, hz: float) -> None:
         if hz > 0:
             self._default_pub_interval = 1.0 / hz
@@ -183,12 +199,14 @@ class DDSManager:
                     nd = self._pub_next_ts.get(name, now + interval)
                     if next_due is None or nd < next_due:
                         next_due = nd
-                # dynamic sleep until the nearest due, minimum lower bound
+                # dynamic sleep until the nearest due, minimum lower bound;
+                # notify_fresh_sample() wakes the wait early for lock-step objects
                 if next_due is not None:
                     sleep_time = max(0.0002, next_due - time.perf_counter())
-                    time.sleep(sleep_time)
                 else:
-                    time.sleep(0.001)
+                    sleep_time = 0.001
+                if self._wake_event.wait(sleep_time):
+                    self._wake_event.clear()
                 
             except Exception as e:
                 print(f"[DDSManager] publish loop error: {e}")
