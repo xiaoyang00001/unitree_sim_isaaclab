@@ -17,6 +17,12 @@ class ControlConfig:
     step_hz: int = 500  # the frequency of the low-level execution
     replay_mode: bool = False
     use_rl_action_mode: bool = False
+    # SONIC GUI 晚渲染:env.step 只跑物理(cfg.sim.render_interval 已被 sim_main
+    # 设成不可达),渲染由本控制器在 env.step 返回后调用——此时 lowstate 已发布,
+    # C++ 推理与渲染并行,下一轮 get_action 的 ack 等待被渲染时间掩盖。
+    late_render: bool = False
+    # 每 N 个控制循环渲染一次(N=2 即 GUI 25Hz、物理仍 50Hz),摊薄渲染成本。
+    late_render_interval: int = 1
 
 
 class RobotController:
@@ -55,6 +61,7 @@ class RobotController:
         # minimal performance analysis
         self._profile_counter = 0
         self._profile_interval = 2000  # reduce the printing frequency
+        self._render_loop_counter = 0
         
         # cache the function reference (reduce the lookup overhead)
         self._perf_counter = time.perf_counter
@@ -146,6 +153,18 @@ class RobotController:
             else:
                 self.wait_count += 1
         
+        # 2.5 late render: lowstate 已随 env.step 末尾的观测发布出门,这里渲染
+        # 与 C++ 推理并行。HOLD(未 step)时也渲染,GUI 在锁步等待期不冻屏。
+        # 按 late_render_interval 隔圈渲染(计循环数而非物理步数,HOLD 期照常)。
+        render_time = 0.0
+        if self.config.late_render:
+            self._render_loop_counter += 1
+            if self._render_loop_counter >= self.config.late_render_interval:
+                self._render_loop_counter = 0
+                render_start = perf_counter()
+                self.env.sim.render()
+                render_time = perf_counter() - render_start
+
         # 3. deadline-based frequency control
         sleep_start = perf_counter()
         current_time = perf_counter()
@@ -165,9 +184,13 @@ class RobotController:
         self._profile_counter += 1
         if self._profile_counter >= self._profile_interval:
             total_time = perf_counter() - step_start
+            render_part = (
+                f"R:{render_time*1000:.1f}ms, " if self.config.late_render else ""
+            )
             print(
                 f"[Performance] A:{action_time*1000:.1f}ms, "
-                f"E:{env_time*1000:.1f}ms, S:{sleep_time*1000:.1f}ms, "
+                f"E:{env_time*1000:.1f}ms, {render_part}"
+                f"S:{sleep_time*1000:.1f}ms, "
                 f"T:{total_time*1000:.1f}ms, stepped={int(stepped)}, "
                 f"physics_steps={self.step_count}, sync_waits={self.wait_count}"
             )

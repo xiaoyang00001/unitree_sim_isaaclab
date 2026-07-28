@@ -298,6 +298,26 @@ parser.add_argument(
     default=False,
     help="run headless and disable rendering updates entirely",
 )
+parser.add_argument(
+    "--no_late_render",
+    action="store_true",
+    default=False,
+    help=(
+        "restore in-step rendering for SONIC GUI runs (by default the render "
+        "is moved after env.step so it overlaps the C++ inference window)"
+    ),
+)
+parser.add_argument(
+    "--late_render_interval",
+    type=int,
+    default=2,
+    help=(
+        "render once every N control loops in late-render mode; default 2 "
+        "(GUI at 25 Hz, physics/lock-step at 50 Hz). 1 restores full-rate GUI "
+        "but the render cost (~8 ms) then rides every 20 ms loop and the "
+        "closed loop lands at ~46 Hz instead of 50 (2026-07-28 measurements)"
+    ),
+)
 parser.add_argument("--public_ip",type=str,default="127.0.0.1",help="public ip")
 parser.add_argument(
     "--livestream_type",
@@ -636,6 +656,24 @@ def main():
         # alter the modulo test inside ManagerBasedRLEnv.step(), which made the
         # previous command-line override ineffective.  Resolve it before the
         # environment is constructed.
+        #
+        # SONIC GUI 晚渲染:env.step 内的渲染排在 lowstate 发布之前,给锁步
+        # 关键路径白垫 ~8ms。默认把渲染从 env.step 挪到控制器里(env.step 完、
+        # 观测已发布之后),让 C++ 推理窗口与渲染并行,ack 等待被渲染时间掩盖。
+        # 用 --no_late_render 恢复旧行为。
+        late_render_active = (
+            is_sonic_task
+            and not args_cli.no_late_render
+            and not args_cli.no_render
+            and not getattr(args_cli, "headless", False)
+            and not args_cli.xr
+            and not args_cli.replay_data
+            and args_cli.render_interval is None
+        )
+        # ⚠️ late_render 不能在这里把 interval 拨大:GUI 模式下 rendering_dt =
+        # dt × interval 会被 SimulationContext.__init__ 的 kit manual-loop 节拍器
+        # 当墙钟步长用,1e6 会让 _init_stage 的 app.update() 挂死(实测)。
+        # 改为 env 创建完成后再改 env.cfg.sim.render_interval(取模检查现读)。
         if args_cli.no_render:
             resolved_render_interval = 1_000_000
         elif args_cli.render_interval is not None:
@@ -673,13 +711,21 @@ def main():
             f"physics_dt={physics_dt:.6f}s, decimation={decimation}, "
             f"env_step_dt={env_step_dt:.6f}s, step_hz={args_cli.step_hz}"
         )
-        render_hz = 1.0 / (physics_dt * resolved_render_interval)
-        print(
-            "[sim] rendering: "
-            f"render_interval={resolved_render_interval} physics steps "
-            f"(~{render_hz:.2f} Hz), "
-            f"self_collisions={self_collisions_enabled}"
-        )
+        if late_render_active:
+            print(
+                "[sim] rendering: late render enabled — env.step runs physics "
+                "only; the controller renders once per loop after the LowState "
+                "publish (disable with --no_late_render); "
+                f"self_collisions={self_collisions_enabled}"
+            )
+        else:
+            render_hz = 1.0 / (physics_dt * resolved_render_interval)
+            print(
+                "[sim] rendering: "
+                f"render_interval={resolved_render_interval} physics steps "
+                f"(~{render_hz:.2f} Hz), "
+                f"self_collisions={self_collisions_enabled}"
+            )
     except Exception as e:
         print(f"Failed to parse environment configuration: {e}")
         return
@@ -744,6 +790,12 @@ def main():
                     "[sim] headless offscreen rendering every "
                     f"{env.cfg.sim.render_interval} physics steps"
                 )
+            elif late_render_active:
+                # 现在才拨大 interval:SimulationContext 已用正常 rendering_dt
+                # 初始化完毕,这里只影响 ManagerBasedEnv.step 的取模检查(现读
+                # cfg),env.step 从此不再内嵌渲染,渲染由控制器显式调用。
+                env.cfg.sim.render_interval = 1_000_000
+                print("[sim] GUI rendering: once per control loop, after env.step")
             else:
                 print(
                     "[sim] GUI rendering every "
@@ -928,7 +980,9 @@ def main():
     try:    
         control_config = ControlConfig(
             step_hz=args_cli.step_hz,
-            replay_mode=args_cli.replay_data
+            replay_mode=args_cli.replay_data,
+            late_render=late_render_active,
+            late_render_interval=max(1, int(args_cli.late_render_interval)),
         )
     except Exception as e:
         print(f"Failed to create control configuration: {e}")
