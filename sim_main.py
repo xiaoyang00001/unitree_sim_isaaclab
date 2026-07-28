@@ -308,6 +308,29 @@ parser.add_argument(
     ),
 )
 parser.add_argument(
+    "--disable_xr_frame_cap",
+    action="store_true",
+    default=False,
+    help=(
+        "diagnostic only: disable the OpenXR runtime frame-rate cap for "
+        "SteamVR. Raises the average XR loop rate (21->34 Hz measured) but "
+        "destroys frame pacing (irregular frame intervals -> judder/motion "
+        "sickness). With the cap kept and the frame cost inside two HMD "
+        "slots, the loop locks to an evenly paced refresh/2 cadence "
+        "(36 fps @ 72 Hz), which is what actually feels smooth"
+    ),
+)
+parser.add_argument(
+    "--late_render_repeat",
+    type=int,
+    default=1,
+    help=(
+        "render M back-to-back frames per render window (XR: trades physics "
+        "rate for AR head-view frame rate; world state repeats, HMD pose is "
+        "fresh each frame)"
+    ),
+)
+parser.add_argument(
     "--late_render_interval",
     type=int,
     default=2,
@@ -499,7 +522,24 @@ elif args_cli.livestream_type != 0:
 else:
     os.environ["LIVESTREAM"] = "0"
 
-import pinocchio                 
+if args_cli.xr and args_cli.disable_xr_frame_cap:
+    # 诊断开关,默认不启用。SteamVR(Linux/OpenXR) 按头显刷新率给 xrWaitFrame
+    # 定节拍:关掉后平均循环频率上升(实测 21→34Hz),但帧间隔失去对齐、
+    # 忽快忽慢——头显里表现为抖动/晕(2026-07-28 实测否决默认开启)。
+    # 正确姿势是保住帽、把单帧成本压进两个帧槽,循环锁进"刷新率/2"匀速档
+    # (72Hz 面板 → 36fps,帧间隔恒定)。
+    # quirk 名单必须在 kit 启动参数里就位——OpenXR instance 在扩展加载期创建,
+    # 运行期改 carb 设置无效(SteamVR/Linux 的 instance 不可销毁重建)。
+    _xr_kit_args = (
+        "--/xr/openxr/needsFrameRateCap/disabled=[SteamVR] "
+        "--/xr/openxr/needsGraphicsCompletedBeforeEndFrame/disabled=[SteamVR]"
+    )
+    args_cli.kit_args = (
+        f"{args_cli.kit_args} {_xr_kit_args}" if args_cli.kit_args else _xr_kit_args
+    )
+    print("[sim] ⚠️ XR frame-rate cap disabled (diagnostic mode: higher avg Hz, broken pacing)")
+
+import pinocchio
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
@@ -661,12 +701,14 @@ def main():
         # 关键路径白垫 ~8ms。默认把渲染从 env.step 挪到控制器里(env.step 完、
         # 观测已发布之后),让 C++ 推理窗口与渲染并行,ack 等待被渲染时间掩盖。
         # 用 --no_late_render 恢复旧行为。
+        # XR 也走晚渲染:除藏住 ack 等待外,渲染用的是本步最新物理状态,
+        # 头显 motion-to-photon 延迟更低。XR 下渲染间隔强制每圈(循环本身
+        # 慢,隔圈会把 AR 帧率再砍半)。
         late_render_active = (
             is_sonic_task
             and not args_cli.no_late_render
             and not args_cli.no_render
             and not getattr(args_cli, "headless", False)
-            and not args_cli.xr
             and not args_cli.replay_data
             and args_cli.render_interval is None
         )
@@ -982,7 +1024,10 @@ def main():
             step_hz=args_cli.step_hz,
             replay_mode=args_cli.replay_data,
             late_render=late_render_active,
-            late_render_interval=max(1, int(args_cli.late_render_interval)),
+            late_render_interval=(
+                1 if args_cli.xr else max(1, int(args_cli.late_render_interval))
+            ),
+            late_render_repeat=max(1, int(args_cli.late_render_repeat)),
         )
     except Exception as e:
         print(f"Failed to create control configuration: {e}")

@@ -23,6 +23,10 @@ class ControlConfig:
     late_render: bool = False
     # 每 N 个控制循环渲染一次(N=2 即 GUI 25Hz、物理仍 50Hz),摊薄渲染成本。
     late_render_interval: int = 1
+    # 每次渲染窗口连渲 M 帧(实验旋钮):世界状态相同但头显姿态逐帧刷新。
+    # 实测 XR 下 M=2 是负优化(背靠背第二帧成本 14.7→18.5ms/帧,
+    # 物理掉到 17-18Hz 而 AR 仅 ~36fps),保留作诊断用,默认 1。
+    late_render_repeat: int = 1
 
 
 class RobotController:
@@ -162,7 +166,8 @@ class RobotController:
             if self._render_loop_counter >= self.config.late_render_interval:
                 self._render_loop_counter = 0
                 render_start = perf_counter()
-                self.env.sim.render()
+                for _ in range(self.config.late_render_repeat):
+                    self.env.sim.render()
                 render_time = perf_counter() - render_start
 
         # 3. deadline-based frequency control
