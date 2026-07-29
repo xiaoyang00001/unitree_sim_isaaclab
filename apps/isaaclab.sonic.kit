@@ -1,0 +1,223 @@
+##
+# SONIC 非 AR 精简体验:从 isaaclab.python.kit 派生,去掉本工程用不到的
+# 编辑器 UI 窗口、示例机器人扩展、合成数据/Replicator 链路。
+#
+# 目的:压低 app.update() 的 CPU 地板(实测 conveyor 场景 R≈8-9ms,其中
+# ~6ms 与场景内容无关,是 kit 每帧 tick 各扩展 + 绘 UI 的固定开销)。
+# 被其他扩展真正依赖的项会由 kit 依赖解析自动拉起,这里只删"叶子"。
+#
+# ⚠️ 保留项不要乱动:
+#   isaacsim.asset.importer.urdf —— SONIC 运行时把 GR00T URDF 转 USD,必需
+#   omni.physx.* / omni.physics.stageupdate —— 物理
+#   omni.hydra.rtx / omni.kit.viewport.window / omni.kit.mainwindow —— 出画面
+#   omni.kit.manipulator.camera —— GUI 里飞相机
+##
+
+[package]
+title = "Isaac Lab Python (SONIC slim)"
+description = "Isaac Lab app trimmed for the SONIC non-AR closed loop"
+version = "2.3.2"
+keywords = ["experience", "app", "usd"]
+
+[dependencies]
+# Isaac Sim extensions
+"isaacsim.core.api" = {}
+"isaacsim.core.cloner" = {}
+"isaacsim.core.nodes" = {}
+"isaacsim.core.simulation_manager" = {}
+"isaacsim.core.throttling" = {}
+"isaacsim.core.utils" = {}
+"isaacsim.core.version" = {}
+"isaacsim.robot.schema" = {}
+"isaacsim.simulation_app" = {}
+"isaacsim.storage.native" = {}
+
+# Isaac Sim Extra
+"isaacsim.asset.importer.urdf" = {version = "2.4.31", exact = true}
+"omni.physx.bundle" = {}
+"omni.physx.tensors" = {}
+
+# Kit based editor extensions (只留出画面与相机操作必需的)
+"omni.hydra.rtx" = {}
+"omni.kit.mainwindow" = {}
+"omni.kit.manipulator.camera" = {}
+"omni.kit.material.library" = {}
+"omni.kit.viewport.window" = {}
+"omni.physics.stageupdate" = {}
+"omni.warp.core" = {}
+
+########################
+# Isaac Lab Extensions #
+########################
+
+# Load Isaac Lab extensions last
+"isaaclab" = {order = 1000}
+"isaaclab_assets" = {order = 1000}
+"isaaclab_tasks" = {order = 1000}
+
+[settings]
+exts."omni.kit.material.library".ui_show_list = [
+    "OmniPBR",
+    "OmniGlass",
+    "OmniSurface",
+    "USD Preview Surface",
+]
+exts."omni.kit.renderer.core".present.enabled = false # Fixes MGPU stability issue
+exts."omni.kit.viewport.window".windowMenu.entryCount = 2
+exts."omni.kit.viewport.window".windowMenu.label = ""
+exts."omni.usd".locking.onClose = false
+renderer.asyncInit = true
+renderer.gpuEnumeration.glInterop.enabled = false
+rendergraph.mgpu.backend = "copyQueue"
+rtx-transient.dlssg.enabled = false
+rtx.hydra.mdlMaterialWarmup = true
+omni.replicator.asyncRendering = false
+foundation.verifyOsVersion.enabled = false
+
+metricsAssembler.changeListenerEnabled = false
+
+isaac.startup.ros_bridge_extension = ""
+[settings."filter:platform"."windows-x86_64"]
+isaac.startup.ros_bridge_extension = ""
+[settings."filter:platform"."linux-x86_64"]
+isaac.startup.ros_bridge_extension = ""
+
+[settings.app]
+# ⚠️ 必须与原版 experience 用**不同**的 app name。Kit 按 app name 存窗口布局
+# (~/.local/share/ov/data/Kit/<name>/<version>/)。沿用 "Isaac-Sim" 会去恢复完整版
+# 的布局,而精简版里那些停靠容器(Stage/Property/Console)已经没了,Content 浏览器
+# 就会变成浮动窗口飘到正中间**挡住 viewport**——实测过,画面直接看不见。
+name = "Isaac-Sim SONIC"
+version = "5.1.0"
+versionFile = "${exe-path}/VERSION"
+content.emptyStageOnStart = true
+fastShutdown = true
+file.ignoreUnsavedOnExit = true
+font.file = "${fonts}/OpenSans-SemiBold.ttf"
+font.size = 16
+# 多 viewport 才需要聚合渲染结果;单 viewport 关掉省一次拷贝(kit 注释自己也这么说)
+gatherRenderResults = false
+hangDetector.enabled = true
+hangDetector.timeout = 120
+player.useFixedTimeStepping = true
+settings.fabricDefaultStageFrameHistoryCount = 3
+settings.persistent = true
+
+vulkan = true
+asyncRendering = false
+asyncRenderingLowLatency = false
+
+[settings.app.window]
+iconPath = "${isaacsim.simulation_app}/data/omni.isaac.sim.png"
+title = "Isaac Sim"
+
+[settings.app.python]
+interceptSysStdOutput = false
+logSysStdOutput = false
+
+[settings.app.renderer]
+resolution.height = 720
+resolution.width = 1280
+skipWhileMinimized = false
+sleepMsOnFocus = 0
+sleepMsOutOfFocus = 0
+
+[settings.app.viewport]
+defaultCamPos.x = 5
+defaultCamPos.y = 5
+defaultCamPos.z = 5
+defaults.fillViewport = false
+# 地面网格与选中轮廓都是每帧重绘的编辑器辅助件,闭环跑图时用不到
+grid.enabled = false
+outline.enabled = false
+boundingBoxes.enabled = false
+show.camera = false
+show.lights = false
+
+[settings.telemetry]
+enableAnonymousAppName = false
+enableAnonymousData = false
+
+[settings.persistent]
+app.primCreation.DefaultXformOpOrder = "xformOp:translate, xformOp:orient, xformOp:scale"
+app.primCreation.DefaultXformOpType = "Scale, Orient, Translate"
+app.primCreation.typedDefaults.camera.clippingRange = [0.01, 10000000.0]
+app.primCreation.DefaultXformOpPrecision = "Double"
+app.primCreation.DefaultRotationOrder = "ZYX"
+app.primCreation.PrimCreationWithDefaultXformOps = true
+app.stage.timeCodeRange = [0, 1000000]
+app.stage.upAxis = "Z"
+app.viewport.camMoveVelocity = 0.05
+app.viewport.gizmo.scale = 0.01
+app.viewport.grid.scale = 1.0
+app.viewport.camShowSpeedOnStart = false
+app.omniverse.gamepadCameraControl = false
+physics.visualizationDisplayJoints = false
+physics.visualizationSimulationOutput = false
+physics.resetOnStop = true
+renderer.startupMessageDisplayed = true
+resourcemonitor.timeBetweenQueries = 100
+simulation.defaultMetersPerUnit = 1.0
+omni.replicator.captureOnPlay = true
+
+[settings]
+omni.replicator.asyncRendering = false
+app.asyncRendering = false
+app.asyncRenderingLowLatency = false
+
+### FSD
+app.useFabricSceneDelegate = true
+rtx.hydra.readTransformsFromFabricInRenderDelegate = true
+
+exts."omni.replicator.core".Orchestrator.enabled = false
+
+[settings.app.livestream]
+outDirectory = "${data}"
+
+###############################
+[settings.exts."omni.kit.registry.nucleus"]
+registries = [
+    { name = "kit/default", url = "https://ovextensionsprod.blob.core.windows.net/exts/kit/prod/107/shared" },
+    { name = "kit/sdk", url = "https://ovextensionsprod.blob.core.windows.net/exts/kit/prod/sdk/${kit_version_short}/${kit_git_hash}" },
+    { name = "kit/community", url = "https://dw290v42wisod.cloudfront.net/exts/kit/community" },
+]
+
+[settings.app.extensions]
+skipPublishVerification = false
+registryEnabled = true
+fsWatcherEnabled = false
+
+[settings.app.exts]
+# ⚠️ @ISAACLAB_APPS@ / @ISAACLAB_SOURCE@ 是占位符:本文件放在本工程里,kit 的
+# ${app} 会解析成本工程的 apps/ 而不是 Isaac Lab 的,扩展就找不着了。
+# sim_main.py 启动前按实际安装位置把占位符替换掉,再把成品写进 /tmp 交给 kit。
+folders = [
+    "${exe-path}/exts",
+    "${exe-path}/extscore",
+    "${exe-path}/../exts",
+    "${exe-path}/../extsDeprecated",
+    "${exe-path}/../extscache",
+    "${exe-path}/../extsPhysics",
+    "@ISAACLAB_APPS@",
+    "@ISAACLAB_SOURCE@",
+]
+
+[settings.physics]
+autoPopupSimulationOutputWindow = false
+updateToUsd = false
+updateVelocitiesToUsd = false
+updateParticlesToUsd = false
+updateForceSensorsToUsd = false
+outputVelocitiesLocalSpace = false
+useFastCache = false
+visualizationDisplayJoints = false
+fabricUpdateTransformations = false
+fabricUpdateVelocities = false
+fabricUpdateForceSensors = false
+fabricUpdateJointStates = false
+fabricUseGPUInterop = true
+
+[settings]
+persistent.isaac.asset_root.default = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1"
+persistent.isaac.asset_root.cloud = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1"
+persistent.isaac.asset_root.nvidia = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1"

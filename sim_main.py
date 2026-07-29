@@ -12,6 +12,7 @@ import argparse
 import contextlib
 import gc
 import math
+import tempfile
 import time
 import sys
 import signal
@@ -299,6 +300,43 @@ parser.add_argument(
     help="run headless and disable rendering updates entirely",
 )
 parser.add_argument(
+    "--full_kit",
+    "--full-kit",
+    dest="full_kit",
+    action="store_true",
+    default=False,
+    help=(
+        "use Isaac Lab's stock GUI experience instead of the trimmed SONIC one. "
+        "默认精简版去掉了资产浏览器/示例机器人/合成数据链路等本工程用不到的扩展, "
+        "并关掉每帧重绘的地面网格与选中轮廓(渲染 8.33→7.05 ms)。需要 Stage 树、"
+        "Property 面板这些编辑器功能时用本开关回退"
+    ),
+)
+parser.add_argument(
+    "--hide_ui",
+    "--hide-ui",
+    dest="hide_ui",
+    action="store_true",
+    default=False,
+    help=(
+        "hide every Kit panel and keep only the viewport (--/app/window/hideUi=1). "
+        "精简 experience 下本来就是默认行为,这里是给 --full_kit 用的显式开关: "
+        "再省 ~0.7 ms/帧(conveyor 场景 7.05→6.35 ms)"
+    ),
+)
+parser.add_argument(
+    "--show_ui",
+    "--show-ui",
+    dest="show_ui",
+    action="store_true",
+    default=False,
+    help=(
+        "在精简 experience 下强行显示 Kit 面板。默认不显示是因为精简版里 Stage/"
+        "Console 这些停靠容器已被去掉,残留的 Content 浏览器会变成浮动窗口"
+        "**挡住 viewport**(实测)。要编辑器请优先用 --full_kit"
+    ),
+)
+parser.add_argument(
     "--no_late_render",
     action="store_true",
     default=False,
@@ -538,6 +576,84 @@ if args_cli.xr and args_cli.disable_xr_frame_cap:
         f"{args_cli.kit_args} {_xr_kit_args}" if args_cli.kit_args else _xr_kit_args
     )
     print("[sim] ⚠️ XR frame-rate cap disabled (diagnostic mode: higher avg Hz, broken pacing)")
+
+def _resolve_slim_experience() -> str | None:
+    """把本工程的精简 kit 模板解析成可用的 experience 文件,返回其路径。
+
+    为什么要"解析"而不是直接用:kit 里的 ``${app}`` 指 experience 文件所在目录。
+    模板放在本工程 ``apps/`` 下,``${app}/../source`` 会指到本工程而不是 Isaac Lab,
+    扩展目录就全找不着了。这里按实际安装位置(可编辑安装,随机器而异)把占位符
+    换成绝对路径,产物写进 /tmp——与 SONIC URDF 的做法一致。
+    """
+    import isaaclab
+
+    template = os.path.join(project_root, "apps", "isaaclab.sonic.kit")
+    if not os.path.isfile(template):
+        print(f"[sim] slim kit 模板缺失,回退默认 experience: {template}")
+        return None
+
+    # namespace package 形态下 __file__ 会是 None,拿不到就老实回退默认 experience
+    isaaclab_init = getattr(isaaclab, "__file__", None)
+    if not isaaclab_init:
+        print("[sim] 无法定位 isaaclab 包位置,回退默认 experience")
+        return None
+
+    isaaclab_source = Path(isaaclab_init).resolve().parents[2]
+    isaaclab_apps = isaaclab_source.parent / "apps"
+    if not isaaclab_source.is_dir() or not isaaclab_apps.is_dir():
+        print(
+            "[sim] 无法定位 Isaac Lab 的 source/apps 目录,回退默认 experience "
+            f"(source={isaaclab_source}, apps={isaaclab_apps})"
+        )
+        return None
+
+    with open(template, "r", encoding="utf-8") as fp:
+        content = fp.read()
+    content = content.replace("@ISAACLAB_APPS@", str(isaaclab_apps))
+    content = content.replace("@ISAACLAB_SOURCE@", str(isaaclab_source))
+
+    out_dir = os.path.join(
+        tempfile.gettempdir(), f"unitree_sim_isaaclab_kit_{os.getuid()}"
+    )
+    os.makedirs(out_dir, exist_ok=True)
+    resolved = os.path.join(out_dir, "isaaclab.sonic.kit")
+    with open(resolved, "w", encoding="utf-8") as fp:
+        fp.write(content)
+    return resolved
+
+
+# 精简 experience:去掉编辑器 UI 窗口/示例机器人/合成数据链路等本工程用不到的
+# 扩展,并关掉每帧重绘的地面网格与选中轮廓。实测 conveyor 场景渲染 8.33→7.05ms;
+# 再叠 --hide_ui 到 6.35ms(-24%)。GUI 闭环 20ms 预算里这 1-2ms 是能不能每圈渲染
+# (画面 50fps)的关键。要用 Isaac Sim 的编辑器面板时加 --full_kit 回退。
+# ⚠️ XR 与 enable_cameras 各有专属 experience(openxr / rendering kit),精简版
+# 没有 OpenXR 与合成数据那套扩展,这两种模式下必须让 AppLauncher 自己选。
+if (
+    is_sonic_task
+    and not args_cli.full_kit
+    and not args_cli.headless
+    and not args_cli.no_render
+    and not args_cli.xr
+    and not args_cli.enable_cameras
+    and not args_cli.experience
+):
+    _slim_experience = _resolve_slim_experience()
+    if _slim_experience:
+        args_cli.experience = _slim_experience
+        print(f"[sim] slim kit experience enabled: {_slim_experience}")
+        print("      (编辑器面板/菜单已精简,需要完整 GUI 时加 --full_kit)")
+        # 精简版缺 Stage/Console 等停靠容器,残留的 Content 浏览器会浮起来盖住
+        # viewport(实测画面直接看不见),所以默认只留 viewport;鼠标照样能飞相机。
+        if not args_cli.show_ui:
+            args_cli.hide_ui = True
+
+if args_cli.hide_ui:
+    # 隐藏 kit 的全部面板只留 viewport:省掉每帧 imgui 绘制,实测再降 ~0.7ms。
+    _hide_ui_arg = "--/app/window/hideUi=1"
+    args_cli.kit_args = (
+        f"{args_cli.kit_args} {_hide_ui_arg}" if args_cli.kit_args else _hide_ui_arg
+    )
+    print("[sim] kit UI panels hidden (viewport only)")
 
 import pinocchio
 app_launcher = AppLauncher(args_cli)
