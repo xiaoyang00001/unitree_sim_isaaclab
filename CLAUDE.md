@@ -210,6 +210,43 @@ provider 在 `action_provider/create_action_provider.py` 里按需惰性导入�
   **kit CPU 地板**（与场景内容无关），所以降分辨率/`rendering_mode=performance` 都无效
   （已复验否决），真正有效的是减扩展与减每帧重绘的 UI。
 
+## Windows 部署（win2，跨机闭环）
+
+仿真端可以跑在 Windows 上、GR00T 留在 Ubuntu，两端走原生 DDS 跨机。本工程侧的
+Windows 适配已合入，下面是**只在 Windows 上才需要知道**的部分。
+
+启动一律用工程根的 `run_win.bat`（它封装了两个必需的环境变量）：
+
+```bat
+run_win.bat --task Isaac-G1-29DoF-Sonic --robot_type g129 ^
+    --action_source sonic_dds --device cpu --dds-interface <本机IP>
+REM AR：先起 NOLO Link 或 ALVR 拉起 SteamVR，再双击 run_win_ar.bat（必须桌面双击，
+REM ssh 起的进程够不到 OpenXR runtime）
+```
+
+对端 Ubuntu：`./deploy.sh isaac:enp4s0`（`isaac:<iface>` 是跨机专用模式，传裸网卡名
+会被判成 real 而**静默丢掉 `--isaac-sim`**、domain 从 1 掉到 0）。两边都不要显式传 domain。
+
+Windows 特有的坑（每条都有对应提交，`git log --grep="(win)"`）：
+
+| 现象 | 根因 | 对策 |
+|---|---|---|
+| 启动即 `AttributeError` | `os.getuid` 不存在 | 已修：POSIX 用 uid、Windows 用登录名 |
+| `UnicodeEncodeError: 'gbk'` 崩进程 | 中文控制台编不了日志里的 emoji | `PYTHONUTF8=1` + `chcp 65001`（在 bat 里） |
+| `import tasks` 阶段就死 | SONIC 任务在模块级合成 URDF | `GR00T_WBC_ROOT` 必设，**与跑哪个任务无关** |
+| GUI 报 TOML 转义错、连锁 `No module named omni.kit.usd` | 精简 kit 里的 `D:\...` 被 TOML 当转义 | 已修：`as_posix()`。⚠️ headless 测不出来 |
+| GUI/XR 报 `DLL load failed importing _errors` | h5py 的 hdf5.dll 被扩展抢先加载 | 已修：kit 启动前预加载 h5py |
+| `--dds-interface lo` 失败 | Windows 没有 lo 网卡 | 用 `auto` 或本机 IP，注意选项名是**连字符** |
+| 锁步只有 0.4Hz、`Init Done` 等 6 分钟 | 纯 Python CRC 打满回调线程 | 已修：CRC 抽样校验（启动日志有提示行） |
+
+环境侧的两个前提（不在代码里，装机时要做）：
+
+- **cyclonedds 必须是 0.10.x**，且只能自编（无 cp311 wheel）。⚠️ **千万别用 11.0.1**：
+  它会在 discovery 广播 XTypes TypeObject，让 GR00T 的 C++（CycloneDDS 0.10.2）
+  **段错误**。装完还要手改 `cyclonedds/__library__.py` 的路径转义，每次重装都要改。
+- **XR 需要 `isaacsim-extscache-{kit,kit-sdk,physics}`**。装之前先开 Windows 长路径，
+  否则解包失败留下半装残渣，会让普通仿真也崩在 h5py 上。
+
 ## 参考文档
 
 - `README_zh-CN.md` / `README.md`：任务清单、环境安装（`auto_setup_env.sh 4.5|5.0|5.1 <env_name>`）、
