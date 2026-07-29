@@ -22,6 +22,19 @@ import torch
 import gymnasium as gym
 from pathlib import Path
 
+# Windows: import h5py 必须抢在 kit 起来之前。h5py 的 hdf5.dll/z.dll 没有
+# delvewheel 改名隔离,而 GUI/XR 的扩展集会先加载同名 DLL(Windows 同名 DLL
+# 先到先得),之后 isaaclab 在 kit 扩展里 import h5py 就报
+# "DLL load failed while importing _errors"。趁进程还干净先 import,
+# 正确的 DLL 被钉进内存,kit 后面加载什么都不影响(模块已在 sys.modules)。
+# headless 扩展集小、搜索空间干净,从来不触发——所以烟测测不出来,
+# 只有 GUI/XR/enable_cameras 会撞。
+if os.name == "nt":
+    try:
+        import h5py  # noqa: F401
+    except Exception as _h5py_preload_error:
+        print(f"[sim] WARNING: h5py preload failed: {_h5py_preload_error}")
+
 # Isaac Lab AppLauncher
 from isaaclab.app import AppLauncher
 
