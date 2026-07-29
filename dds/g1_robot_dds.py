@@ -41,6 +41,19 @@ class G1RobotDDS(DDSObject):
         super().__init__()
         self.node_name = node_name
         self.crc = CRC()
+        # Windows 上 SDK 的 CRC 走纯 Python 回退,单次 LowCmd 校验实测 1.08ms;
+        # C++ 侧以 500Hz 发 lowcmd,逐包校验要吃掉 54% 单线程,再叠加解析/json/
+        # shm 写,回调线程连同 GIL 一起被打满,锁步等待循环被饿到 ~0.4Hz
+        # (每步 2.5s,Init Done 要 6 分钟)。降为抽样校验(每 50 包验 1 次)后
+        # 负载 ~1%,持续性损坏仍能在 0.1s 内被发现。Linux 的 CRC 是 C 库
+        # (~0.01ms),保持逐包全验不变。
+        self._crc_sample_interval = 1 if getattr(self.crc, "platform", "") == "Linux" else 50
+        self._crc_sample_counter = 0
+        if self._crc_sample_interval > 1:
+            print(
+                f"g1_robot_dds [{node_name}] pure-python CRC detected; "
+                f"validating 1 in {self._crc_sample_interval} lowcmd packets"
+            )
         self.low_state = unitree_hg_msg_dds__LowState_()
         self.torso_imu_state = unitree_hg_msg_dds__IMUState_()
         self._stats_window_start = time.monotonic()
@@ -357,10 +370,16 @@ class G1RobotDDS(DDSObject):
         }
         """
         try:
-            # verify the CRC
-            if self.crc.Crc(msg) != msg.crc:
-                print(f"g1_robot_dds [{self.node_name}] Warning: CRC verification failed!")
-                return {}
+            # verify the CRC (sampled on Windows - see __init__ for why).
+            # getattr defaults keep instances built without __init__ (tests use
+            # __new__ + manual attributes) on the old validate-every-packet path.
+            crc_interval = getattr(self, "_crc_sample_interval", 1)
+            self._crc_sample_counter = getattr(self, "_crc_sample_counter", 0) + 1
+            if self._crc_sample_counter >= crc_interval:
+                self._crc_sample_counter = 0
+                if self.crc.Crc(msg) != msg.crc:
+                    print(f"g1_robot_dds [{self.node_name}] Warning: CRC verification failed!")
+                    return {}
             
             # extract the command data
             num_cmd_motors = len(msg.motor_cmd)
