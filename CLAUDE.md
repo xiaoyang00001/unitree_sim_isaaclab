@@ -49,7 +49,9 @@ python sim_main.py --task Isaac-G1-29DoF-Sonic --robot_type g129 \
 # 非 AR GUI 画面帧率（默认已是"画面 = 物理 = 50 fps"，下面是回退/加码旋钮）
 --full_kit                  # 回退 Isaac Lab 原版 experience，要 Stage 树/Property 面板时用
 --hide_ui                   # 只留 viewport，再省 ~0.7ms/帧（conveyor 靠它稳定 50/50）
---late_render_interval 2    # 隔圈渲染（画面 25fps），留给场景更重、余量吃紧的情况
+--late_render_interval 2    # 隔圈渲染（画面 25fps），留给场景更重、余量吃紧的情况；
+                            # XR 下默认每圈但接受显式覆盖：单帧成本压不进 2 个头显帧槽、
+                            # 画面 2/3 槽交替抖（72Hz 表现为 ~30fps 晃）时设 2 锁 24fps 匀速
 
 # SONIC 资产/跟踪诊断
 python tools/diagnose_sonic_model.py --task Isaac-G1-29DoF-Sonic [--summary-only]

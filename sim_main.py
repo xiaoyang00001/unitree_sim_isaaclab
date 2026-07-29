@@ -376,7 +376,11 @@ parser.add_argument(
         "render once every N control loops in late-render mode. Default 1 "
         "(GUI 画面与物理同频 50 fps): 实测非 AR 闭环下 A+E+R 约 13-14 ms, "
         "20 ms 预算里还剩 5-7 ms 余量,每圈渲染不掉主循环。设 2 可把渲染成本 "
-        "再摊薄一半(画面 25 fps),留给场景更重、余量吃紧的情况"
+        "再摊薄一半(画面 25 fps),留给场景更重、余量吃紧的情况。XR 下默认同样 "
+        "每圈,且**不建议改**:实测设 2 无法锁住匀速档——非渲染圈由 step_hz "
+        "deadline 网格定拍、渲染圈由 xrWaitFrame 帧槽网格定拍,两套时钟不整除 "
+        "会打拍(50Hz 对 72Hz:每对循环相位漂 ~12ms),画面仍在 2/3 帧槽间交替。 "
+        "保留此旋钮只为不静默覆盖用户输入与留档该负结论"
     ),
 )
 parser.add_argument("--public_ip",type=str,default="127.0.0.1",help="public ip")
@@ -829,8 +833,7 @@ def main():
         # 观测已发布之后),让 C++ 推理窗口与渲染并行,ack 等待被渲染时间掩盖。
         # 用 --no_late_render 恢复旧行为。
         # XR 也走晚渲染:除藏住 ack 等待外,渲染用的是本步最新物理状态,
-        # 头显 motion-to-photon 延迟更低。XR 下渲染间隔强制每圈(循环本身
-        # 慢,隔圈会把 AR 帧率再砍半)。
+        # 头显 motion-to-photon 延迟更低。
         late_render_active = (
             is_sonic_task
             and not args_cli.no_late_render
@@ -838,6 +841,16 @@ def main():
             and not getattr(args_cli, "headless", False)
             and not args_cli.replay_data
             and args_cli.render_interval is None
+        )
+        # 渲染间隔默认每圈(非 AR 画面=物理=50fps;XR 每圈撞 xrWaitFrame,全环
+        # 单时钟才能锁相)。此前 XR 下硬编码为 1、静默丢弃用户输入,现改为接受
+        # 显式覆盖——但 XR 下改它救不了抖动:2026-07-29 实测 interval=2 仍抖,
+        # 因为非渲染圈走 step_hz deadline 网格、渲染圈走帧槽网格,两套刚性时钟
+        # 不整除必打拍。AR 卡顿的真因是全链无重投影(见 doc/xr_ar_judder_*.md)。
+        late_render_interval = (
+            1
+            if args_cli.late_render_interval is None
+            else max(1, int(args_cli.late_render_interval))
         )
         # ⚠️ late_render 不能在这里把 interval 拨大:GUI 模式下 rendering_dt =
         # dt × interval 会被 SimulationContext.__init__ 的 kit manual-loop 节拍器
@@ -883,8 +896,9 @@ def main():
         if late_render_active:
             print(
                 "[sim] rendering: late render enabled — env.step runs physics "
-                "only; the controller renders once per loop after the LowState "
-                "publish (disable with --no_late_render); "
+                f"only; the controller renders every {late_render_interval} "
+                "control loop(s) after the LowState publish (disable with "
+                "--no_late_render); "
                 f"self_collisions={self_collisions_enabled}"
             )
         else:
@@ -1151,13 +1165,7 @@ def main():
             step_hz=args_cli.step_hz,
             replay_mode=args_cli.replay_data,
             late_render=late_render_active,
-            # 非 AR 默认每圈渲染(画面 = 物理 = 50 fps)。XR 下同样强制每圈:
-            # 循环本身慢,隔圈会把 AR 帧率再砍半。
-            late_render_interval=(
-                1
-                if args_cli.xr or args_cli.late_render_interval is None
-                else max(1, int(args_cli.late_render_interval))
-            ),
+            late_render_interval=late_render_interval,
             late_render_repeat=max(1, int(args_cli.late_render_repeat)),
         )
     except Exception as e:
