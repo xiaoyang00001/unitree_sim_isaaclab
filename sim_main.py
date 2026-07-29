@@ -614,8 +614,11 @@ def _resolve_slim_experience() -> str | None:
 
     with open(template, "r", encoding="utf-8") as fp:
         content = fp.read()
-    content = content.replace("@ISAACLAB_APPS@", str(isaaclab_apps))
-    content = content.replace("@ISAACLAB_SOURCE@", str(isaaclab_source))
+    # 必须用正斜杠:kit 是 TOML,Windows 路径里的反斜杠会被当成转义序列
+    # (D:\Isaac 的 \I 就是无效转义),整个 experience 会解析失败、扩展目录全丢。
+    # kit 在 Windows 上同样认正斜杠,模板里内建的 ${exe-path}/exts 也是这么写的。
+    content = content.replace("@ISAACLAB_APPS@", isaaclab_apps.as_posix())
+    content = content.replace("@ISAACLAB_SOURCE@", isaaclab_source.as_posix())
 
     # 后缀在 POSIX 上沿用 uid(保持既有 /tmp 产物路径不变);Windows 没有
     # os.getuid,退回登录名。
