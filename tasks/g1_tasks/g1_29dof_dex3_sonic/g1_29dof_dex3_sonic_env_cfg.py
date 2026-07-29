@@ -180,8 +180,19 @@ def make_sonic_robot_cfg() -> ArticulationCfg:
     asset_path = default_sonic_g1_43dof_output_path()
     try:
         asset_path = build_default_sonic_g1_43dof_urdf(_groot_root())
-    except FileNotFoundError:
-        pass
+    except FileNotFoundError as exc:
+        # 合成失败静默回退旧产物是刻意的(见上);但 /tmp 被清(如重启)后旧产物
+        # 也没了,SONIC 任务必死于"asset path does not exist",在这里先把真因
+        # 喊出来。仅在两头都缺时打印,不给非 SONIC 用户加噪声。
+        if not asset_path.is_file():
+            print(
+                "[g1_29dof_dex3_sonic] ⚠️ SONIC URDF 无法合成也无旧产物,"
+                f"SONIC 任务将在建环境时失败。合成失败原因: {exc}; "
+                f"回退产物不存在: {asset_path}。"
+                "检查 GR00T_WBC_ROOT 与 gear_sonic/data 源文件"
+                "(源缺失可从 GR00T 仓库 git 历史恢复,验证: "
+                "GR00T_WBC_ROOT=... python -m unittest tests.test_g1_sonic_urdf)"
+            )
     cfg.spawn = _make_sonic_urdf_spawn(asset_path, force_usd_conversion=True)
     # The adapted carrier adds 14 hand joints and many hand bodies that are not
     # part of the released 29-DoF training articulation.  Keep whole-body
