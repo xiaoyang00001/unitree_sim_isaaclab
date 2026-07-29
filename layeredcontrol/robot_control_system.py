@@ -61,6 +61,11 @@ class RobotController:
         self.step_count = 0
         self.wait_count = 0
         self._start_time = 0.0
+
+        # 画面帧率统计:主循环 Hz 与 GUI fps 在隔圈渲染下不是一回事,
+        # 单独累计 sim.render() 的次数与耗时,由 sim_main 的 stats 窗口取走。
+        self._render_count = 0
+        self._render_time_total = 0.0
         
         # minimal performance analysis
         self._profile_counter = 0
@@ -169,6 +174,8 @@ class RobotController:
                 for _ in range(self.config.late_render_repeat):
                     self.env.sim.render()
                 render_time = perf_counter() - render_start
+                self._render_count += self.config.late_render_repeat
+                self._render_time_total += render_time
 
         # 3. deadline-based frequency control
         sleep_start = perf_counter()
@@ -201,6 +208,18 @@ class RobotController:
             )
             self._profile_counter = 0
         return stepped
+    def pop_render_stats(self):
+        """取走并清零本统计窗口内的渲染计数与累计耗时。
+
+        返回 (frames, total_seconds)。late_render 关闭时渲染发生在 env.step
+        内部,这里恒为 (0, 0.0),调用方应据此回退到"主循环 Hz / render_interval"。
+        """
+        frames = self._render_count
+        total = self._render_time_total
+        self._render_count = 0
+        self._render_time_total = 0.0
+        return frames, total
+
     def cleanup(self):
         """clean up the resources"""
         self.stop()

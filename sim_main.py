@@ -1495,6 +1495,15 @@ def main():
                         "sim-state export: "
                         f"{sim_state_rate:.2f} Hz, mean work {sim_state_mean_ms:.3f} ms"
                     )
+                    render_frames, render_work_s = controller.pop_render_stats()
+                    if render_frames > 0 and stats_window_s > 0.0:
+                        # 晚渲染:GUI 画面帧率 = 本窗口 sim.render() 次数 / 窗口时长,
+                        # 与主循环 Hz 不同(隔圈渲染时约为其 1/late_render_interval)。
+                        print(
+                            "GUI render: "
+                            f"{render_frames / stats_window_s:.2f} fps, "
+                            f"mean {1000.0 * render_work_s / render_frames:.2f} ms/frame"
+                        )
                     print(f"=============================")
                     
                     # print_stats(controller)
