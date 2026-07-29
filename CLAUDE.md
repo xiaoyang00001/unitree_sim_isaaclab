@@ -121,7 +121,7 @@ provider 在 `action_provider/create_action_provider.py` 里按需惰性导入�
 - 机器人本体 `ArticulationCfg` 与 USD 路径集中在 `robots/unitree.py`。
 - 新增任务的完整步骤见 `README_zh-CN.md` §3.2。
 
-### SONIC 43DoF 桥接（`Isaac-G1-29DoF-{Sonic,Dex3-Sonic,Training-Sonic}`）
+### SONIC 43DoF 桥接（`Isaac-G1-29DoF-{Sonic,Dex3-Sonic,Training-Sonic,Sonic-Conveyor}`）
 
 - **载体**：29 本体关节 + 14 个 Dex3 关节。URDF 由 `robots/g1_sonic_urdf.py` 在运行时从 GR00T 源
   资产合成到 `/tmp/unitree_sim_isaaclab_sonic_<uid>/`，再经 `UrdfFileCfg(force_usd_conversion=True)`
@@ -138,6 +138,41 @@ provider 在 `action_provider/create_action_provider.py` 里按需惰性导入�
 - **SONIC 任务的默认值与普通任务不同**（`sim_main.py` 里按 `is_sonic_task` 分支）：step_hz 50、
   DDS domain 1 + `lo`、`sim_state` 导出降到 5 Hz、自动倒地复位开、跳过图像服务（无相机）、
   强制 Dex3 DDS。改这些默认值前先读 `doc/sonic_g1_29dof_phase1_handoff_zh.md`。
+
+### SONIC 场景内容：四个任务不是同一个场景
+
+| 任务 id | EnvCfg / SceneCfg | 场景内容 |
+|---|---|---|
+| `Isaac-G1-29DoF-Sonic` | `G129SonicEnvCfg` / `G129SonicSceneCfg` | 地面 + 43DoF 机器人 + **操作台 + 3 个 5cm 方块** + XR 配置 |
+| `Isaac-G1-29DoF-Dex3-Sonic` | 同上——**两个 id 注册到同一个 EnvCfg** | 同上 |
+| `Isaac-G1-29DoF-Sonic-Conveyor` | `G129SonicConveyorEnvCfg`（继承前者） | 上面全部 + 传送带 |
+| `Isaac-G1-29DoF-Training-Sonic` | `G129TrainingSonicEnvCfg` / `G129TrainingSonicSceneCfg` | **只有地面 + 精确 29DoF 训练模型**，干净的 A/B 回归基线 |
+
+- 桌子用 Nucleus 官方 `Props/PackingTable/packing_table.usd`（kinematic）。**别换回仓库自带的旧副本**：
+  它缺 3 个金属材质贴图，XR 模式下会刷 RTX/MDL 错误。
+- **要调布局请转桌子，不要转机器人。** 参考 locomanipulation 场景的机器人初始 yaw 是 +90°，而 SONIC
+  机器人必须保持 identity 朝向以维持 policy 的世界系约定，所以这里是把桌子绕 Z 转 -90° 来补偿的。
+- 方块 5 cm / 0.08 kg / 静动摩擦 1.2 与 0.9 / restitution 0；初始高度由 `SONIC_TABLE_TOP_Z = 0.6996`
+  （世界系桌面高度，不是 prim 原点）推出。
+- 复位：`EventsCfg` 是空的，倒地/手动复位统一走 sim_main 注册的 `reset_scene_to_default`，
+  **方块会跟着一起归位**，不需要再加物体重置事件。
+- ⚠️ SONIC 行走 policy 不感知桌子。桌子是 kinematic 的且就在正前方 0.55 m，跑行走类动作会撞上去——
+  这是场景约束，不是 bug。需要纯行走验证时用 `Training-Sonic`。
+
+### OpenXR：只接管视角，不接管机器人
+
+`--teleop_device motion_controllers`（仅上表前三个任务可用；会自动置 `--xr`；与 `--no_render` 互斥）。
+
+- **`retargeters=[]` 是刻意留空的**：OpenXR 只提供视角锚定和一个 recenter 按键，机器人关节命令
+  100% 仍来自 SONIC DDS。别指望 VR 手柄能操作机器人，排查动作异常时也不必怀疑到它头上。
+- 位置锚是 `torso_link/head_link`——URDF importer 把固定的 head link 并到了 torso 下，层级与参考实现的
+  `Robot_1/head_link` 不同，照抄参考路径会找不到 prim。
+- 旋转锚单独指向 `pelvis` + `FOLLOW_PRIM_SMOOTHED`：只跟 pelvis 的 yaw，**避免躯干 roll/pitch 把 XR
+  世界带歪**。
+- 右手柄 B 键**松开**时重新对正视角 yaw（`recenter_yaw_button_event="release"`），是视角 recenter，
+  不是环境 reset。
+- 退出时必须显式调 `teleop_interface.__del__()` 再 `gc.collect()`：Isaac Lab 的 `OpenXRDevice` 至今没有
+  公开的 `close()`，XR 消息总线和按钮订阅会反向持有设备回调，只丢引用回收不掉。
 
 ## 约定与陷阱
 
