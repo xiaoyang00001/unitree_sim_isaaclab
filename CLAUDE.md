@@ -46,6 +46,11 @@ python sim_main.py --task Isaac-G1-29DoF-Sonic --robot_type g129 \
 # 无渲染 A/B（排除渲染负载，物理步长不变），或 WebRTC 直播（二者互斥）
 --no_render     |     --livestream_type 1|2 [--public_ip x.x.x.x]
 
+# 非 AR GUI 画面帧率（默认已是"画面 = 物理 = 50 fps"，下面是回退/加码旋钮）
+--full_kit                  # 回退 Isaac Lab 原版 experience，要 Stage 树/Property 面板时用
+--hide_ui                   # 只留 viewport，再省 ~0.7ms/帧（conveyor 靠它稳定 50/50）
+--late_render_interval 2    # 隔圈渲染（画面 25fps），留给场景更重、余量吃紧的情况
+
 # SONIC 资产/跟踪诊断
 python tools/diagnose_sonic_model.py --task Isaac-G1-29DoF-Sonic [--summary-only]
 python tools/monitor_sonic_tracking.py     # 订阅 C++ ZMQ debug 流比对参考动作与实测关节
@@ -190,7 +195,18 @@ provider 在 `action_provider/create_action_provider.py` 里按需惰性导入�
   TensorRT/ONNX 推理进程）。
 - `teleimager` 是 git submodule，图像服务在运行时把 `teleimager/src` 插入 `sys.path` 后导入。
 - 首次启动会加载/转换资产，等待时间较长属正常；GUI 里需点 PerspectiveCamera → Cameras →
-  PerspectiveCamera 才能看到主视图。
+  PerspectiveCamera 才能看到主视图（**注意**：`--hide_ui` 下没有菜单栏，这一步做不了，
+  得靠任务自带的开局机位 `viewer.eye/lookat`）。
+- **SONIC GUI 默认走精简 experience** `apps/isaaclab.sonic.kit`（去掉资产浏览器/示例机器人/
+  合成数据链路等 71 个扩展 + 关地面网格与选中轮廓）。模板里的 `@ISAACLAB_APPS@` /
+  `@ISAACLAB_SOURCE@` 由 `sim_main.py` 在启动前按实际安装位置替换后写进 `/tmp`——
+  kit 的 `${app}` 指 experience 文件所在目录，模板放本工程会让扩展目录全部失效。
+  XR 与 `--enable_cameras` 各有专属 experience，这两种模式下自动跳过精简版。
+- **帧率账本**（20ms 预算 = A 等ack + E 物理 + R 渲染 + S 睡眠余量）：主场景
+  A≈0.9/E≈6.2/R≈6.4 有 5-6ms 余量；conveyor E≈10、R≈7 就贴着预算跑，S≈0。
+  判读：`S` 长期为 0 说明已经超支，主循环会掉出 50Hz。渲染成本 R 里约 6ms 是
+  **kit CPU 地板**（与场景内容无关），所以降分辨率/`rendering_mode=performance` 都无效
+  （已复验否决），真正有效的是减扩展与减每帧重绘的 UI。
 
 ## 参考文档
 
