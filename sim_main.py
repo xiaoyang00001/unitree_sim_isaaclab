@@ -11,6 +11,7 @@ os.environ["PROJECT_ROOT"] = project_root
 import argparse
 import contextlib
 import gc
+import getpass
 import math
 import tempfile
 import time
@@ -616,8 +617,12 @@ def _resolve_slim_experience() -> str | None:
     content = content.replace("@ISAACLAB_APPS@", str(isaaclab_apps))
     content = content.replace("@ISAACLAB_SOURCE@", str(isaaclab_source))
 
+    # 后缀在 POSIX 上沿用 uid(保持既有 /tmp 产物路径不变);Windows 没有
+    # os.getuid,退回登录名。
+    getuid = getattr(os, "getuid", None)
+    user_suffix = str(getuid()) if getuid is not None else getpass.getuser()
     out_dir = os.path.join(
-        tempfile.gettempdir(), f"unitree_sim_isaaclab_kit_{os.getuid()}"
+        tempfile.gettempdir(), f"unitree_sim_isaaclab_kit_{user_suffix}"
     )
     os.makedirs(out_dir, exist_ok=True)
     resolved = os.path.join(out_dir, "isaaclab.sonic.kit")
