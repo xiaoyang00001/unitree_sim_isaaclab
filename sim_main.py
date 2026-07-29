@@ -333,12 +333,12 @@ parser.add_argument(
 parser.add_argument(
     "--late_render_interval",
     type=int,
-    default=2,
+    default=None,
     help=(
-        "render once every N control loops in late-render mode; default 2 "
-        "(GUI at 25 Hz, physics/lock-step at 50 Hz). 1 restores full-rate GUI "
-        "but the render cost (~8 ms) then rides every 20 ms loop and the "
-        "closed loop lands at ~46 Hz instead of 50 (2026-07-28 measurements)"
+        "render once every N control loops in late-render mode. Default 1 "
+        "(GUI 画面与物理同频 50 fps): 实测非 AR 闭环下 A+E+R 约 13-14 ms, "
+        "20 ms 预算里还剩 5-7 ms 余量,每圈渲染不掉主循环。设 2 可把渲染成本 "
+        "再摊薄一半(画面 25 fps),留给场景更重、余量吃紧的情况"
     ),
 )
 parser.add_argument("--public_ip",type=str,default="127.0.0.1",help="public ip")
@@ -1024,8 +1024,12 @@ def main():
             step_hz=args_cli.step_hz,
             replay_mode=args_cli.replay_data,
             late_render=late_render_active,
+            # 非 AR 默认每圈渲染(画面 = 物理 = 50 fps)。XR 下同样强制每圈:
+            # 循环本身慢,隔圈会把 AR 帧率再砍半。
             late_render_interval=(
-                1 if args_cli.xr else max(1, int(args_cli.late_render_interval))
+                1
+                if args_cli.xr or args_cli.late_render_interval is None
+                else max(1, int(args_cli.late_render_interval))
             ),
             late_render_repeat=max(1, int(args_cli.late_render_repeat)),
         )
