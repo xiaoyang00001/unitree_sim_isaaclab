@@ -49,9 +49,16 @@ python sim_main.py --task Isaac-G1-29DoF-Sonic --robot_type g129 \
 # 非 AR GUI 画面帧率（默认已是"画面 = 物理 = 50 fps"，下面是回退/加码旋钮）
 --full_kit                  # 回退 Isaac Lab 原版 experience，要 Stage 树/Property 面板时用
 --hide_ui                   # 只留 viewport，再省 ~0.7ms/帧（conveyor 靠它稳定 50/50）
---late_render_interval 2    # 隔圈渲染（画面 25fps），留给场景更重、余量吃紧的情况；
-                            # XR 下默认每圈但接受显式覆盖：单帧成本压不进 2 个头显帧槽、
-                            # 画面 2/3 槽交替抖（72Hz 表现为 ~30fps 晃）时设 2 锁 24fps 匀速
+--late_render_interval 2    # 隔圈渲染（画面 25fps），留给场景更重、余量吃紧的情况。
+                            # ⚠️ XR 下改它救不了卡顿（两套刚性时钟打拍 + 全链无重投影），
+                            # 保留只为不静默覆盖用户输入，见 doc/xr_ar_judder_zh.md
+
+# AR/XR：消卡顿必须走 CloudXR（SteamVR+NOLO 那条链全程无重投影，必抖）
+python -m isaacteleop.cloudxr --accept-eula --host-client   # 另一终端，先起 runtime
+python sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor --robot_type g129 \
+  --action_source sonic_dds --device cpu --teleop_device motion_controllers \
+  --xr_runtime cloudxr        # 自动注入环境+kit 设置；runtime 没起会直接报错而非静默降级
+# 头显浏览器开 https://<PC的IP>:48322/client/ ，接受自签证书后点 CONNECT（不用装 App）
 
 # SONIC 资产/跟踪诊断
 python tools/diagnose_sonic_model.py --task Isaac-G1-29DoF-Sonic [--summary-only]
@@ -181,6 +188,30 @@ provider 在 `action_provider/create_action_provider.py` 里按需惰性导入�
 - 退出时必须显式调 `teleop_interface.__del__()` 再 `gc.collect()`：Isaac Lab 的 `OpenXRDevice` 至今没有
   公开的 `close()`，XR 消息总线和按钮订阅会反向持有设备回调，只丢引用回收不掉。
 
+### AR 卡顿：真因是没有重投影，不是帧率
+
+**权威文档 `doc/xr_ar_judder_zh.md`，改 XR 相关参数前必读**，能省下重跑一遍已被否决实验的时间。
+
+- **根因**：SteamVR + NOLO XrLink 这条链**全程没有重投影/ATW**（vrcompositor 统计
+  `228920 presents / 0 reprojected`，且每次启动都打印
+  `Async support disabled by user setting or a direct mode driver`）。应用帧率只要低于面板
+  刷新率，旧帧就被原样重发、头姿不更新 → 头一转就"粘一下跳一下"。**这是结构性的，
+  帧率和帧节奏优化只能减轻，不能消除。**
+- **`--xr_runtime cloudxr` 是解**：CloudXR 头显端客户端自带深度重投影。本机 runtime 已装好、
+  Isaac Sim 已实连验证。不需要手工 source，runtime 没起会直接报错。
+- ⚠️ **观测陷阱**：SteamVR dashboard（菜单）由 compositor 按面板刷新率逐帧用最新头姿渲染，
+  **永远不抖**，会完全掩盖应用层 judder。2026-07-28 那条"36fps 匀速就流畅"的结论就是这么
+  被污染的。做 XR 主观评测前先确认 dashboard 已关。
+- ⚠️ **kit 的 `/persistent/xr/...` 设置跨进程残留**且优先级高于 experience 文件里的
+  `runtime = "system"`。所以三种 `--xr_runtime` 模式都**显式**写回自己要的值——否则跑过一次
+  CloudXR 之后，普通 `--xr` 会继续去连 CloudXR 并失败在 `xrCreateInstance`。
+- ⚠️ `--xr_runtime` 的 `add_argument` **必须在 `AppLauncher.add_app_launcher_args()` 之后**：
+  该函数内部先跑一次 `parse_known_args()` 探测，那时 `--xr` 还没注册，argparse 会把 `--xr`
+  当成 `--xr_runtime` 的缩写，把所有现有 `--xr` 命令行打断。`tests/test_xr_runtime_cli.py` 守着。
+- **NOLO 那条路 PC 侧改不了**（闭源二进制 + 驱动内根本没有图形管线 + direct-mode 之后再无 warp
+  阶段），只能向 NOLO 提需求；好消息是协议已经够了（每帧视频已带渲染时头姿四元数 + 时钟同步
+  + 高频 tracking 上报），只差客户端实现。细节见 `doc/xr_ar_judder_zh.md` §7。
+
 ## 约定与陷阱
 
 - **关节顺序**：`robots/g1_joint_order.py` 的 `G1_29DOF_DDS_JOINT_ORDER` 是 Python 侧唯一的 DDS
@@ -254,4 +285,6 @@ Windows 特有的坑（每条都有对应提交，`git log --grep="(win)"`）：
 - `doc/sonic_g1_29dof_phase1_handoff_zh.md`：SONIC 阶段一的权威交接记录——动力学对齐取舍、
   DDS 协议顺序、生命周期与安全降级、启动顺序、已验证结论与**明确未覆盖的范围**。
   改 SONIC 相关动力学/时序参数前必读，避免重跑已被否决的实验。
+- `doc/xr_ar_judder_zh.md`：**AR 卡顿的权威文档**——根因（全链无重投影）、已被实测否决的
+  方案清单、CloudXR 通路操作手册与判读口径、NOLO 侧逆向结论。动 XR 参数前必读。
 - `doc/isaacsim{4.5,5.0,5.1}_install_zh.md`：分版本手工安装步骤。

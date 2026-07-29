@@ -68,12 +68,124 @@
 
 按优先级：
 
-1. **换用带客户端重投影的串流通路（CloudXR）** —— 已知 CloudXR 无此问题，其客户端自带 ATW。
-   这是唯一能**根治**的方向。
-2. **头显端 NOLO 客户端实现 ATW** —— 串流方案的重投影正确位置就在头显端
-   （ALVR、Quest Link 皆如此）。PC 侧无源码不可为，需向 NOLO 提需求。
+1. **换用 CloudXR 通路（已实现，见 §6）** —— 唯一能**根治**的方向。CloudXR 的头显端
+   WebXR 客户端自带深度重投影，本机 runtime 已装好且 Isaac Sim 已实连验证过。
+   用 `--xr_runtime cloudxr` 一键切换。
+2. **头显端 NOLO 客户端实现 ATW** —— 只能向 NOLO 提需求，PC 侧做不了（理由见 §7）。
 3. **提高并稳住应用帧率** —— 治标。无重投影时 36fps（均匀重复 2 次）是能达到的最舒服状态，
    优于 30fps 的交替抖动。conveyor 场景物理比主场景重约 4ms，是它掉出 36fps 的原因。
+
+## 6. CloudXR 通路操作手册
+
+### 为什么它治得了
+
+| | SteamVR + NOLO XrLink | CloudXR |
+|---|---|---|
+| 重投影位置 | 无（PC 侧被 direct-mode 旁路，头显端不做） | **头显端 WebXR 客户端**（深度重投影网格 64×64） |
+| 应用 36fps 时 | 旧帧原样重发，头姿过期 → 粘跳 | 客户端按最新头姿 warp 后再显示 |
+| PC 侧可开关 | `enableLinuxVulkanAsync` 已试，无效 | 不需要 |
+
+⚠️ **换 CloudXR 买的是重投影（治卡顿），不是帧率**。实测两条通路的渲染成本同一数量级，
+应用帧率不会因此变高。
+
+### 启动
+
+runtime 必须先在跑（它是独立常驻进程，与本工程无关）：
+
+```bash
+python -m isaacteleop.cloudxr --accept-eula --host-client
+# 用 GR00T 的 .venv_teleop 那份（1.3.132rc1）；--host-client 让 WebXR 客户端页面
+# 从本机自托管，免得依赖头显能否访问外网
+```
+
+然后正常启动仿真，只需加 `--xr_runtime cloudxr`：
+
+```bash
+GR00T_WBC_ROOT=/home/nolo/GR00T-WholeBodyControl UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo \
+python sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor --robot_type g129 \
+  --action_source sonic_dds --device cpu --teleop_device motion_controllers \
+  --xr_runtime cloudxr
+```
+
+不需要手工 `source cloudxr.env`——`--xr_runtime cloudxr` 会自己读
+`~/.cloudxr/run/cloudxr.env` 并注入环境，同时补上 kit 设置。**runtime 没在跑时它会直接
+报错退出，不会静默降级**（静默跑回 SteamVR 是这条路最容易浪费半天的失败模式）。
+
+头显端：浏览器打开 `https://<PC的IP>:48322/client/` → 先点页面里的证书链接、
+「高级 → 继续前往」接受自签证书 → 回来点 CONNECT。**头显端不需要装任何 App。**
+
+### 实现细节（改代码时要知道）
+
+- 两个条件缺一不可：① 环境变量 `XR_RUNTIME_JSON` + `NV_CXR_RUNTIME_DIR`
+  （后者用于定位 `ipc_cloudxr` unix socket）；② kit 设置
+  `xr/system/openxr/runtime=custom` + `activeRuntimeJSON`。
+  只设环境变量不够——`isaaclab.python.xr.openxr.kit` 里硬写了 `runtime="system"`，
+  而命令行 `--/` 设置优先级更高。
+- ⚠️ **绝不能写 `runtime=cloudxr`**：那个值指向 Isaac Sim **内置的 CloudXR 5.0.0** 并会自己
+  拉起内置 service，与外部 6.2.0 抢同一套 IPC 与 49100/48322 端口。
+- ⚠️ `--xr_runtime` 的参数定义必须放在 `AppLauncher.add_app_launcher_args()` **之后**，
+  否则 argparse 会把 `--xr` 当成它的缩写，把所有现有 `--xr` 命令行打断。
+  `tests/test_xr_runtime_cli.py` 锁死了这个行为。
+
+### 判读口径（与 SteamVR 不同）
+
+CloudXR **不导出** `presents`/`reprojected` 计数器，拿不到与 vrcompositor 同口径的对照。
+可用的是 `~/.cloudxr/logs/cxr_server.*.log` 里的 report 块：
+
+| 指标 | 含义 |
+|---|---|
+| `DevicePoseInterval` | 头显位姿上报间隔（实测 11.1ms = 90Hz） |
+| `PredictEndToNextPredict` | 应用出帧间隔（这才是"应用帧率"） |
+| `GpuEndToEncodeEnd` | NVENC 编码耗时（实测 11.3–11.9ms） |
+| `LayerCommitToGpuEnd` | 渲染提交到 GPU 完成 |
+
+**不要再用主循环 Hz 冒充头显帧率**——它们是四个不同的口径。
+
+### 已知约束
+
+- 本机 RTX 4070 Ti **不在 CloudXR 支持白名单**（日志会警告），目前能跑但 NVIDIA 不保证。
+- 走 CloudXR 就完全不经过 SteamVR，NOLO driver 的一切能力同时失效（含全身追踪链路）。
+  本工程 `retargeters=[]` 只用视角锚定 + B 键 recenter，不受影响。
+- 控制器以 `bytedance/pico4_controller` 注册（不是 SteamVR 的 profile），B 键 recenter
+  绑定可能失效；绑定失败只打 warning 不致命，视角锚定照常。
+- SONIC 硬门槛（`fresh_physx`≥48Hz、`lowcmd_changes`≥48Hz、`timeouts`=0）在 CloudXR 下
+  尚未验证，NVENC 编码是全新变量，20ms 预算账本需重测。
+
+## 7. 为什么 NOLO 那部分代码 PC 侧改不了
+
+用户问过"能否直接实现 NOLO 那部分代码"。答案是**不能**，三条独立理由：
+
+1. **不可为**：`driver_nolo.so` / `libnolo-link-encoder.so` / `libTouPing.so` 全是闭源二进制，
+   只有 `.symtab`、无任何 `.debug_*` 段——够逆向读结构，无法重建。
+2. **物理上做不到**：驱动里 SPIR-V magic 出现 **0 次**，`FrameRender::RenderFrame` 只有
+   `vkCmdPipelineBarrier` + `vkCmdCopyImageToBuffer`。**它根本没有图形管线**，
+   做 warp 要从零写一整套渲染管线再注入闭源二进制。
+3. **位置根本就错**：NOLO 是 direct-mode 驱动，compositor 之后 PC 侧再无 warp 阶段；
+   而 ATW 必须用「扫描输出时刻」的最新头姿做，PC 侧在编码前 warp 只能补 PC 内几毫秒，
+   补不了编码（11.3–11.9ms）+ 网络 + 解码 + 显示这几十毫秒。
+
+**能做的是向 NOLO 提需求**，且论据很硬——协议已经够了，只差客户端实现：
+
+- 每帧视频**已经携带**渲染时的头姿四元数
+  （`SubmitLayer` → `HmdMatrix_MatToQuat` → `FrameEncoder::CopyToStaging` → `SendVideo`）；
+- 已有 `NOLO_PACKET_TYPE_TIME_SYNC` 时钟同步；
+- 已有 9236 端口的高频 tracking 上报。
+
+三要素齐全，客户端做 ATW 不需要改协议、也不需要改 PC 侧任何代码。
+
+顺带可报两个 PC 侧缺陷（均已逆向坐实）：
+
+1. `NHmdServerDriver::ReportData` 把 `vecAngularVelocity` 显式清零、`vecVelocity`/
+   `vecAcceleration` 不写、`vecPosition` 写死 `{0.0, 0.6, -0.05}`，同时 `poseTimeOffset`
+   硬编码 `-1.5/refreshRate`（72Hz → −20.8ms）。等于告诉 OpenVR「位姿过期 20.8ms」
+   却又让它没法外推，**SteamVR 自带的位姿预测被废掉**。
+2. 未重载 `IVRDriverDirectModeComponent::PostPresent` / `GetFrameTiming`（`nm` 显示是
+   `openvr_driver.h` 的 weak 空实现），compositor 不受节流自由跑——实测 `FrameEncoder`
+   以 104–109fps 编码发送内容重复的帧，而面板只有 72Hz。
+
+另注：`bigroomconfig.json` 里 `secondsFromVsyncToPhotons` / `steamVRDisplayFPS` /
+`frameQueueSize` / `useKeyedMutex` 等一大批键是**死键**，driver 实际只读 15 个键，
+其中没有任何预测/重投影/延迟补偿开关——**别再翻配置找隐藏旋钮**。
 
 ## 5. 排查时容易混入的无关故障
 
