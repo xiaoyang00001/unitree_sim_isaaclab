@@ -646,6 +646,17 @@ if (
         # viewport(实测画面直接看不见),所以默认只留 viewport;鼠标照样能飞相机。
         if not args_cli.show_ui:
             args_cli.hide_ui = True
+        # viewport 左上角的 FPS/Frame time HUD 由 omni.kit.viewport.window 自带的
+        # ViewportFPS layer 画,hideUi 并不隐藏它——但精简版用的是独立 app name,
+        # 那份 user.config.json 里 renderFPS 默认 False,于是"看不到帧率"。显式打开。
+        # ⚠️ 必须写 /persistent/... 这一支:同名的 /app/viewport/defaults/... 优先级更低,
+        # persistent 键一旦存在就盖住它。
+        _hud_args = (
+            "--/persistent/app/viewport/Viewport/Viewport0/hud/renderFPS/visible=true"
+        )
+        args_cli.kit_args = (
+            f"{args_cli.kit_args} {_hud_args}" if args_cli.kit_args else _hud_args
+        )
 
 if args_cli.hide_ui:
     # 隐藏 kit 的全部面板只留 viewport:省掉每帧 imgui 绘制,实测再降 ~0.7ms。
