@@ -124,6 +124,29 @@ parser.add_argument(
 )
 parser.add_argument("--enable_profiling", action="store_true", default=True, help="enable performance analysis")
 parser.add_argument("--profile_interval", type=int, default=500, help="performance analysis report interval (steps)")
+parser.add_argument(
+    "--profile_trace",
+    type=float,
+    default=0.0,
+    help=(
+        "抓取 kit CPU profiler trace 的秒数(0=关)。用于把 [Performance] 里 R 那一格拆开:"
+        "R 同时装着我们的渲染 CPU 与 xrWaitFrame 帧闸门阻塞,Python 侧计时分不开,而 trace "
+        "给出逐 zone 耗时(含 kit 每帧读写 anchor 的 USD 工作)。产物是 Chrome Trace .gz,"
+        "用 tools/analyze_kit_trace.py 统计。⚠️ 抓取本身有开销,只看相对归因别拿绝对帧率当结论"
+    ),
+)
+parser.add_argument(
+    "--profile_trace_delay",
+    type=float,
+    default=60.0,
+    help="开始抓 trace 前的暖机秒数(默认 60;冷缓存/shader 编译会污染前 ~45 秒)",
+)
+parser.add_argument(
+    "--profile_trace_path",
+    type=str,
+    default=None,
+    help="trace 落盘路径(默认 ./kit_trace_<时间戳>.gz)",
+)
 
 parser.add_argument("--model_path", type=str, default="assets/model/policy.onnx", help="model path")
 parser.add_argument("--reward_interval", type=int, default=10, help="step interval for reward calculation")
@@ -1006,6 +1029,8 @@ def main():
     # profiler.enable()
     image_server = None
     teleop_interface = None
+    # 在 try 之外先绑定:finally 里要用它兜底落 trace,提前抛异常时不能 NameError
+    trace_schedule = None
     shutdown_event = threading.Event()
     print("=" * 60)
     print("robot control system started")
@@ -1647,6 +1672,24 @@ def main():
         last_stats_time = monotonic()
         loop_start_time = last_stats_time
         loop_count = 0
+
+        # kit CPU profiler:把 R 那一格拆成"渲染 CPU"与"帧闸门阻塞"
+        if args_cli.profile_trace > 0.0:
+            try:
+                from tools.kit_trace import TraceSchedule
+
+                trace_path = args_cli.profile_trace_path or os.path.join(
+                    project_root, f"kit_trace_{time.strftime('%Y%m%d_%H%M%S')}.gz"
+                )
+                trace_schedule = TraceSchedule(
+                    trace_path, args_cli.profile_trace_delay, args_cli.profile_trace
+                )
+                print(
+                    f"[kit_trace] scheduled: 暖机 {args_cli.profile_trace_delay:.0f}s "
+                    f"后抓 {args_cli.profile_trace:.0f}s -> {trace_path}"
+                )
+            except Exception as e:
+                print(f"[kit_trace] failed to schedule: {e}")
         last_loop_time = last_stats_time
         recent_loop_times = []  # for calculating moving average frequency
         sim_state_update_count = 0
@@ -1816,6 +1859,8 @@ def main():
 
                 # print statistics and loop frequency periodically
                 stats_now = monotonic()
+                if trace_schedule is not None:
+                    trace_schedule.tick(stats_now)
                 if stats_now - last_stats_time >= args_cli.stats_interval:
                     # calculate while loop execution frequency
                     elapsed_time = stats_now - loop_start_time
@@ -1901,6 +1946,9 @@ def main():
     finally:
         # clean up resources
         print("\nclean up resources...")
+        # trace 先落盘:抓取中途被 Ctrl-C / 组杀打断时,不落盘就整段数据白丢
+        if trace_schedule is not None:
+            trace_schedule.abort()
         controller.cleanup()
         if not args_cli.replay_data:
             dds_manager.cleanup()
