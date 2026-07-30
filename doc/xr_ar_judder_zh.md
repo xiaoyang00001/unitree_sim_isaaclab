@@ -11,12 +11,31 @@
 表现与应用帧率高低不完全相关：30fps 抖，36fps 也抖。
 
 **极具误导性的现象：打开 SteamVR dashboard（菜单）时不抖。**
-这一度让人误判"某个配置能修好它"。真相是 dashboard 由 vrcompositor 自己以面板刷新率
-逐帧、用当前最新头姿渲染，它永远不抖；它盖在应用画面之上时掩盖了应用层的 judder。
+这一度让人误判"某个配置能修好它"。可以确定的部分：dashboard 菜单本身由 vrcompositor
+以面板刷新率逐帧、用当前最新头姿渲染，所以**菜单永远不抖**；做主观评测时它会盖住应用层的
+judder。
 
 > ⚠️ 历史教训：2026-07-28 记录的"72Hz 全链对齐 + 应用匀速 36fps = 流畅"结论，事后
 > 复盘确认当时多半开着 dashboard 观察，**该结论已被推翻**。做 XR 主观评测时必须确认
 > dashboard 已关闭，否则测的是 compositor 而不是你的应用。
+
+### ⏳ 待定论：dashboard 模式下应用画面到底抖不抖（2026-07-30 提出）
+
+一个重要的补充观察（用户实测）：**dashboard 开着时 Isaac 画面并没有定住，能看到机器人
+在正常走动。** 所以应用在 dashboard 模式下仍在持续提交新帧。这让"dashboard 为什么不抖"
+分裂成两个互斥解释，而它们指向完全相反的工程结论：
+
+| | 解释 A：compositor 接管了最终渲染 | 解释 B：稳定参考系的感知效应 |
+|---|---|---|
+| 内容 | dashboard 模式下 compositor 自己做最终合成与畸变，**顺带把应用画面也按最新头姿每帧重新变换** | 应用画面**仍在抖**，但稳定的菜单提供了视觉参考系，抖动变得不显眼、不晕 |
+| 若成立 | 这是"每帧按新头姿重新变换就能消除 judder"的**现场证明**，且说明 SteamVR 本机就有这个能力，只是不对 scene layer 路径启用 → §4 的 overlay 路线值得投入 | dashboard 只是掩盖症状，**借鉴不了**，回到"只能靠头显端 ATW / CloudXR" |
+
+**判据（5 秒即可分辨，必须在头显里做）**：dashboard 开着时，**不看菜单、只盯背景的 Isaac
+画面**，慢速匀速转头。世界是钉在原地纹丝不动（→ A），还是仍然"粘一下、跳一下"（→ B）。
+
+⚠️ **不要用 `0 reprojected` 去否证解释 A**（2026-07-30 犯过这个推理错误）：那个计数器统计的是
+async/interleaved **补帧**路径的次数，dashboard 模式下 compositor 是主渲染源、不是在"补帧"，
+其自绘帧不进这个计数。两者不在同一条统计路径上，`0 reprojected` 与 A 并不矛盾。
 
 ## 2. 根因证据链
 
@@ -27,9 +46,30 @@
 | 3 | `Timed out.641 total.... 2433 presents. 0 reprojected` | 同上。应用没赶上刷新时 compositor **原样重发旧帧**，不做任何姿态校正 |
 | 4 | 设 `steamvr.vrsettings` 的 `"enableLinuxVulkanAsync": true` 后重启 SteamVR，日志**仍**打印证据 1 | 2026-07-29 15:30 实测 |
 | 5 | NOLO 驱动日志中 ATW / timewarp / reprojection 零命中 | `~/nolo_driver_deploy/log/*.log` |
+| 6 | `Compositor Time........CPU: 0.209ms / GPU: 0.007ms` | 同上，6 次会话统计一致（GPU 0.007–0.011ms）。合成路径上 compositor **几乎不做 GPU 工作**——连畸变都由 direct-mode 驱动自己做，它只是把 layer 转手 |
 
 证据 4 是关键的排除法：`user setting` 这一半已被排除，那么打印这行的原因只剩
 `a direct mode driver` —— **NOLO 是 direct-mode 串流驱动，SteamVR 不对它启用 PC 侧异步重投影**。
+
+⚠️ **证据 2/3 的适用范围**：`reprojected` 计数器只统计 async/interleaved **补帧**路径。
+compositor 自绘（如 dashboard 模式）不进这个计数，因此不能用它去否证 §1 的解释 A。
+
+### 附带发现：XR 帧率瓶颈 100% 在 CPU（2026-07-30）
+
+同一批统计行里的 `Game Info` 一栏（`Target 72`，即 SteamVR 目标就是面板 72Hz）：
+
+| 会话 | ApplicationTime CPU | ApplicationTime GPU |
+|---|---|---|
+| 07-29 15:02 | 8.4ms | 0.42ms |
+| 07-29 15:28 | 18.5ms | 0.59ms |
+| 07-29 14:34 | 23.6ms | 1.04ms |
+| 07-29 18:05 | 25.0ms | 0.70ms |
+| 07-30 00:13 | 33.3ms | 3.16ms |
+| 07-30 00:14 | 34.2ms | 3.18ms |
+
+**GPU 全程 0.4–3.2ms，对 13.9ms 的帧预算等于空转；CPU 8–34ms 才是唯一的限速环节。**
+这条独立于卡顿根因，但它把提帧率的可行动作钉死了：一切降分辨率 / 降超采样 /
+`rendering_mode=performance` 的想法都无效（与 §3 表格里那一行互为印证），要提帧率**只能压 CPU**。
 
 ### 机制
 
@@ -74,6 +114,29 @@
 2. **头显端 NOLO 客户端实现 ATW** —— 只能向 NOLO 提需求，PC 侧做不了（理由见 §7）。
 3. **提高并稳住应用帧率** —— 治标。无重投影时 36fps（均匀重复 2 次）是能达到的最舒服状态，
    优于 30fps 的交替抖动。conveyor 场景物理比主场景重约 4ms，是它掉出 36fps 的原因。
+   ⚠️ 但要注意：在这条无重投影的链上，**唯一真正不抖的应用帧率是跑满 72fps**，没有中间档
+   （36fps 匀速那个"流畅"结论已被 §1 的 dashboard 污染推翻）。按 §2 的 CPU 账本，
+   当前单帧 CPU 23–34ms，到 13.9ms 需要 2.4 倍以上的提升，**不乐观**。
+4. **⏳ 借鉴 dashboard：走 SteamVR overlay 路径**（依赖 §1 判据先出结论）—— 见 §4.1。
+
+### 4.1 ⏳ 待验证：把画面交给 compositor 侧的 overlay
+
+**仅当 §1 的判据落在解释 A 时这条路才成立。** 思路是照抄 dashboard 的机制：不再由应用提交
+立体 projection layer，而是把画面作为 **compositor 侧持有的 overlay**（`IVROverlay`，
+纹理由应用更新、位姿变换由 compositor 每帧按最新头姿重算），scene layer 提交纯黑。
+
+**已否决的近亲写法**：通过 OpenXR 提交 `XrCompositionLayerQuad` —— 它仍然走应用 submit 路径，
+而证据 3 表明该路径在没有新 submit 时只做原样重发；kit 也没暴露这个开关。
+
+**代价（即使成立也要认）**：
+
+- 画面退化为平面/曲面（`VROverlayFlags_SideBySide` 可做立体，但只有平面近似，没有真视差与深度）；
+- 需要把 Isaac 的渲染结果交给 overlay（同进程内 OpenXR 与 OpenVR 会话共存的可行性未验证）；
+- 沉浸式 AR 场景会明显降级，更适合"看着面板做遥操作"的用法。
+
+**便宜的判定实验（不需要改本工程）**：写一个几十行的 OpenVR in-game overlay 程序显示一张静态图，
+同时让 Isaac 以 30fps 跑 scene，戴头显对比 **overlay 抖不抖 / scene 抖不抖**。
+两者都抖 → 这条路死；overlay 稳而 scene 抖 → 值得投入。
 
 ## 6. CloudXR 通路操作手册
 
@@ -186,6 +249,36 @@ CloudXR **不导出** `presents`/`reprojected` 计数器，拿不到与 vrcompos
 另注：`bigroomconfig.json` 里 `secondsFromVsyncToPhotons` / `steamVRDisplayFPS` /
 `frameQueueSize` / `useKeyedMutex` 等一大批键是**死键**，driver 实际只读 15 个键，
 其中没有任何预测/重投影/延迟补偿开关——**别再翻配置找隐藏旋钮**。
+
+## 8. 链路全图：从本工程到 NOLO 头显
+
+排查时先认清"哪一段是我们的代码"——五段里只有第 1 段和第 5 段能改：
+
+| 段 | 组件 | 位置 | 可改性 |
+|---|---|---|---|
+| 1 | 本工程：开 XR、选 runtime | `sim_main.py` | ✅ 全部 |
+| 2 | kit XR 扩展：持 OpenXR session，提交 **projection layer** | `isaacsim/extscache/omni.kit.xr.system.openxr-107.3.109.../` | 只能配设置 |
+| 3 | SteamVR OpenXR runtime → `vrcompositor` 合成 | 闭源 | ❌ |
+| 4 | NOLO direct-mode 驱动：拷贝 → NVENC → FEC/UDP | `~/nolo_driver_deploy/bin/linux64/` | ❌ 闭源二进制 |
+| 5 | 推流参数 | `~/nolo_driver_deploy/{XrLinkConfig,bigroomconfig}.json` | ✅ 但多为死键 |
+
+**第 1 段实际只做三件事**（本工程里没有任何推流/编码代码）：
+
+- `sim_main.py:463-471`：`--teleop_device motion_controllers` 强制 `args_cli.xr = True`
+- `sim_main.py:624-721`：`--xr_runtime` 决定接哪个 runtime（写 `XR_RUNTIME_JSON` +
+  kit 的 `/persistent/xr/system/openxr/{runtime,activeRuntimeJSON}`）
+- `sim_main.py:605-620`：`--disable_xr_frame_cap` 注入 kit quirk
+
+**第 4 段内部结构**（逆向所得）：`driver_nolo.so` 注册为 `IVRDriverDirectModeComponent_008`；
+`FrameRender::RenderFrame` 只有 `vkCmdPipelineBarrier` + `vkCmdCopyImageToBuffer`；
+`SubmitLayer` → `HmdMatrix_MatToQuat` → `FrameEncoder::CopyToStaging(HmdQuaternionf_t)` →
+`libnolo-link-encoder.so`（NVENC，11.3–11.9ms/帧）→ `Listener::SendVideo` → `FECSend` → UDP 9936。
+注册入口是 `~/.config/openvr/openvrpaths.vrpath` 的 `external_drivers`。
+反向链路：头显 → 9236 端口高频 tracking → `NHmdServerDriver::ReportData`。
+
+**第 5 段现状**：`XrLinkConfig.json` 的 `FPS=72`、`renderWidth/Height=1920`、`Fov*=52`
+（厂商原值 46，待 NOLO 确认）；`bigroomconfig.json` 的 `encodeFPS=72`、`encodeBitrateInMBits=120`、
+`codec=1`。⚠️ 同文件里 `steamVRDisplayFPS` 至今写着 90 却不生效——它是死键（见 §7 末）。
 
 ## 5. 排查时容易混入的无关故障
 

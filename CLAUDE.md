@@ -200,8 +200,12 @@ provider 在 `action_provider/create_action_provider.py` 里按需惰性导入�
 - **`--xr_runtime cloudxr` 是解**：CloudXR 头显端客户端自带深度重投影。本机 runtime 已装好、
   Isaac Sim 已实连验证。不需要手工 source，runtime 没起会直接报错。
 - ⚠️ **观测陷阱**：SteamVR dashboard（菜单）由 compositor 按面板刷新率逐帧用最新头姿渲染，
-  **永远不抖**，会完全掩盖应用层 judder。2026-07-28 那条"36fps 匀速就流畅"的结论就是这么
+  **菜单永远不抖**，会掩盖应用层 judder。2026-07-28 那条"36fps 匀速就流畅"的结论就是这么
   被污染的。做 XR 主观评测前先确认 dashboard 已关。
+  ⏳ **但 dashboard 模式下应用画面本身抖不抖尚未定论**（用户实测：菜单开着时 Isaac 画面
+  没定住、机器人照常走动）。若它也不抖，说明 compositor 在替应用做每帧重新变换，
+  overlay 路线就值得投入；判据与两种解释见 `doc/xr_ar_judder_zh.md` §1。
+  ⚠️ 别拿 `0 reprojected` 去否证它——那个计数器只统计 async 补帧路径，不含 compositor 自绘。
 - ⚠️ **kit 的 `/persistent/xr/...` 设置跨进程残留**且优先级高于 experience 文件里的
   `runtime = "system"`。所以三种 `--xr_runtime` 模式都**显式**写回自己要的值——否则跑过一次
   CloudXR 之后，普通 `--xr` 会继续去连 CloudXR 并失败在 `xrCreateInstance`。
