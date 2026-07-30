@@ -176,6 +176,8 @@ class Probe:
         self.dashboard_key: str | None = None
         self.visible = False
         self.scene_pid: int | None = None
+        # --slim-dashboard 改过的键的原值，退出时还原
+        self._saved_settings: dict[tuple[str, str], object] = {}
         self._stop = False
 
     # ---------- 生命周期 ----------
@@ -329,6 +331,10 @@ class Probe:
         except Exception as e:
             print(f"[probe] thumbnail 设置失败（不影响主流程）：{e}")
 
+        if args.slim_dashboard:
+            # 必须在 showDashboard 之前:让 dashboard 打开时就已经是精简状态
+            self._apply_slim_dashboard()
+
         ov.showDashboard(key)
         self.visible = True
         print(
@@ -406,10 +412,13 @@ class Probe:
         if self.openvr is None:
             return
         try:
-            if self.overlay_handle is not None:
-                self.openvr.VROverlay().destroyOverlay(self.overlay_handle)
+            self._restore_settings()
         finally:
-            self.openvr.shutdown()
+            try:
+                if self.overlay_handle is not None:
+                    self.openvr.VROverlay().destroyOverlay(self.overlay_handle)
+            finally:
+                self.openvr.shutdown()
 
     # ---------- 遥测 ----------
 
@@ -441,6 +450,66 @@ class Probe:
                 f"[probe] ❌ pyopenvr 的 Compositor_FrameTiming 缺字段:{missing}\n"
                 "  绑定版本与本工具预期不符,读数会失真。装一个较新的:pip install -U openvr"
             )
+
+    def _apply_slim_dashboard(self):
+        """运行时精简 dashboard chrome，尽量削掉底部导航栏的内容。
+
+        为什么在运行时改而不是改 steamvr.vrsettings:
+        - 立即生效、不用重启 SteamVR;
+        - **退出时能还原**，不会把用户的设置留在改过的状态。
+
+        这几个键都在官方 schema（``resources/settingsschema.vrsettings``）里暴露、
+        且在 dashboard 的 web UI（``resources/webinterface/dashboard/systemui.js``）里
+        被真读取——不是死键。用途（从 JS 里的 label 反查）:
+        - ``arcadeMode``  → ``#Settings_ShowSettingsInDashboard``（swapOnOff，true = 精简）
+        - ``showPowerOptions`` → ``#Settings_ShowPowerMenu``
+        - ``showDesktop`` → ``#Settings_ShowDesktopViews``
+        - ``dashboardScale`` → 整个 dashboard 的缩放，调小可直接减少遮挡面积
+
+        ⚠️ 这削的是导航栏里的**条目**；导航栏本身是否会因为空了而消失，只能戴头显看。
+        """
+        s = self.openvr.VRSettings()
+        section = self.openvr.k_pch_Dashboard_Section
+        wanted = {
+            ("bool", "arcadeMode"): True,
+            ("bool", "showPowerOptions"): False,
+            ("bool", "showDesktop"): False,
+        }
+        if self.args.dashboard_scale is not None:
+            wanted[("float", "dashboardScale")] = self.args.dashboard_scale
+
+        for (kind, key), value in wanted.items():
+            try:
+                old = s.getBool(section, key) if kind == "bool" else s.getFloat(section, key)
+                self._saved_settings[(kind, key)] = old
+                if kind == "bool":
+                    s.setBool(section, key, value)
+                else:
+                    s.setFloat(section, key, value)
+                print(f"[probe] dashboard/{key}: {old} -> {value}")
+            except Exception as e:
+                print(f"[probe] ⚠️ dashboard/{key} 设置失败（跳过）：{e}")
+
+    def _restore_settings(self):
+        """把 --slim-dashboard 改过的键还原。
+
+        进程被 SIGKILL 时这里不会执行,用户的 dashboard 设置会留在精简状态——
+        手动还原:SteamVR 设置 → 高级里那三项，或直接改 steamvr.vrsettings 的 dashboard 节。
+        """
+        if not self._saved_settings:
+            return
+        s = self.openvr.VRSettings()
+        section = self.openvr.k_pch_Dashboard_Section
+        for (kind, key), old in self._saved_settings.items():
+            try:
+                if kind == "bool":
+                    s.setBool(section, key, old)
+                else:
+                    s.setFloat(section, key, old)
+                print(f"[probe] 已还原 dashboard/{key} = {old}")
+            except Exception as e:
+                print(f"[probe] ⚠️ 还原 dashboard/{key} 失败：{e}（请手动改回）")
+        self._saved_settings.clear()
 
     def _dashboard_visible(self) -> bool | None:
         """dashboard 当前是否可见；None 表示查不到。
@@ -656,6 +725,24 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pitch", type=float, default=0.0, help="绕 X 轴俯仰（度）")
     p.add_argument("--interval", type=float, default=1.0, help="遥测打印间隔（秒）")
     p.add_argument("--blink-period", type=float, default=8.0, help="blink 模式切换周期（秒）")
+    p.add_argument(
+        "--slim-dashboard",
+        action="store_true",
+        help=(
+            "运行时精简 dashboard chrome，削掉底部导航栏里的条目"
+            "（arcadeMode=true / showPowerOptions=false / showDesktop=false），"
+            "**退出时自动还原**。仅 --mode dashboard 有意义"
+        ),
+    )
+    p.add_argument(
+        "--dashboard-scale",
+        type=float,
+        default=None,
+        help=(
+            "配合 --slim-dashboard：整个 dashboard 的缩放（官方键 dashboard/dashboardScale，"
+            "默认 1.0）。调小可直接减少导航栏的遮挡面积，例如 0.4"
+        ),
+    )
     p.add_argument(
         "--reassert-dashboard",
         action="store_true",

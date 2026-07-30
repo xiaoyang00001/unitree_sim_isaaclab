@@ -100,6 +100,11 @@ class ModeDefaultsTest(unittest.TestCase):
         self.assertEqual(args.alpha, 0.2)
         self.assertEqual(args.y, 1.1)
 
+    def test_slim_dashboard_is_opt_in(self):
+        # 它会改用户的 SteamVR 设置(虽然退出时还原),不能默认开
+        self.assertFalse(self._parse([]).slim_dashboard)
+        self.assertIsNone(self._parse([]).dashboard_scale)
+
     def test_none_mode_still_gets_geometry_defaults(self):
         # mode=none 不建 overlay，但参数不该是 None，否则打印/记录会出 TypeError
         args = self._parse(["--mode", "none"])
