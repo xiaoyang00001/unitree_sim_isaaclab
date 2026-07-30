@@ -23,6 +23,35 @@ import torch
 import gymnasium as gym
 from pathlib import Path
 
+# Windows: 抬高系统定时器分辨率。这是本工程在 Windows 上掉帧的最大单项。
+#
+# Windows 默认的系统定时器周期是 15.625ms,所有走 WaitForSingleObject 的等待
+# 都被量化到这个粒度——包括 threading.Event.wait 与带 timeout 的锁获取。
+# DDS 发布线程正是用 self._wake_event.wait(sleep_time) 排下一次发布
+# (dds/dds_master.py),于是 lowstate 迟发 -> ack 迟到 -> 锁步的 A 项被撑大。
+#
+# ⚠️ 易踩的坑:time.sleep 不受影响。Python 3.11+ 用高精度 waitable timer 实现
+# sleep,所以只测 time.sleep 会得出"timeBeginPeriod 无效"的错误结论(本轮踩过)。
+# win2 实测 (i5-14600KF, Win10 22H2, py3.11.15):
+#   time.sleep(0.2ms)   0.50ms -> 0.50ms   (无变化)
+#   Event.wait(0.2ms)  15.50ms -> 1.46ms   (省 14.03ms)  <- 发布线程走这条
+#   lock(timeout=0.2ms) 15.50ms -> 1.46ms
+#
+# 退出时归还(timeEndPeriod),硬崩残留重启即恢复。
+if os.name == "nt":
+    try:
+        import atexit
+        import ctypes
+
+        _winmm = ctypes.WinDLL("winmm")
+        if _winmm.timeBeginPeriod(1) == 0:  # TIMERR_NOERROR
+            atexit.register(_winmm.timeEndPeriod, 1)
+            print("[sim] Windows timer resolution raised to 1ms (Event.wait 15.5ms -> 1.5ms)")
+        else:
+            print("[sim] WARNING: timeBeginPeriod(1) rejected; Event.wait stays quantised to 15.6ms")
+    except Exception as _timer_error:
+        print(f"[sim] WARNING: timeBeginPeriod(1) failed: {_timer_error}")
+
 # Windows: import h5py 必须抢在 kit 起来之前。h5py 的 hdf5.dll/z.dll 没有
 # delvewheel 改名隔离,而 GUI/XR 的扩展集会先加载同名 DLL(Windows 同名 DLL
 # 先到先得),之后 isaaclab 在 kit 扩展里 import h5py 就报
