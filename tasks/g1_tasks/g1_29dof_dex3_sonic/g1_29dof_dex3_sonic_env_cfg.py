@@ -97,7 +97,8 @@ def _make_sonic_cube_cfg(
         prim_path=f"{{ENV_REGEX_NS}}/{prim_name}",
         init_state=RigidObjectCfg.InitialStateCfg(
             pos=initial_pos,
-            rot=(1.0, 0.0, 0.0, 0.0),
+            # Isaac Lab 6 asset configurations use xyzw quaternion order.
+            rot=(0.0, 0.0, 0.0, 1.0),
         ),
         spawn=sim_utils.CuboidCfg(
             size=SONIC_CUBE_SIZE,
@@ -170,7 +171,8 @@ def make_sonic_robot_cfg() -> ArticulationCfg:
 
     cfg = G1RobotPresets.g1_29dof_dex3_wholebody(
         init_pos=(0.0, 0.0, 0.76),
-        init_rot=(1.0, 0.0, 0.0, 0.0),
+        # Identity in Isaac Lab 6's xyzw quaternion convention.
+        init_rot=(0.0, 0.0, 0.0, 1.0),
     )
 
     # Build a deterministic adapter instead of modifying GR00T's ignored data
@@ -430,7 +432,8 @@ class G129SonicSceneCfg(G129Dex3SonicSceneCfg):
         prim_path="{ENV_REGEX_NS}/PackingTable",
         init_state=AssetBaseCfg.InitialStateCfg(
             pos=(0.55, 0.0, -0.3),
-            rot=(0.70710678, 0.0, 0.0, -0.70710678),
+            # -90 degrees yaw in Isaac Lab 6's xyzw convention.
+            rot=(0.0, 0.0, -0.70710678, 0.70710678),
         ),
         spawn=UsdFileCfg(
             usd_path=str(SONIC_PACKING_TABLE_USD),
@@ -616,7 +619,9 @@ class G129SonicEnvCfg(G129Dex3SonicEnvCfg):
     )
     xr: XrCfg = XrCfg(
         anchor_pos=(0.0, 0.0, 0.0),
-        anchor_rot=(1.0, 0.0, 0.0, 0.0),
+        # Identity in XrCfg's xyzw convention.  The old wxyz identity literal
+        # was a 180-degree X rotation in Isaac Lab 6 and inverted the XR world.
+        anchor_rot=(0.0, 0.0, 0.0, 1.0),
     )
 
     def __post_init__(self):
@@ -627,12 +632,17 @@ class G129SonicEnvCfg(G129Dex3SonicEnvCfg):
         # benefit in the current closed loop.
         self.sim.physx.enable_external_forces_every_iteration = False
 
-        # The URDF importer merges the fixed head link below torso_link, so the
-        # active SONIC stage path differs from the reference Robot_1/head_link
-        # hierarchy.  Position follows the physical head while yaw follows the
-        # pelvis, avoiding torso roll/pitch from tilting the XR world.
-        self.xr.anchor_prim_path = "/World/envs/env_0/Robot/torso_link/head_link"
-        self.xr.anchor_rotation_prim_path = "/World/envs/env_0/Robot/pelvis"
+        # Isaac Sim 6 places articulated links below the Geometry scope.  Use
+        # the non-instanceable physical torso as the position anchor so that
+        # OpenXR can safely author its XRAnchor child.  Yaw follows the pelvis,
+        # avoiding torso roll/pitch from tilting the XR world.
+        self.xr.anchor_prim_path = (
+            "/World/envs/env_0/Robot/Geometry/pelvis/waist_yaw_link/"
+            "waist_roll_link/torso_link"
+        )
+        self.xr.anchor_rotation_prim_path = (
+            "/World/envs/env_0/Robot/Geometry/pelvis"
+        )
         self.xr.fixed_anchor_height = False
         self.xr.anchor_rotation_mode = XrAnchorRotationMode.FOLLOW_PRIM_SMOOTHED
 

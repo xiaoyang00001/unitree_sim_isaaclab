@@ -237,6 +237,8 @@ bash deploy.sh \
 
 完整实现、启动顺序、指标解释和当前验证结果见 [SONIC G1 29DoF 非 VR 阶段交接记录](doc/sonic_g1_29dof_phase1_handoff_zh.md)。
 
+使用 Isaac Sim/Lab 6 和 OpenXR 时，请先阅读 [Isaac Sim 6 SONIC XR 迁移记录](doc/isaacsim6_sonic_xr_migration_zh.md)，其中说明了 URDF importer 3.0、`xyzw` 四元数、XR 锚点和 nested `Geometry` 材质绑定的兼容要求。
+
 **注意 1:** 通用任务如需控制机器人移动，请参考 `send_commands_8bit.py` 或 `send_commands_keyboard.py`。通常只有带 `Wholebody` 标识的任务支持移动；`Isaac-G1-29DoF-Sonic` 是由外部 SONIC policy 独占全身控制的专用例外。
 
 **注意 2:** isaacsim-webrtc-streaming-client 是isaacsim提供的一个用于查看Sim窗口画面的工具，具体安装和使用可参考[官方教程](https://docs.isaacsim.omniverse.nvidia.com/6.0.0/installation/manual_livestream_clients.html).

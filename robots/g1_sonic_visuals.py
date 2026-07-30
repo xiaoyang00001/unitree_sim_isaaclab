@@ -7,9 +7,10 @@ per-link URDF colors with a white material, however.  This module restores the
 appearance from the repository's known-good G1-Dex3 USD without replacing any
 part of the active articulation.
 
-Only each link's ``visuals`` prim receives a USD visual-material binding.  The
-parallel ``collisions`` prim, physics materials, rigid bodies, masses, inertias,
-and joint drives are intentionally untouched.
+Only render-instance roots receive a USD visual-material binding.  Both the
+legacy per-link ``visuals`` hierarchy and Isaac Sim 6's nested ``Geometry``
+hierarchy are supported.  Collision geometry, physics materials, rigid bodies,
+masses, inertias, and joint drives are intentionally untouched.
 
 This module must be imported after ``AppLauncher``/``SimulationApp`` has been
 created because it imports Omniverse USD bindings.
@@ -232,6 +233,69 @@ def _collect_visual_link_prims(robot_prim: Usd.Prim) -> list[tuple[Usd.Prim, Usd
     return result
 
 
+def _collect_isaac6_visual_instance_prims(
+    robot_prim: Usd.Prim,
+) -> list[tuple[str | None, Usd.Prim]]:
+    """Collect Isaac Sim 6 render instances and their logical URDF links.
+
+    The 3.x URDF importer emits moving links as ordinary nested Xforms below a
+    ``Geometry`` scope.  Each render mesh is a direct instanceable child.  A
+    few generated instance names carry an asset suffix (for example,
+    ``torso_link_rev_1_0``); those inherit the logical name from their physical
+    owner link.
+    """
+
+    result: list[tuple[str | None, Usd.Prim]] = []
+    pending = [robot_prim]
+    while pending:
+        prim = pending.pop()
+        owner_link_name = prim.GetName()
+        for child in prim.GetChildren():
+            if child.IsInstance():
+                # Isaac Sim 6 may create a second instance with a generated
+                # ``_1`` suffix for mesh collision geometry.  Its prototype
+                # has CollisionAPI/guide purpose but no material binding.
+                # Authoring a material on that instance after PhysX tensor
+                # views exist recomposes the collision subtree and invalidates
+                # the entire articulation.  Only instances whose prototype
+                # actually contains a render-material binding are safe here.
+                prototype = child.GetPrototype()
+                if not prototype.IsValid() or not any(
+                    prototype_prim.HasAPI(UsdShade.MaterialBindingAPI)
+                    or prototype_prim.GetRelationship(
+                        "material:binding"
+                    ).HasAuthoredTargets()
+                    for prototype_prim in Usd.PrimRange(prototype)
+                ):
+                    continue
+
+                instance_name = child.GetName()
+                logical_link_name = (
+                    instance_name if instance_name in _LINK_MATERIAL_KIND else None
+                )
+                if (
+                    logical_link_name is None
+                    and owner_link_name in _LINK_MATERIAL_KIND
+                    and instance_name.startswith(f"{owner_link_name}_")
+                ):
+                    logical_link_name = owner_link_name
+                result.append((logical_link_name, child))
+                continue
+
+            if child.IsInstanceProxy():
+                continue
+            if child.GetName() in {
+                "Materials",
+                "Looks",
+                "Physics",
+                "joints",
+                "collisions",
+            }:
+                continue
+            pending.append(child)
+    return result
+
+
 def _collect_visual_geometry_prims(visuals_prim: Usd.Prim) -> list[Usd.Prim]:
     """Return render geometry below one already-uninstanced visual root."""
 
@@ -287,6 +351,20 @@ def apply_g1_sonic_visual_materials(
     # Snapshot before authoring. Applying a MaterialBindingAPI changes the
     # stage and can invalidate a live traversal iterator.
     visual_link_prims = _collect_visual_link_prims(robot_prim)
+
+    # Isaac Sim 6's URDF converter no longer creates ``visuals`` children.  It
+    # authors one editable instance root per render link below ``Geometry``.
+    # Binding those roots preserves instancing and leaves physics untouched.
+    if not visual_link_prims:
+        for logical_link_name, visual_instance_prim in _collect_isaac6_visual_instance_prims(
+            robot_prim
+        ):
+            if logical_link_name is None:
+                unmapped_visual_links.add(visual_instance_prim.GetName())
+                continue
+            material_kind = _LINK_MATERIAL_KIND[logical_link_name]
+            _bind_visual_prim(visual_instance_prim, materials[material_kind])
+            bound_link_names[material_kind].add(logical_link_name)
 
     for prim, visuals_prim in visual_link_prims:
         link_name = prim.GetName()

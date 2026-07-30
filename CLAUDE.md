@@ -172,6 +172,8 @@ provider 在 `action_provider/create_action_provider.py` 里按需惰性导入�
   它缺 3 个金属材质贴图，XR 模式下会刷 RTX/MDL 错误。
 - **要调布局请转桌子，不要转机器人。** 参考 locomanipulation 场景的机器人初始 yaw 是 +90°，而 SONIC
   机器人必须保持 identity 朝向以维持 policy 的世界系约定，所以这里是把桌子绕 Z 转 -90° 来补偿的。
+- **Isaac Lab 6 的配置四元数是 `xyzw`**：identity 必须写 `(0, 0, 0, 1)`，桌子的 -90° yaw
+  必须写 `(0, 0, -0.7071, 0.7071)`。旧 `wxyz` 数值会让机器人/XR 翻转、桌子侧倒穿地。
 - 方块 5 cm / 0.08 kg / 静动摩擦 1.2 与 0.9 / restitution 0；初始高度由 `SONIC_TABLE_TOP_Z = 0.6996`
   （世界系桌面高度，不是 prim 原点）推出。
 - 复位：`EventsCfg` 是空的，倒地/手动复位统一走 sim_main 注册的 `reset_scene_to_default`，
@@ -185,14 +187,15 @@ provider 在 `action_provider/create_action_provider.py` 里按需惰性导入�
 
 - **`retargeters=[]` 是刻意留空的**：OpenXR 只提供视角锚定和一个 recenter 按键，机器人关节命令
   100% 仍来自 SONIC DDS。别指望 VR 手柄能操作机器人，排查动作异常时也不必怀疑到它头上。
-- 位置锚是 `torso_link/head_link`——URDF importer 把固定的 head link 并到了 torso 下，层级与参考实现的
-  `Robot_1/head_link` 不同，照抄参考路径会找不到 prim。
-- 旋转锚单独指向 `pelvis` + `FOLLOW_PRIM_SMOOTHED`：只跟 pelvis 的 yaw，**避免躯干 roll/pitch 把 XR
+- Isaac Sim 6 的位置锚是 `Robot/Geometry/pelvis/waist_yaw_link/waist_roll_link/torso_link`；旧的
+  `Robot/torso_link/head_link` 路径不存在，照抄会让同步回调直接返回。
+- 旋转锚单独指向 `Robot/Geometry/pelvis` + `FOLLOW_PRIM_SMOOTHED`：只跟 pelvis 的 yaw，**避免躯干 roll/pitch 把 XR
   世界带歪**。
 - 右手柄 B 键**松开**时重新对正视角 yaw（`recenter_yaw_button_event="release"`），是视角 recenter，
   不是环境 reset。
 - 退出时必须显式调 `teleop_interface.__del__()` 再 `gc.collect()`：Isaac Lab 的 `OpenXRDevice` 至今没有
   公开的 `close()`，XR 消息总线和按钮订阅会反向持有设备回调，只丢引用回收不掉。
+- Isaac Sim 6 的完整迁移边界和验收清单见 `doc/isaacsim6_sonic_xr_migration_zh.md`。
 
 ### AR 卡顿：真因是没有重投影，不是帧率
 
