@@ -63,6 +63,11 @@ python sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor --robot_type g129 \
 # SONIC 资产/跟踪诊断
 python tools/diagnose_sonic_model.py --task Isaac-G1-29DoF-Sonic [--summary-only]
 python tools/monitor_sonic_tracking.py     # 订阅 C++ ZMQ debug 流比对参考动作与实测关节
+
+# AR 卡顿：逼 SteamVR compositor 退出直通的探针（需 SteamVR 已起 + Isaac 已 --xr 接入）
+# 客观判据不用戴头显:comp_gpu 从 ~0.0x 跳起来 = compositor 不再直通。见 doc/xr_ar_judder_zh.md §4.1
+python tools/xr_overlay_probe.py --mode none    # 基线
+python tools/xr_overlay_probe.py --mode tiny    # 3cm overlay,测零代价解
 ```
 
 任务名清单见 `README_zh-CN.md` 的表格；带 `Wholebody` 的任务支持移动（配 `send_commands_8bit.py` /
@@ -202,10 +207,17 @@ provider 在 `action_provider/create_action_provider.py` 里按需惰性导入�
 - ⚠️ **观测陷阱**：SteamVR dashboard（菜单）由 compositor 按面板刷新率逐帧用最新头姿渲染，
   **菜单永远不抖**，会掩盖应用层 judder。2026-07-28 那条"36fps 匀速就流畅"的结论就是这么
   被污染的。做 XR 主观评测前先确认 dashboard 已关。
-  ⏳ **但 dashboard 模式下应用画面本身抖不抖尚未定论**（用户实测：菜单开着时 Isaac 画面
-  没定住、机器人照常走动）。若它也不抖，说明 compositor 在替应用做每帧重新变换，
-  overlay 路线就值得投入；判据与两种解释见 `doc/xr_ar_judder_zh.md` §1。
+- ⭐ **但 dashboard 模式下连 Isaac 画面也不抖**（2026-07-30 用户实测，且此时机器人照常走动
+  ⇒ 应用仍在正常提交新帧）。这说明 **PC 侧每帧按新头姿重新变换的能力本来就有，
+  SteamVR compositor 自己在做，只是不对正常 scene layer 路径启用**——正常模式
+  `Compositor Time GPU: 0.007ms` 是在**直通**。据此的假设：直通的前提是单一 layer，
+  只要存在一个可见 overlay 就可能逼它转入合成模式，**代价近乎为零**（不牺牲立体、
+  不改 Isaac 一行代码）。探针已就绪：`tools/xr_overlay_probe.py`，有不需要戴头显的客观
+  判据（`m_flCompositorRenderGpuMs` 是否从 ~0 跳起来）。步骤与三种结果的分支见
+  `doc/xr_ar_judder_zh.md` §4.1。
   ⚠️ 别拿 `0 reprojected` 去否证它——那个计数器只统计 async 补帧路径，不含 compositor 自绘。
+  ⚠️ 也别把 §7 的"NOLO 驱动内做不到"外推成"PC 侧做不到"；但反过来，§4.1 即使成功也只补
+  PC 内那一段，编码+网络+解码的几十毫秒延迟仍只有头显端 ATW 能补。
 - ⚠️ **kit 的 `/persistent/xr/...` 设置跨进程残留**且优先级高于 experience 文件里的
   `runtime = "system"`。所以三种 `--xr_runtime` 模式都**显式**写回自己要的值——否则跑过一次
   CloudXR 之后，普通 `--xr` 会继续去连 CloudXR 并失败在 `xrCreateInstance`。

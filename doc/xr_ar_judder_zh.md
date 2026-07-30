@@ -19,23 +19,31 @@ judder。
 > 复盘确认当时多半开着 dashboard 观察，**该结论已被推翻**。做 XR 主观评测时必须确认
 > dashboard 已关闭，否则测的是 compositor 而不是你的应用。
 
-### ⏳ 待定论：dashboard 模式下应用画面到底抖不抖（2026-07-30 提出）
+### ✅ 关键实证：dashboard 模式下**连应用画面也不抖**（2026-07-30 用户确认）
 
-一个重要的补充观察（用户实测）：**dashboard 开着时 Isaac 画面并没有定住，能看到机器人
-在正常走动。** 所以应用在 dashboard 模式下仍在持续提交新帧。这让"dashboard 为什么不抖"
-分裂成两个互斥解释，而它们指向完全相反的工程结论：
+两条用户实测，合起来是本文最重要的一个发现：
 
-| | 解释 A：compositor 接管了最终渲染 | 解释 B：稳定参考系的感知效应 |
-|---|---|---|
-| 内容 | dashboard 模式下 compositor 自己做最终合成与畸变，**顺带把应用画面也按最新头姿每帧重新变换** | 应用画面**仍在抖**，但稳定的菜单提供了视觉参考系，抖动变得不显眼、不晕 |
-| 若成立 | 这是"每帧按新头姿重新变换就能消除 judder"的**现场证明**，且说明 SteamVR 本机就有这个能力，只是不对 scene layer 路径启用 → §4 的 overlay 路线值得投入 | dashboard 只是掩盖症状，**借鉴不了**，回到"只能靠头显端 ATW / CloudXR" |
+1. dashboard 开着时 Isaac 画面**并没有定住**，能看到机器人正常走动 → 应用仍在持续提交新帧；
+2. 此时**不只是菜单不抖，Isaac 画面本身也不抖**。
 
-**判据（5 秒即可分辨，必须在头显里做）**：dashboard 开着时，**不看菜单、只盯背景的 Isaac
-画面**，慢速匀速转头。世界是钉在原地纹丝不动（→ A），还是仍然"粘一下、跳一下"（→ B）。
+**结论：PC 侧"按最新头姿逐帧重新变换应用画面"的能力本来就存在，SteamVR 自己就在做，
+只是不对正常的 scene layer 路径启用。** 内容仍是 30fps（机器人在动），几何变换却是 72Hz
+的——这就是 ATW 的定义，只是 SteamVR 不这么叫、也不计入 `reprojected`。
 
-⚠️ **不要用 `0 reprojected` 去否证解释 A**（2026-07-30 犯过这个推理错误）：那个计数器统计的是
+这直接推翻了一个过强的表述："PC 侧无法做任何姿态校正"。准确的说法是：**NOLO 驱动内做不到**
+（§7 的三条理由仍然成立），但 **SteamVR compositor 做得到，而且正在做**。
+
+由此得到一个可检验的因果假设，见 §4.1：
+
+> 直通是一个优化，前提是只有单一 layer。正常模式 `Compositor Time GPU: 0.007ms`
+> 就是在直通；dashboard 一开，compositor 必须自己合成，于是顺带每帧重新变换。
+> **若只要存在任何一个可见 overlay 就能逼它转入合成模式，则代价极小——
+> 不牺牲立体、不改 Isaac 一行代码。**
+
+⚠️ **不要用 `0 reprojected` 去否证这件事**（2026-07-30 犯过这个推理错误）：那个计数器统计的是
 async/interleaved **补帧**路径的次数，dashboard 模式下 compositor 是主渲染源、不是在"补帧"，
-其自绘帧不进这个计数。两者不在同一条统计路径上，`0 reprojected` 与 A 并不矛盾。
+其自绘帧不进这个计数。两者不在同一条统计路径上，`0 reprojected` 与"dashboard 在重新变换
+应用画面"并不矛盾。
 
 ## 2. 根因证据链
 
@@ -117,26 +125,59 @@ compositor 自绘（如 dashboard 模式）不进这个计数，因此不能用�
    ⚠️ 但要注意：在这条无重投影的链上，**唯一真正不抖的应用帧率是跑满 72fps**，没有中间档
    （36fps 匀速那个"流畅"结论已被 §1 的 dashboard 污染推翻）。按 §2 的 CPU 账本，
    当前单帧 CPU 23–34ms，到 13.9ms 需要 2.4 倍以上的提升，**不乐观**。
-4. **⏳ 借鉴 dashboard：走 SteamVR overlay 路径**（依赖 §1 判据先出结论）—— 见 §4.1。
+4. **⭐ 借鉴 dashboard：逼 compositor 转入合成模式** —— 见 §4.1。基于 §1 的实证，
+   这是目前唯一有希望"留在 SteamVR + NOLO 链上还不抖"的方向，且**若成立代价极小**。
 
-### 4.1 ⏳ 待验证：把画面交给 compositor 侧的 overlay
+### 4.1 ⭐ 待实测：逼 compositor 退出直通（探针已就绪）
 
-**仅当 §1 的判据落在解释 A 时这条路才成立。** 思路是照抄 dashboard 的机制：不再由应用提交
-立体 projection layer，而是把画面作为 **compositor 侧持有的 overlay**（`IVROverlay`，
-纹理由应用更新、位姿变换由 compositor 每帧按最新头姿重算），scene layer 提交纯黑。
+**假设**：`Compositor Time GPU: 0.007ms`（证据 6）说明正常模式下 compositor 在**直通**——
+把应用的 swapchain 图像原样转手给 direct-mode 驱动，连畸变都不做。而直通的前提是只有单一
+layer。**只要存在任何一个可见 overlay，compositor 就必须自己合成，可能顺带就把应用画面
+也按最新头姿每帧重新变换了**（正是 §1 里 dashboard 表现出来的行为）。
+
+若假设成立，**代价近乎为零**：不牺牲立体、不损失视野、不改 Isaac 一行代码，
+只需常驻一个几乎不可见的小 overlay。
+
+**探针**：`tools/xr_overlay_probe.py`（依赖 `pip install openvr`，纯 ctypes 绑定）。
+它以 `VRApplication_Overlay` 身份接入，**不会**抢占 Isaac 的 scene app 身份，
+四种模式：
+
+| mode | 作用 |
+|---|---|
+| `none` | 只做遥测不建 overlay —— 拿基线 |
+| `tiny` | 3cm 的世界锚定小 overlay —— 测假设的零代价解 |
+| `panel` | 1.2m 网格面板 —— 若主画面仍抖，看 overlay 自身稳不稳（决定要不要走"画面搬进 overlay"） |
+| `blink` | 定时交替显示/隐藏 —— 戴着头显不动就能做 A/B |
+
+**客观判据（不需要戴头显）**：探针每秒打印 `IVRCompositor::GetFrameTiming` 的
+`m_flCompositorRenderGpuMs`。基线应贴近 0（对应日志里的 0.007ms）；
+`tiny` 下若它**显著上升**（阈值 0.10ms），就客观证明 compositor 退出了直通。
+退出时会打印结论行与均值/峰值。
+
+**实验步骤**（需要 SteamVR 已由 NOLO Link / ALVR 拉起，Isaac 已 `--xr` 接入）：
+
+```bash
+python tools/xr_overlay_probe.py --mode none    # 1. 基线，看 comp_gpu ≈ 0.0x
+python tools/xr_overlay_probe.py --mode tiny    # 2. comp_gpu 是否跳起来
+# 3. 若 comp_gpu 跳起来了 → 戴头显转头，看 Isaac 画面还抖不抖
+python tools/xr_overlay_probe.py --mode panel   # 4. 若主画面仍抖，看 overlay 自身稳不稳
+```
+
+**三种结果分别指向**：
+
+| 结果 | 含义 | 下一步 |
+|---|---|---|
+| `tiny` 下 comp_gpu 跳起来 **且**主画面不抖 | ✅ 零代价解 | 做成常驻 overlay，接进 `sim_main.py` |
+| comp_gpu 跳起来但主画面仍抖 | compositor 合成了但没重新变换 scene layer | 看 `panel`：overlay 稳 → 走下面的"画面搬进 overlay" |
+| comp_gpu 全程贴近 0 | 仅存在 overlay 不足以退出直通 | 这条路死，收口到 CloudXR |
+
+**退路：把画面搬进 overlay**（代价大，仅当上面第二种结果时才考虑）——
+不再提交立体 projection layer，改由 `IVROverlay` 持有画面纹理、scene layer 提交纯黑。
+代价：画面退化为平面/曲面（`VROverlayFlags_SideBySide` 能做立体，但只有平面近似、
+无真视差与深度）；且同进程内 OpenXR 与 OpenVR 会话共存的可行性未验证。
 
 **已否决的近亲写法**：通过 OpenXR 提交 `XrCompositionLayerQuad` —— 它仍然走应用 submit 路径，
 而证据 3 表明该路径在没有新 submit 时只做原样重发；kit 也没暴露这个开关。
-
-**代价（即使成立也要认）**：
-
-- 画面退化为平面/曲面（`VROverlayFlags_SideBySide` 可做立体，但只有平面近似，没有真视差与深度）；
-- 需要把 Isaac 的渲染结果交给 overlay（同进程内 OpenXR 与 OpenVR 会话共存的可行性未验证）；
-- 沉浸式 AR 场景会明显降级，更适合"看着面板做遥操作"的用法。
-
-**便宜的判定实验（不需要改本工程）**：写一个几十行的 OpenVR in-game overlay 程序显示一张静态图，
-同时让 Isaac 以 30fps 跑 scene，戴头显对比 **overlay 抖不抖 / scene 抖不抖**。
-两者都抖 → 这条路死；overlay 稳而 scene 抖 → 值得投入。
 
 ## 6. CloudXR 通路操作手册
 
@@ -227,6 +268,14 @@ CloudXR **不导出** `presents`/`reprojected` 计数器，拿不到与 vrcompos
    而 ATW 必须用「扫描输出时刻」的最新头姿做，PC 侧在编码前 warp 只能补 PC 内几毫秒，
    补不了编码（11.3–11.9ms）+ 网络 + 解码 + 显示这几十毫秒。
 
+> ⚠️ **这三条说的是"NOLO 驱动内做不到"，不要外推成"PC 侧做不到任何姿态校正"。**
+> §1 的实证表明 SteamVR compositor 在 dashboard 模式下就在做每帧重新变换。区别在于：
+> compositor 在 NOLO 驱动**之前**、且它有完整的图形管线。这条差别正是 §4.1 的立足点。
+>
+> 但要注意第 3 条对 §4.1 同样成立：即使逼出了 compositor 的每帧重新变换，它补的仍只是
+> **PC 内**那一段。编码 + 网络 + 解码那几十毫秒仍然只有头显端 ATW 能补。所以 §4.1 若成功，
+> 预期是"judder 消除、但延迟仍在"（延迟表现为均匀的跟手慢，而非粘跳）。
+
 **能做的是向 NOLO 提需求**，且论据很硬——协议已经够了，只差客户端实现：
 
 - 每帧视频**已经携带**渲染时的头姿四元数
@@ -294,6 +343,7 @@ CloudXR **不导出** `presents`/`reprojected` 计数器，拿不到与 vrcompos
 
 ## 相关文件
 
-- `sim_main.py`：`--late_render_interval` / `--late_render_repeat` / `--disable_xr_frame_cap`
+- `sim_main.py`：`--late_render_interval` / `--late_render_repeat` / `--disable_xr_frame_cap` / `--xr_runtime`
+- `tools/xr_overlay_probe.py`：§4.1 的 overlay 探针（`tests/test_xr_overlay_probe.py` 守其判读逻辑）
 - `layeredcontrol/robot_control_system.py`：晚渲染与渲染计数实现
 - `doc/sonic_g1_29dof_phase1_handoff_zh.md`：SONIC 锁步时序（改渲染节奏前必读）
