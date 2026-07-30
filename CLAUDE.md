@@ -64,10 +64,11 @@ python sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor --robot_type g129 \
 python tools/diagnose_sonic_model.py --task Isaac-G1-29DoF-Sonic [--summary-only]
 python tools/monitor_sonic_tracking.py     # 订阅 C++ ZMQ debug 流比对参考动作与实测关节
 
-# AR 卡顿：逼 SteamVR compositor 退出直通的探针（需 SteamVR 已起 + Isaac 已 --xr 接入）
-# 客观判据不用戴头显:comp_gpu 从 ~0.0x 跳起来 = compositor 不再直通。见 doc/xr_ar_judder_zh.md §4.1
-python tools/xr_overlay_probe.py --mode none    # 基线
-python tools/xr_overlay_probe.py --mode tiny    # 3cm overlay,测零代价解
+# AR 卡顿：让 compositor 待在 dashboard 模式的探针（另起一个终端，Isaac 必须先跑起来）
+# ⚠️ 探针只提供 overlay、不提供场景画面;没有 scene app 会直接拒绝测量。见 doc/xr_ar_judder_zh.md §4.2
+python tools/xr_overlay_probe.py --mode dashboard   # 当前主攻:进 dashboard 模式但只显示自有小 overlay
+python tools/xr_overlay_probe.py --mode none        # 基线对照
+# ❌ --mode tiny/panel 已被实测否决:in-game overlay 与 Isaac 画面一起晃(合成≠每帧重新渲染)
 ```
 
 任务名清单见 `README_zh-CN.md` 的表格；带 `Wholebody` 的任务支持移动（配 `send_commands_8bit.py` /
@@ -210,11 +211,14 @@ provider 在 `action_provider/create_action_provider.py` 里按需惰性导入�
 - ⭐ **但 dashboard 模式下连 Isaac 画面也不抖**（2026-07-30 用户实测，且此时机器人照常走动
   ⇒ 应用仍在正常提交新帧）。这说明 **PC 侧每帧按新头姿重新变换的能力本来就有，
   SteamVR compositor 自己在做，只是不对正常 scene layer 路径启用**——正常模式
-  `Compositor Time GPU: 0.007ms` 是在**直通**。据此的假设：直通的前提是单一 layer，
-  只要存在一个可见 overlay 就可能逼它转入合成模式，**代价近乎为零**（不牺牲立体、
-  不改 Isaac 一行代码）。探针已就绪：`tools/xr_overlay_probe.py`，有不需要戴头显的客观
-  判据（`m_flCompositorRenderGpuMs` 是否从 ~0 跳起来）。步骤与三种结果的分支见
-  `doc/xr_ar_judder_zh.md` §4.1。
+  `Compositor Time GPU: 0.007ms` 是在**直通**。
+  ❌ **已否决的一步之遥**：以为"存在任何可见 overlay 就能逼它每帧重新变换"——实测
+  in-game overlay 与 Isaac 画面**一起晃**，comp_gpu 也与基线无差别。错在把"合成"当成了
+  "每帧重新渲染"：compositor 只在应用提交新帧时把 overlay+scene 合成一张再整张重发。
+  ⭐ **当前主攻**：dashboard 让 compositor 成为**每 vsync 的渲染源**，这才是它不晃的原因。
+  用 `showDashboard(自有 dashboard overlay)` 进入该模式但不显示主菜单，
+  `tools/xr_overlay_probe.py --mode dashboard`。判读与已知代价（输入焦点被抢、遮挡、
+  额外开销）见 `doc/xr_ar_judder_zh.md` §4.2。
   ⚠️ 别拿 `0 reprojected` 去否证它——那个计数器只统计 async 补帧路径，不含 compositor 自绘。
   ⚠️ 也别把 §7 的"NOLO 驱动内做不到"外推成"PC 侧做不到"；但反过来，§4.1 即使成功也只补
   PC 内那一段，编码+网络+解码的几十毫秒延迟仍只有头显端 ATW 能补。

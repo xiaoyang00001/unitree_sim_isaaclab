@@ -125,37 +125,77 @@ compositor 自绘（如 dashboard 模式）不进这个计数，因此不能用�
    ⚠️ 但要注意：在这条无重投影的链上，**唯一真正不抖的应用帧率是跑满 72fps**，没有中间档
    （36fps 匀速那个"流畅"结论已被 §1 的 dashboard 污染推翻）。按 §2 的 CPU 账本，
    当前单帧 CPU 23–34ms，到 13.9ms 需要 2.4 倍以上的提升，**不乐观**。
-4. **⭐ 借鉴 dashboard：逼 compositor 转入合成模式** —— 见 §4.1。基于 §1 的实证，
-   这是目前唯一有希望"留在 SteamVR + NOLO 链上还不抖"的方向，且**若成立代价极小**。
+4. **⭐ 让 compositor 待在 dashboard 模式** —— 见 §4.2。目前唯一被实测证明"留在
+   SteamVR + NOLO 链上还不晃"的方向。（其近亲"仅靠存在 overlay 逼它合成"已被否决，见 §4.1.1。）
 
-### 4.1 ⭐ 待实测：逼 compositor 退出直通（探针已就绪）
+### 4.1 ❌ 已否决：靠存在 overlay 逼 compositor 退出直通
 
 **假设**：`Compositor Time GPU: 0.007ms`（证据 6）说明正常模式下 compositor 在**直通**——
 把应用的 swapchain 图像原样转手给 direct-mode 驱动，连畸变都不做。而直通的前提是只有单一
 layer。**只要存在任何一个可见 overlay，compositor 就必须自己合成，可能顺带就把应用画面
 也按最新头姿每帧重新变换了**（正是 §1 里 dashboard 表现出来的行为）。
 
-若假设成立，**代价近乎为零**：不牺牲立体、不损失视野、不改 Isaac 一行代码，
-只需常驻一个几乎不可见的小 overlay。
+若假设成立，代价近乎为零：不牺牲立体、不损失视野、不改 Isaac 一行代码，只需常驻一个
+几乎不可见的小 overlay。**但它是错的。**
+
+第一轮读数（Isaac 为 scene app 已确认，`panel` overlay 正显示在头显里）：
+
+```
+comp_gpu = 0.006–0.008ms   ← 与日志里 6 次会话的 0.007ms 完全一致
+comp_cpu = 0.28–0.37ms
+app_gpu  = 10–12ms
+interval = 21.6–28.7ms     → 应用 ~35–46fps
+presents = 1   reproj = none
+```
+
+**决定性的主观判读（用户实测）**：in-game overlay **和 Isaac 画面一起晃**——
+> "这个和 isaac 是分开渲染的，问题一样，都会晃动。steamvr 的 dashboard 是和 isaac
+> 合成为一个画面，在头显侧不晃动。"
+
+两个独立证据指向同一结论，**假设否决定案**：主观上 overlay 自己就在晃，客观上 comp_gpu
+与基线毫无差别。
+
+**错在哪**：我把"compositor 必须合成 overlay"等同于"compositor 每 vsync 重新渲染"。
+实际上 compositor 只在**应用提交新帧时**把 overlay + scene layer 合成一张，然后整张原样
+重发给 direct-mode 驱动。**合成 ≠ 每帧重新渲染**——所以 overlay 跟着 scene 一起带着过期
+头姿被重复展示。
+
+这也顺带说明 dashboard 的差别到底在哪：它让 compositor 变成**每 vsync 的渲染源**，
+而不是"多了一个 layer 要合成"。转向见 §4.2。
+
+**踩到的两个坑（已修，都会产出假结论）**：
+
+1. 三轮跑完只看到探针图案、看不到 Isaac 画面 —— 探针是 overlay 应用，**不提供场景画面**。
+   而且没有 scene app 时 compositor 要渲染 SteamVR 自己的环境，comp_gpu 必然非零，
+   恰好长得像"假设成立"。现已改为**没有 scene app 就拒绝测量**（逃生门
+   `--allow-no-scene`），并在启动时打印 `✅ scene app pid = ...`。
+2. 读数全是 `nan` 却不报错 —— pyopenvr 的 `getFrameTiming()` 便捷封装返回的是
+   `(result, timing)` **元组**而非 struct，且不设 `m_nSize`（openvr.h 明确要求）。
+   原实现用 `getattr(..., default)` 兜底"防崩"，结果把这个错误静默成了 nan，白跑三轮。
+   现已直接走 `function_table` 并自填 size；**测量工具里的静默兜底是负资产**，
+   改为启动时核对字段、缺了就当场退出。
+
+**同时否决的近亲写法**：通过 OpenXR 提交 `XrCompositionLayerQuad` —— 同样只是"多一个 layer
+要合成"，而上面已经证明合成 ≠ 每帧重新渲染；kit 也没暴露这个开关。
+
+**同时否决的退路**：把画面搬进 overlay（scene layer 提交纯黑、`IVROverlay` 持画面纹理）——
+既然 overlay 自己就跟着晃，这条退路的前提就不存在了。
+
+### 4.2 ⭐ 当前主攻：让 compositor 待在 dashboard 模式
+
+**唯一被实测证明"留在 SteamVR + NOLO 链上还不晃"的方向。** 用户实测：dashboard 开着时
+连 Isaac 画面都不晃，且机器人照常走动。机制是 compositor 成为**每 vsync 的渲染源**，
+把 Isaac 画面逐帧按最新头姿重绘（§1）。
+
+做法：`showDashboard(key)` 可以指定显示哪个 dashboard overlay。用
+`createDashboardOverlay()` 建一个**极小的自有 overlay** 并指向它，就有机会既进入 dashboard
+模式（拿到"不晃"）、又不被 SteamVR 主菜单挡住视野。
 
 **探针**：`tools/xr_overlay_probe.py`（依赖 `pip install openvr`，纯 ctypes 绑定）。
-它以 `VRApplication_Overlay` 身份接入，**不会**抢占 Isaac 的 scene app 身份，
-四种模式：
+它以 `VRApplication_Overlay` 身份接入，**不会**抢占 Isaac 的 scene app 身份。
+模式：`dashboard`（当前主攻）、`none`（基线对照）、`tiny`/`panel`/`blink`（已否决，留档复核）。
 
-| mode | 作用 |
-|---|---|
-| `none` | 只做遥测不建 overlay —— 拿基线 |
-| `tiny` | 3cm 的世界锚定小 overlay —— 测假设的零代价解 |
-| `panel` | 1.2m 网格面板 —— 若主画面仍抖，看 overlay 自身稳不稳（决定要不要走"画面搬进 overlay"） |
-| `blink` | 定时交替显示/隐藏 —— 戴着头显不动就能做 A/B |
-
-**客观判据（不需要戴头显）**：探针每秒打印 `IVRCompositor::GetFrameTiming` 的
-`m_flCompositorRenderGpuMs`。基线应贴近 0（对应日志里的 0.007ms）；
-`tiny` 下若它**显著上升**（阈值 0.10ms），就客观证明 compositor 退出了直通。
-退出时会打印结论行与均值/峰值。
-
-**实验步骤**：必须**两个终端**，Isaac 先起。探针只提供一个 overlay、**不提供场景画面**，
-单独跑它头显里只会看到探针图案（2026-07-30 实际踩到，见 §4.1.1）。
+**必须两个终端，Isaac 先起** —— 探针只提供一个 overlay、**不提供场景画面**：
 
 ```bash
 # 终端 A：先起 Isaac，等头显里确实看到画面。注意要带 --teleop_device motion_controllers,
@@ -166,71 +206,34 @@ python sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor --robot_type g129 \
     --action_source sonic_dds --device cpu --teleop_device motion_controllers --xr
 
 # 终端 B：确认 Isaac 画面已在头显里之后
-python tools/xr_overlay_probe.py --mode none    # 1. 基线，看 comp_gpu ≈ 0.0x
-python tools/xr_overlay_probe.py --mode tiny    # 2. comp_gpu 是否跳起来
-#    跑 tiny 时戴头显把 dashboard 开 ~15s 再关掉 —— 探针会自动分组，
-#    退出时直接告诉你"判据有效/失效"（这一步不能省，见 §4.1.1）
-# 3. 若 comp_gpu 跳起来了 → 转头看 Isaac 画面还抖不抖
-python tools/xr_overlay_probe.py --mode panel   # 4. 若主画面仍抖，看 overlay 自身稳不稳
+python tools/xr_overlay_probe.py --mode dashboard                            # 默认 3cm overlay
+python tools/xr_overlay_probe.py --mode dashboard --width 0.01 --alpha 0.15  # 更不挡
+python tools/xr_overlay_probe.py --mode none                                 # 基线对照
 ```
 
 启动时会打印 `✅ scene app pid = ...`；没有 scene app 会**直接拒绝测量**。
 若有上一轮忘了退出的探针实例，也会列出来提醒（它们各自贴着一个 overlay，会污染判读）。
 
-### 4.1.1 第一轮实测（2026-07-30，⚠️ 判据有效性尚未验证）
+**判读三件事**（前两件只能戴头显看）：
 
-第一轮跑出的读数（Isaac 为 scene app 已确认，`panel` overlay 正显示在头显里）：
+1. **Isaac 画面还晃不晃** —— 这是唯一的成败判据；
+2. **视野被挡多少** —— 我们的小 overlay 加上 SteamVR 自己的工具栏/背景；
+3. `comp_gpu` 是否明显上升 —— 客观确认 compositor 真的成了每帧渲染源
+   （探针会自动按 dashboard 开/关分两组对比；在头显里手动关掉 dashboard 即可拿到对照）。
 
-```
-comp_gpu = 0.006–0.008ms   ← 与日志里 6 次会话的 0.007ms 完全一致
-comp_cpu = 0.28–0.37ms
-app_gpu  = 10–12ms
-interval = 21.6–28.7ms     → 应用 ~35–46fps
-presents = 1   reproj = none
-```
+**已知代价与未决项**（决定它能不能变成正式方案）：
 
-**初步结论：存在可见 overlay 不足以让 compositor 退出直通** —— comp_gpu 与无 overlay 的基线
-毫无差别。
+| 项 | 状态 |
+|---|---|
+| 输入焦点被 dashboard 抢 | ⚠️ 右手柄 B 键 recenter 大概率失效。机器人控制不受影响（100% 来自 SONIC DDS），recenter 可改键盘/DDS 触发 |
+| SteamVR 工具栏/背景遮挡 | ⏳ 待实测。若挡得厉害，这条路的可用性就打折 |
+| Isaac 画面是否仍为全视野立体 | ⏳ 待确认（会不会被降级成一个面板） |
+| compositor 每帧渲染的额外开销 | ⏳ 待测。20ms 预算本来就紧，conveyor 场景 S≈0 |
+| OpenXR session 变 `VISIBLE_UNFOCUSED` 的副作用 | 用户实测机器人照常走动，暂无异常 |
+| 延迟 | ⚠️ **治不了**。它只补 PC 内那一段，编码 + 网络 + 解码的几十毫秒仍在（§7 第 3 条） |
 
-> ⚠️ **但这个结论还不能定案，因为判据本身的有效性还没验证。** 必须先采到
-> **dashboard 打开时**的样本：dashboard 是已知会让 compositor 自己渲染的状态（§1），
-> 所以——
->
-> - dashboard 开着时 comp_gpu 明显跳高 ⇒ 判据有效，上面的否决是真的；
-> - dashboard 开着时 comp_gpu 也不动 ⇒ **overlay 应用拿到的 timing 反映不了 compositor
->   的渲染状态**，判据失效，得另找观测量，不能据此否决。
->
-> 探针已内置这个自检：它每秒调 `isDashboardVisible()`，按 dashboard 开/关自动分两组，
-> 退出时打印对照并直接给出"判据有效/失效"的判断。**所以只要戴头显把 dashboard 开一会儿
-> 再关掉，然后 Ctrl-C，结论就自己出来了。**
-
-**踩到的两个坑（已修）**：
-
-1. `--mode none/tiny/panel` 三轮跑完只看到探针图案、看不到 Isaac 画面 —— 探针是 overlay
-   应用，**不提供场景画面**。而且没有 scene app 时 compositor 要渲染 SteamVR 自己的环境，
-   comp_gpu 必然非零，会被误读成"假设成立"。现已改为**没有 scene app 就拒绝测量**
-   （逃生门 `--allow-no-scene`），并在启动时打印 `✅ scene app pid = ...`。
-2. 读数全是 `nan` 却不报错 —— pyopenvr 的 `getFrameTiming()` 便捷封装返回的是
-   `(result, timing)` **元组**而非 struct，且不设 `m_nSize`（openvr.h 明确要求）。
-   原实现用 `getattr(..., default)` 兜底"防崩"，结果把这个错误静默成了 nan，白跑三轮。
-   现已直接走 `function_table` 并自填 size；**测量工具里的静默兜底是负资产**，
-   改为启动时核对字段、缺了就当场退出。
-
-**三种结果分别指向**：
-
-| 结果 | 含义 | 下一步 |
-|---|---|---|
-| `tiny` 下 comp_gpu 跳起来 **且**主画面不抖 | ✅ 零代价解 | 做成常驻 overlay，接进 `sim_main.py` |
-| comp_gpu 跳起来但主画面仍抖 | compositor 合成了但没重新变换 scene layer | 看 `panel`：overlay 稳 → 走下面的"画面搬进 overlay" |
-| comp_gpu 全程贴近 0 | 仅存在 overlay 不足以退出直通 | 这条路死，收口到 CloudXR |
-
-**退路：把画面搬进 overlay**（代价大，仅当上面第二种结果时才考虑）——
-不再提交立体 projection layer，改由 `IVROverlay` 持有画面纹理、scene layer 提交纯黑。
-代价：画面退化为平面/曲面（`VROverlayFlags_SideBySide` 能做立体，但只有平面近似、
-无真视差与深度）；且同进程内 OpenXR 与 OpenVR 会话共存的可行性未验证。
-
-**已否决的近亲写法**：通过 OpenXR 提交 `XrCompositionLayerQuad` —— 它仍然走应用 submit 路径，
-而证据 3 表明该路径在没有新 submit 时只做原样重发；kit 也没暴露这个开关。
+**这是 hack，不是正解。** 正解仍是 CloudXR（§6）或 NOLO 头显端 ATW（§7）——
+但如果它挡得不厉害，就是当前链路上立刻可用的止痛药。
 
 ## 6. CloudXR 通路操作手册
 

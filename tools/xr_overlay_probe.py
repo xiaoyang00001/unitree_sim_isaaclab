@@ -13,9 +13,24 @@ AR 卡顿的根因是 SteamVR + NOLO 这条链全程没有重投影（见 ``doc/
 证据是 ``vrcompositor.txt`` 里的 ``Compositor Time........CPU: 0.209ms / GPU: 0.007ms``
 ——6 次会话一致，GPU 侧几乎为 0，compositor 在**直通**，连畸变都交给 direct-mode 驱动。
 
-**待验证的假设**：直通是一个优化，其前提是只有单一 layer。只要存在任何一个可见 overlay，
-compositor 就必须自己合成，于是顺带每帧按最新头姿重新变换 —— 若成立，代价极小
-（不牺牲立体、不改 Isaac 一行代码，只需常驻一个几乎不可见的 overlay）。
+## ❌ 第一个假设已被否决（2026-07-30）
+
+原假设是"直通的前提是单一 layer，只要存在任何可见 overlay 就能逼 compositor 每帧重新变换"。
+**实测否决**：in-game overlay（``--mode tiny/panel``）与 scene layer **一起晃**
+（用户原话:"这个和 isaac 是分开渲染的，问题一样，都会晃动"），且 ``comp_gpu`` 与无 overlay
+的基线毫无差别（0.006–0.008ms）。
+
+错在哪：compositor 只在**应用提交新帧时**把 overlay + scene layer 合成一张，然后整张原样
+重发给 direct-mode 驱动 —— 合成 ≠ 每帧重新渲染。
+
+## ⭐ 转向：让 compositor 待在 dashboard 模式（``--mode dashboard``）
+
+dashboard 的机制不同:它让 compositor 成为**每 vsync 的渲染源**，Isaac 画面被逐帧按最新头姿
+重绘——所以用户实测 dashboard 开着时连 Isaac 画面都不晃。要复现的是这个，而不是"存在 overlay"。
+
+``showDashboard(key)`` 可以指定显示哪个 dashboard overlay。指向一个极小的自有 overlay，
+就有机会既拿到"不晃"、又不被 SteamVR 主菜单挡住视野。**这是目前唯一被实测证明不晃、
+且留在 SteamVR + NOLO 链上的方向。** 已知代价与判读要点见 ``doc/xr_ar_judder_zh.md`` §4.2。
 
 ## 客观判据（不需要戴头显）
 
@@ -42,10 +57,9 @@ compositor 就必须自己合成，于是顺带每帧按最新头姿重新变换
 
     # 终端 B：确认 Isaac 画面已在头显里之后再跑
     conda activate env_isaaclab
-    python tools/xr_overlay_probe.py --mode none      # 先拿基线
-    python tools/xr_overlay_probe.py --mode tiny      # 假设的零代价解
-    python tools/xr_overlay_probe.py --mode panel     # 测 overlay 自身是否稳（会挡住中间视野）
-    python tools/xr_overlay_probe.py --mode blink     # 自动交替，做 A/B
+    python tools/xr_overlay_probe.py --mode dashboard   # ⭐当前主攻
+    python tools/xr_overlay_probe.py --mode none        # 基线对照
+    # tiny/panel/blink 已被否决，保留仅为复核
 
 启动时会打印 ``✅ scene app pid = ...`` 确认 Isaac 已接入；中途 Isaac 退出也会报出来，
 免得后半段读数悄悄变成另一个工况。
@@ -155,6 +169,7 @@ class Probe:
         # 而 connect() 之后所有访问都在有值的路径上。
         self.openvr: Any = None
         self.overlay_handle = None
+        self.dashboard_key: str | None = None
         self.visible = False
         self.scene_pid: int | None = None
         self._stop = False
@@ -269,6 +284,73 @@ class Probe:
             f"[probe] overlay 已创建 mode={args.mode} 宽={args.width}m alpha={args.alpha} "
             f"位置=({args.x}, {args.y}, {args.z}) pitch={args.pitch}°"
         )
+
+    def create_dashboard_overlay(self):
+        """打开 dashboard，但让它显示**我们自己的**小 overlay 而不是 SteamVR 主菜单。
+
+        这是 §4.1 假设被否决后的转向。区别在哪：
+
+        - in-game overlay（tiny/panel）：compositor 只在**应用提交新帧时**把
+          overlay + scene layer 合成一张，然后整张原样重发 → overlay 跟着 scene 一起晃。
+          已被实测否决（用户:"这个和 isaac 是分开渲染的，问题一样，都会晃动"）。
+        - dashboard 模式：compositor 变成**每 vsync 的渲染源**，Isaac 画面被它逐帧按
+          最新头姿重绘 → 用户实测**不晃**。
+
+        所以要复现的不是"存在 overlay"，而是让 compositor 一直待在 dashboard 模式里。
+        ``showDashboard(key)`` 可以指定显示哪个 dashboard overlay——指向一个极小的
+        自有 overlay，就有机会既拿到"不晃"又不被主菜单挡住视野。
+
+        ⚠️ 这是 hack 不是正解，已知代价见 doc/xr_ar_judder_zh.md §4.2。
+        """
+        openvr = self.openvr
+        args = self.args
+        ov = openvr.VROverlay()
+        key = f"unitree.judder.dash.{os.getpid()}"
+        main_handle, thumb_handle = ov.createDashboardOverlay(key, "Judder ATW")
+        self.overlay_handle = main_handle
+        self.dashboard_key = key
+
+        # main：越小越不挡视野——我们要的是"进入 dashboard 模式"这个副作用，不是这个 overlay 本身
+        pattern = _make_pattern(64, "solid")
+        cbuf = (ctypes.c_char * len(pattern)).from_buffer_copy(pattern)
+        ov.setOverlayRaw(main_handle, cbuf, 64, 64, 4)
+        ov.setOverlayWidthInMeters(main_handle, args.width)
+        ov.setOverlayAlpha(main_handle, args.alpha)
+
+        # thumbnail 是 dashboard 应用栏里的图标；不设会显示成空白条目
+        thumb = _make_pattern(64, "grid")
+        tbuf = (ctypes.c_char * len(thumb)).from_buffer_copy(thumb)
+        try:
+            ov.setOverlayRaw(thumb_handle, tbuf, 64, 64, 4)
+        except Exception as e:
+            print(f"[probe] thumbnail 设置失败（不影响主流程）：{e}")
+
+        ov.showDashboard(key)
+        self.visible = True
+        print(
+            f"[probe] dashboard overlay 已创建并打开:key={key} 宽={args.width}m "
+            f"alpha={args.alpha}"
+        )
+        print(
+            "[probe] 现在戴头显看:①Isaac 画面还晃不晃 ②这个 overlay 与 SteamVR 工具栏挡多少视野"
+        )
+        print(
+            "[probe] 想做 A/B 就在头显里手动关掉 dashboard——退出时会自动分两组对比 comp_gpu"
+        )
+
+    def _reassert_dashboard(self):
+        """dashboard 被系统/用户关掉后重新打开（--reassert-dashboard）。
+
+        默认不开:它会把用户手动关 dashboard 做 A/B 的动作立刻顶回去。
+        """
+        if not self.dashboard_key:
+            return
+        try:
+            if not self.openvr.VROverlay().isDashboardVisible():
+                self.openvr.VROverlay().showDashboard(self.dashboard_key)
+                print("[probe] dashboard 被关掉了，已重新打开（--reassert-dashboard）")
+        except Exception as e:
+            print(f"[probe] 重开 dashboard 失败：{e}")
 
     def _warn_on_stale_instances(self):
         """残留的探针实例会多贴一个 overlay，让"有几个 overlay"这个前提说不清。
@@ -443,6 +525,8 @@ class Probe:
                 self.hide() if self.visible else self.show()
                 last_blink = now
                 print(f"[probe] --- overlay -> {'ON' if self.visible else 'OFF'} ---")
+            if args.reassert_dashboard:
+                self._reassert_dashboard()
 
             self._check_scene_app_alive()
             tm = self._frame_timing()
@@ -484,6 +568,18 @@ class Probe:
                     "[probe] ⚠️ 本次没有（或中途失去）scene app —— 上面的读数**不能**用来判断假设，"
                     "compositor 此时在渲染 SteamVR 自己的环境。请先起 Isaac 再重测。"
                 )
+            elif self.args.mode == "dashboard":
+                if composited_seen:
+                    print(
+                        "[probe] ✅ dashboard 模式下 comp_gpu 明显上升 —— compositor 确实成了"
+                        "每帧的渲染源（符合预期）。**结论要靠主观**：Isaac 画面还晃不晃、"
+                        "视野被挡多少。"
+                    )
+                else:
+                    print(
+                        "[probe] ⚠️ dashboard 模式下 comp_gpu 却没上升 —— 与 §1 的实证不符，"
+                        "先确认 dashboard 真的开着（看 dash 列）再判读。"
+                    )
             elif composited_seen:
                 print(
                     "[probe] ✅ compositor 出现了明显的 GPU 渲染开销 —— 它没有在直通，"
@@ -552,18 +648,22 @@ class Probe:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="SteamVR overlay 探针：测'存在 overlay 能否逼 compositor 合成'",
+        description=(
+            "SteamVR overlay 探针：让 compositor 待在 dashboard 模式以消除 AR judder。"
+            "（原假设'存在 overlay 即可'已被实测否决，见 doc/xr_ar_judder_zh.md §4.1.1）"
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument(
         "--mode",
-        choices=("none", "tiny", "panel", "blink"),
-        default="tiny",
+        choices=("none", "dashboard", "tiny", "panel", "blink"),
+        default="dashboard",
         help=(
             "none: 只做遥测不建 overlay（拿基线）; "
-            "tiny: 极小 overlay，测假设的零代价解; "
-            "panel: 大面板，测 overlay 自身稳不稳; "
-            "blink: 定时交替显示/隐藏做 A/B"
+            "dashboard: ⭐打开 dashboard 但只显示自有小 overlay —— 目前唯一被实测证明"
+            "不晃的方向; "
+            "tiny/panel/blink: in-game overlay，**已被实测否决**（overlay 与 scene 一起晃），"
+            "保留仅为复核与留档"
         ),
     )
     p.add_argument("--width", type=float, default=None, help="overlay 宽度（米）；默认按 mode 取")
@@ -574,6 +674,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pitch", type=float, default=0.0, help="绕 X 轴俯仰（度）")
     p.add_argument("--interval", type=float, default=1.0, help="遥测打印间隔（秒）")
     p.add_argument("--blink-period", type=float, default=8.0, help="blink 模式切换周期（秒）")
+    p.add_argument(
+        "--reassert-dashboard",
+        action="store_true",
+        help=(
+            "dashboard 被关掉后自动重新打开。默认关闭——它会把你手动关 dashboard "
+            "做 A/B 的动作立刻顶回去"
+        ),
+    )
     p.add_argument(
         "--allow-no-scene",
         action="store_true",
@@ -586,11 +694,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def apply_mode_defaults(args):
-    """按 mode 补默认几何：tiny 要"几乎不挡视线"，panel 要"看得清边缘"。
+    """按 mode 补默认几何：tiny / dashboard 要"几乎不挡视线"，panel 要"看得清边缘"。
 
     显式传入的值一律优先——实验里经常要手动挪位置试遮挡程度。
     """
-    if args.mode == "tiny":
+    if args.mode in ("tiny", "dashboard"):
         args.width = 0.03 if args.width is None else args.width
         args.alpha = 0.85 if args.alpha is None else args.alpha
         args.y = 0.6 if args.y is None else args.y
@@ -607,7 +715,9 @@ def main(argv=None):
     probe = Probe(args)
     probe.connect()
     try:
-        if args.mode != "none":
+        if args.mode == "dashboard":
+            probe.create_dashboard_overlay()
+        elif args.mode != "none":
             probe.create_overlay()
         else:
             print("[probe] mode=none：只做遥测，不创建 overlay（这是基线）")

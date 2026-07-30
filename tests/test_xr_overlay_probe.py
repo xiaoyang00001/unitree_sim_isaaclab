@@ -75,6 +75,15 @@ class ModeDefaultsTest(unittest.TestCase):
     def _parse(self, argv):
         return probe.apply_mode_defaults(probe.build_parser().parse_args(argv))
 
+    def test_default_mode_is_dashboard(self):
+        # in-game overlay 假设已被否决，默认必须落在当前主攻方向上
+        self.assertEqual(self._parse([]).mode, "dashboard")
+
+    def test_dashboard_overlay_stays_small(self):
+        # dashboard 模式要的是"进入 dashboard 模式"这个副作用，overlay 本身越小越不挡视野
+        args = self._parse(["--mode", "dashboard"])
+        self.assertLessEqual(args.width, 0.05)
+
     def test_tiny_stays_tiny(self):
         args = self._parse(["--mode", "tiny"])
         self.assertLessEqual(args.width, 0.05, "tiny overlay 变大就不是同一个实验了")
