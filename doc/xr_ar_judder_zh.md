@@ -79,6 +79,80 @@ compositor 自绘（如 dashboard 模式）不进这个计数，因此不能用�
 这条独立于卡顿根因，但它把提帧率的可行动作钉死了：一切降分辨率 / 降超采样 /
 `rendering_mode=performance` 的想法都无效（与 §3 表格里那一行互为印证），要提帧率**只能压 CPU**。
 
+### 2.1 那些 CPU 花在哪：OpenXRDevice 的 anchor 同步（⏳ 归因进行中，2026-07-30）
+
+> ⚠️ 本节治的是**帧率**，不是卡顿。在 SteamVR+NOLO 这条无重投影的链上，48Hz 和 27Hz
+> 一样抖，唯一不抖的档是跑满面板的 72fps（见 §4 第 3 条）。因此本节的成败口径是
+> "多少 ms/帧"，**不要**写成"卡顿解决/未解决"。
+
+上一节把方向钉在"只能压 CPU"，这一节是压 CPU 的第一刀。
+
+**现象**：同一任务下，只给 `--xr`（不实例化 OpenXRDevice）主循环 48.5–50.1Hz；
+加 `--teleop_device motion_controllers` 后掉到 26.6–27.2Hz。约 20ms/圈的差。
+
+**两个嫌疑，必须先拆开再动代码**：
+
+| # | 嫌疑 | 性质 | 能不能优化掉 |
+|---|---|---|---|
+| A | `xr_anchor_utils.sync_headset_to_anchor` 每 XR 帧的工作（挂在 `XRCoreEventType.pre_sync_update` 上，见 `openxr_device.py:137-145`） | 真实 CPU 成本 | 能 |
+| B | `xrWaitFrame` / XR 锁步闸门的等待 | **阻塞空转，不是 CPU 成本** | 不能——优化 anchor 一行也救不回来 |
+
+**源码级线索（指向 A，尚待实测确认）**：`XRCore.set_world_transform_matrix` 的行为由
+第三个参数决定——**传了 layer identifier 就走 `set_world_transform_matrix_usd`（写 USD
+layer），不传才走 usdrt/Fabric**（`xrcore_class_wrapper.py:842-868`，docstring 与实现
+一致）。而 `xr_anchor_utils.py:135-143` 在构造时刻意解析出 layer identifier 并一直传着，
+于是**每个 XR 帧都是一次 USD 写入**。每帧写 USD 会触发变更通知、连带让后续 USD/Fabric
+读写付缓存失效的代价——这既能解释渲染 R 变贵，也能解释实测里**物理 E 一起变贵**
+（纯物理本不该受 XR 影响）。若成立，修法可能只是把 layer 置 `None`，且**能在本工程侧
+完成**（属性名 mangling 后是 `_XrAnchorSynchronizer__anchor_headset_layer_identifier`），
+不必改 IsaacLab fork。
+
+**归因工具**：`tools/xr_anchor_probe.py`，环境变量 `XR_ANCHOR_PROBE` 选档，默认 off
+零影响；全部通过替换 synchronizer 的实例属性注入，不改 fork。
+
+| 档 | 作用 | 回答的问题 |
+|---|---|---|
+| `timing` | 行为不变，拆出 读/写/算 三段耗时 | 成本在哪一段 |
+| `nowrite` | 保留读与算，跳过写入 | 写入本身多贵 |
+| `fabric` | 写入改走 usdrt（丢掉 layer） | 候选修法有效吗 |
+| `noop` | 整个回调直接返回 | **决定性对照**：回到基线 ⇒ 成本全在 A；仍然慢 ⇒ 成本在 kit C++ 侧 |
+| `noanchor` | 在 noop 之上把 `anchorMode` 拨回 `scene origin` | 仅当 noop 没恢复才有意义：区分 kit 的自定义锚通路与 XR 会话本身 |
+
+`noop` 关不掉 `OpenXRDevice.__init__` 写下的 `anchorMode=custom anchor` +
+`customAnchor=<XRAnchor 路径>`——kit 的 `XRViewportController` 会据此把 stage anchor
+锚到一个**会移动的 prim** 上，那条 C++ 通路的成本只有 `noanchor` 能关。
+
+**已确立的基线**（主场景，GR00T 在线，暖机 1 小时，无干扰窗口）：
+
+| 指标 | 值 |
+|---|---|
+| 主循环 | 47.6–50.3 Hz |
+| GUI render | 48.0–49.5 fps |
+| 渲染成本 | 8.5 ms/帧 |
+| A / E / R / S | 1.0 / 8.6 / 9.3 / 0.0 ms |
+
+对照非 AR 的 A≈0.9 / E≈6.2 / R≈6.4：**只开 `--xr` 就让 E +2.4ms、R +2.9ms**，
+S 已经归零（预算穿底）。
+
+#### ⚠️ 测量卫生：两个已经废掉数据的污染源（负结论，别重犯）
+
+1. **同时跑两个 sim 会互相毁锁步。** 两个 `sim_main` 都在 DDS domain 1 上发
+   `rt/lowstate`，GR00T 的 ack 对不上任何一方，**双方 `fresh_physx` 都掉到 0**；
+   实测那一轮渲染从 8.5 飙到 35.6ms/帧、启动等了 450s。XR 下还会互抢 SteamVR
+   的场景应用身份。
+2. **SteamVR overlay 应用会改变 compositor 行为。** `tools/xr_overlay_probe.py`
+   （§4.1 的探针）只要连上就算干扰源，哪怕只活几秒。
+
+**解耦配方**：`UNITREE_DDS_DOMAIN=7` + `--no_sonic_sync_with_lowstate`
+（不等 ack、按 `step_hz` deadline 定频，与 GR00T 是否在跑完全无关；未收到 CONTROL
+marker 时浮动基座保持固定，机器人不会倒，场景静态可复现）。判读前先查
+`~/.steam/steam/logs/vrserver.txt`，确认测量窗口内没有别的 `VRApplication` 连接。
+
+**还有一条口径陷阱**：`XR status fps`（`/xr/status/fps`，由 kit C++ 侧每帧写，
+本工程已在 stats 窗口打印）实测与主循环 Hz 逐窗口吻合（49.06 对 48.95、3.85 对 3.85），
+所以它测的是**应用提交速率**，不是面板刷新率、也不是头显实际看到的帧率。
+CloudXR 通路的四个不同口径见 §6。
+
 ### 机制
 
 面板 72Hz，每 13.9ms 必须出一帧。应用只有 36fps 时，每个应用帧要在合成流里出现 2 次；
