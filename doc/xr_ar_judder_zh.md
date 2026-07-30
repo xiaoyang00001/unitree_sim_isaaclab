@@ -248,8 +248,32 @@ app_gpu / interval 时有时无（0.000 / 0.00 与 0.029 / 28–34ms 交替）
       —— 反过来印证 compositor 在自己按 vsync 出帧
 ```
 
-**下一步要回答的就是遮挡**：让探针**持续运行**（我那次跑得太短就退出了），看它的 dashboard
-overlay 保持活动时，主菜单会不会让位给那个小 overlay。
+### 4.2.2 ✅ 持续运行时主面板确实让位，只剩底部导航栏（2026-07-30）
+
+让探针**持续运行**（`--mode dashboard --width 0.01 --alpha 0.15`）后用户报告：
+
+> "主菜单消失了一部分，没有完全消失。下边的导航栏还在，里边有个图标替换成了你渲染的图标。"
+
+所以 `createDashboardOverlay` + `showDashboard(自有 key)` 这条路是**对的**：
+
+| | 结果 |
+|---|---|
+| judder | ✅ 消除 |
+| SteamVR 主面板 | ✅ **让位**给我们那个 1cm 小 overlay |
+| thumbnail | ✅ 正确出现在底部导航栏里（证明 dashboard overlay 注册成功） |
+| 底部导航栏/工具栏 | ❌ **仍在，挡视野** —— 这是唯一剩余的障碍 |
+
+（对比 §4.2.1：那次探针进程只活了几秒就退出、自有 overlay 被销毁，SteamVR 才回落到显示
+主面板。所以"主面板让位"需要持有者进程活着，而"dashboard 打开"这个状态本身不需要。）
+
+**剩余问题收窄成一个**：怎么隐藏底部导航栏。候选方向（调研中）：
+
+1. **不启动 vrdashboard** —— 如果 compositor 仍能进入每帧重绘模式，这是最干净的解
+   （导航栏大概率是 vrdashboard 进程画的）；
+2. SteamVR 设置项里的 dashboard chrome/toolbar 开关（⚠️ 注意甄别死键，见 §7 末）；
+3. OpenVR 侧的 overlay flag / 全屏 dashboard overlay；
+4. 换一个不带可见 UI、但同样能让 compositor 每帧重绘的机制（keyboard overlay、
+   `setSkyboxOverride`、notifications 等）。
 
 **判读三件事**（前两件只能戴头显看）：
 
@@ -262,7 +286,8 @@ overlay 保持活动时，主菜单会不会让位给那个小 overlay。
 | 项 | 状态 |
 |---|---|
 | 消除 judder | ✅ **已实证两次**（§1 手动开菜单、§4.2.1 探针） |
-| SteamVR 主菜单遮挡 | ⚠️ **当前主要障碍**：`showDashboard(自有 key)` 后主菜单仍在显示。待测"探针持续运行时主菜单是否让位" |
+| SteamVR 主面板遮挡 | ✅ **已解决** —— 持续运行时主面板让位给自有小 overlay（§4.2.2） |
+| SteamVR 底部导航栏遮挡 | ⚠️ **唯一剩余障碍**（§4.2.2）。最有希望的方向是干脆不启动 vrdashboard |
 | 输入焦点被 dashboard 抢 | ⚠️ 右手柄 B 键 recenter 大概率失效。机器人控制不受影响（100% 来自 SONIC DDS），recenter 可改键盘/DDS 触发 |
 | Isaac 画面是否仍为全视野立体 | ⏳ 待确认（会不会被降级成一个面板）。已知它**正常显示且机器人照常动** |
 | 应用帧提交变断续 | ℹ️ 已观察到（`interval` 时有时无），但画面不晃 —— compositor 在自己按 vsync 出帧 |
