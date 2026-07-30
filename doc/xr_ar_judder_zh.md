@@ -101,15 +101,66 @@ compositor 自绘（如 dashboard 模式）不进这个计数，因此不能用�
 | A | `xr_anchor_utils.sync_headset_to_anchor` 每 XR 帧的工作（挂在 `XRCoreEventType.pre_sync_update` 上，见 `openxr_device.py:137-145`） | 真实 CPU 成本 | 能 |
 | B | `xrWaitFrame` / XR 锁步闸门的等待 | **阻塞空转，不是 CPU 成本** | 不能——优化 anchor 一行也救不回来 |
 
-**源码级线索（指向 A，尚待实测确认）**：`XRCore.set_world_transform_matrix` 的行为由
-第三个参数决定——**传了 layer identifier 就走 `set_world_transform_matrix_usd`（写 USD
-layer），不传才走 usdrt/Fabric**（`xrcore_class_wrapper.py:842-868`，docstring 与实现
-一致）。而 `xr_anchor_utils.py:135-143` 在构造时刻意解析出 layer identifier 并一直传着，
-于是**每个 XR 帧都是一次 USD 写入**。每帧写 USD 会触发变更通知、连带让后续 USD/Fabric
-读写付缓存失效的代价——这既能解释渲染 R 变贵，也能解释实测里**物理 E 一起变贵**
-（纯物理本不该受 XR 影响）。若成立，修法可能只是把 layer 置 `None`，且**能在本工程侧
-完成**（属性名 mangling 后是 `_XrAnchorSynchronizer__anchor_headset_layer_identifier`），
-不必改 IsaacLab fork。
+**源码级线索**：`XRCore.set_world_transform_matrix` 的行为由第三个参数决定——**传了
+layer identifier 就走 `set_world_transform_matrix_usd`（写 USD layer），不传才走
+usdrt/Fabric**（`xrcore_class_wrapper.py:842-868`，docstring 与实现一致）。而
+`xr_anchor_utils.py:135-143` 在构造时刻意解析出 layer identifier 并一直传着，于是
+**每个 XR 帧都是一次 USD 写入**。
+
+#### ❌ 已否决：把 layer 置 None 改写 Fabric（会破坏功能，2026-07-30）
+
+一度以为修法就是把 `layer_identifier` 置 `None`（属性名 mangling 后是
+`_XrAnchorSynchronizer__anchor_headset_layer_identifier`，本工程侧可改，不必碰 fork）。
+**反汇编 kit 二进制后否决**——`libomni.kit.xr.core.plugin.so` 的每帧 stage 链
+（profiler zone `runUpdateAnchorSpaceAfterInputStage`）是：
+
+`resolveAnchorPrim`（`UsdStage::GetPrimAtPath`）→ **`updateAnchorPrim`**
+→ `pxr::UsdGeomImageable::ComputeLocalToWorldTransform` → setAnchorPose
+
+**这条读取路径里没有任何 fabric/usdrt 调用，也没有 fabric 分支或回退。** kit 里确实
+存在"fabric 优先 + USD 回退"的双路读取（`XRCore::getWorldTransform` →
+`computeWorldXformFromFabric`），但 **anchor 不走它**。所以只写 Fabric 消费者看不到，
+视角会冻结在 XRAnchor 的 USD 初值上、不再跟随机器人。
+
+**今天为什么能工作**：写入侧（`setWorldTransformUSD`）用 `ComputeParentToWorldTransform`
+取 **USD** 父变换、求逆后写 local；读取侧也用 USD 父链——两边同基准，父变换精确抵消。
+而 `use_fabric=True`（`simulation_cfg.py:392` 默认值，本工程未改）意味着 USD 里
+`head_link` 的变换**冻结在初值**，全部运动都被 local xformOp 吸收。因此 Fabric-only
+写入是双重错误：① USD 的 local xformOp 根本不变 → anchor 冻结；② 即便有回写，local 是按
+**live** 父算的，消费者却用 **stale** 父去合成 → 姿态错。而 Fabric→USD **没有**自动
+回写（`usdrt` 的 writeback 是显式 API，extscache 里没有任何 per-frame 回写设置）。
+
+两个连带的坑：
+
+- `check_if_prim_transform_is_usdrt_only`（`xrcore_class_wrapper.py:744-761`）看着像
+  "该写哪一侧"的权威判据，NVIDIA 自己的抓取工具就用它选 edit target。**在这里用它是错的**：
+  对 `.../head_link/XRAnchor`，父链在 Fabric 里 live、在 USD 里 stale，它很可能返回
+  `True`（推测未验），但差异来自父级而非该 prim 自身，而消费者无论如何只读 USD。
+- 若要运行期复验，**不能用 `xrcore.get_world_transform_matrix()` 读回**——它走 fabric 优先的
+  双路，Fabric-only 写入会被它读到新值，产生**假阳性**。必须用 pxr 侧：
+  `UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())`。
+
+`fabric` 探针档因此降级为**纯诊断**（量 USD 写 vs Fabric 写的成本差），不是候选修法。
+
+**改为待验证的方向**（都保留 USD 写入，均未实测）：
+
+1. **把 XRAnchor 移出机器人子树**，回到 upstream 旧默认 `/World/XRAnchor`。IsaacLab 算出来
+   的本就是世界矩阵，root 级 anchor 让写入侧省掉 `ComputeParentToWorldTransform` +
+   `GetInverse` + `operator*=`，读取侧的 `ComputeLocalToWorldTransform` 也不再走 5 层父链。
+   本工程侧可做：构造后新建 `/World/XRAnchor`、改 `/xrstage/profile/ar/customAnchor`
+   并改 synchronizer 的 `_xr_anchor_headset_path`。需先确认 `/World` 自身是 identity。
+2. 配合 1，直接用 `UsdGeomXformOp.Set(Gf.Matrix4d)` 写 local，绕开 XRCore 的 world→local
+   换算与 python 往返。
+3. 把 anchor prim 建在 **session layer** 上，避免每帧 edit 脏化 root layer
+   （当前落在哪层取决于 `create_prim`，未核实）。
+4. 降频 / 位姿变化阈值。⚠️ 排在最后：anchor 每帧都真的需要更新（head_link 一直在动），
+   跳写就是拿视角延迟换帧率，而 XR 里 motion-to-photon 才是要紧的。
+
+⚠️ **量级提醒**：上面这些省下的是父链矩阵运算，量级更像几十到几百微秒，不是毫秒。
+如果实测发现回调总耗时本就只有零点几毫秒，那 ~20ms 的差**根本不在嫌疑 A**，
+而在 kit 侧每帧的 USD 工作（`updateAnchorPrim` 读 + `updateXRAnchorPrims` 往
+`/_xr/stage/*` 写三个 prim，都走 `SdfChangeBlock`）或嫌疑 B 的帧闸门——那正是
+`noop` 与 `noanchor` 两档要分辨的。
 
 **归因工具**：`tools/xr_anchor_probe.py`，环境变量 `XR_ANCHOR_PROBE` 选档，默认 off
 零影响；全部通过替换 synchronizer 的实例属性注入，不改 fork。
@@ -118,7 +169,7 @@ layer），不传才走 usdrt/Fabric**（`xrcore_class_wrapper.py:842-868`，doc
 |---|---|---|
 | `timing` | 行为不变，拆出 读/写/算 三段耗时 | 成本在哪一段 |
 | `nowrite` | 保留读与算，跳过写入 | 写入本身多贵 |
-| `fabric` | 写入改走 usdrt（丢掉 layer） | 候选修法有效吗 |
+| `fabric` | 写入改走 usdrt（丢掉 layer） | 纯诊断：USD 写比 Fabric 写贵多少。**不是修法**，见下 |
 | `noop` | 整个回调直接返回 | **决定性对照**：回到基线 ⇒ 成本全在 A；仍然慢 ⇒ 成本在 kit C++ 侧 |
 | `noanchor` | 在 noop 之上把 `anchorMode` 拨回 `scene origin` | 仅当 noop 没恢复才有意义：区分 kit 的自定义锚通路与 XR 会话本身 |
 

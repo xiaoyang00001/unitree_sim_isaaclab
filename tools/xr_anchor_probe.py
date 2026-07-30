@@ -19,7 +19,12 @@
   nowrite 保留全部矩阵读取与四元数计算,跳过最终写入(仍计时)
           → 归因"写入 + 其下游"的成本
   fabric  写入改走 usdrt/Fabric(layer_identifier=None),其余不变
-          → XRCore 的默认写路径;若成本骤降,说明贵在 USD layer 写
+          → **纯诊断档,不是修法**:用来量"USD 写 vs Fabric 写"的成本差。
+            ⚠️ 已证不可行(2026-07-30,见 doc/xr_ar_judder_zh.md §2.1):kit 每帧
+            用 pxr::UsdGeomImageable::ComputeLocalToWorldTransform 读 anchor,
+            那条路径里没有任何 fabric 分支或回退,只写 Fabric 消费者看不到,
+            视角会冻结在 XRAnchor 的 USD 初值上、不再跟随机器人。
+            本档跑起来时 anchor 是冻的,主观视角行为无意义。
   noop    整个 sync_headset_to_anchor 直接返回,只计数
           → 归因"回调全部工作"的成本;anchor 静止,视角会漂,仅诊断用
   noanchor 在 noop 之上,把 kit 的 anchorMode 拨回 "scene origin"
