@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Sequence
 import torch
 
 from dds.dds_master import dds_manager
+from isaaclab_compat import isaac_quat_to_wxyz
 from robots.g1_joint_order import G1_29DOF_DDS_JOINT_ORDER
 
 if TYPE_CHECKING:
@@ -325,10 +326,12 @@ def get_robot_imu_data(
     """
     Returns [batch, 13] = pos(world,3) | quat(w,x,y,z) | acc_body(3) | gyro_body(3)
 
-    Isaac Lab body quaternions are already wxyz. PhysX provides world-frame
-    link acceleration and angular velocity; both are transformed into the
-    selected IMU link frame. The accelerometer value is proper acceleration,
-    so gravity is subtracted before the frame transform.
+    Unitree LowState requires wxyz. Isaac Lab 5 runtime poses are wxyz, while
+    Isaac Lab 6 runtime poses are xyzw, so the quaternion is normalized to the
+    Unitree order before it is published or used for frame transforms. PhysX
+    provides world-frame link acceleration and angular velocity; both are
+    transformed into the selected IMU link frame. The accelerometer value is
+    proper acceleration, so gravity is subtracted before the frame transform.
     """
     data = env.scene["robot"].data
     body_index = _resolve_imu_body_index(data, body_candidates)
@@ -338,7 +341,7 @@ def get_robot_imu_data(
     body_acc_w = data.body_com_acc_w[:, body_index]
 
     pos_w = body_pose_w[:, :3]
-    quat_wxyz = body_pose_w[:, 3:7]
+    quat_wxyz = isaac_quat_to_wxyz(body_pose_w[:, 3:7])
     ang_vel_w = body_vel_w[:, 3:6]
     lin_acc_w = body_acc_w[:, :3]
 

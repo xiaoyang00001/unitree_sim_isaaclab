@@ -23,6 +23,8 @@ import torch
 import gymnasium as gym
 from pathlib import Path
 
+from isaaclab_compat import isaac_quat_to_wxyz
+
 # Windows: 抬高系统定时器分辨率。这是本工程在 Windows 上掉帧的最大单项。
 #
 # Windows 默认的系统定时器周期是 15.625ms,所有走 WaitForSingleObject 的等待
@@ -977,12 +979,12 @@ class SonicFallResetMonitor:
             return None
 
         root_pos = root_pos_w.detach().cpu().tolist()
-        root_quat = root_quat_w.detach().cpu().tolist()
+        root_quat = isaac_quat_to_wxyz(root_quat_w).detach().cpu().tolist()
         base_z = float(root_pos[2]) if len(root_pos) >= 3 else float("nan")
 
         tilt_deg = float("nan")
         if len(root_quat) >= 4 and all(math.isfinite(float(value)) for value in root_quat[:4]):
-            _, qx, qy, qz = (float(value) for value in root_quat[:4])
+            _, qx, qy, _ = (float(value) for value in root_quat[:4])
             norm_sq = sum(float(value) * float(value) for value in root_quat[:4])
             if norm_sq >= 1.0e-12:
                 vertical_cosine = 1.0 - 2.0 * (qx * qx + qy * qy) / norm_sq

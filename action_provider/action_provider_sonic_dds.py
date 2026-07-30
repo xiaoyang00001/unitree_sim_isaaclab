@@ -17,6 +17,7 @@ import torch
 
 from action_provider.action_base import ActionProvider
 from dds.dds_master import dds_manager
+from isaaclab_compat import isaac_quat_to_wxyz
 from robots.g1_joint_order import G1_29DOF_DDS_JOINT_ORDER
 from robots.g1_sonic_urdf import DEX3_HAND_JOINT_NAMES
 
@@ -1153,7 +1154,7 @@ class SonicDDSActionProvider(ActionProvider):
         # is expected, especially at the ankles.
         pd_target_abs = torch.abs(actual_body_pos - target_body_pos)
 
-        root_quat = self.robot.data.root_quat_w[0]
+        root_quat = isaac_quat_to_wxyz(self.robot.data.root_quat_w[0])
         root_quat = root_quat / torch.clamp(torch.linalg.vector_norm(root_quat), min=1.0e-6)
         vertical_cosine = torch.clamp(
             1.0 - 2.0 * (root_quat[1] * root_quat[1] + root_quat[2] * root_quat[2]),

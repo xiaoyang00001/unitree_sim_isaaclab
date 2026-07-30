@@ -138,6 +138,22 @@ Isaac Sim 6 的 articulation 是嵌套 link 层级。旧接触传感器代码遇
 `activate_contact_sensors()` 现在会遍历完整子树，并给每个刚体 author contact report
 schema 和零阈值。
 
+### 2.7 运行时 IMU 四元数也改为 `xyzw`
+
+初始配置修正后机器人能够正常站立，但 SONIC 仍可能出现“手臂可动、下半身不跟随”。
+原因是 Isaac Lab 6 的 `body_link_pose_w` 和 `root_quat_w` 运行时张量同样改成了
+`xyzw`，而 Unitree `LowState.imu_state.quaternion` 协议仍要求 `wxyz`。
+
+旧代码把 Isaac 6 原始值直接写入 DDS。例如接近单位姿态的
+`(x, y, z, w) = (-0.0008, -0.0043, 0.0071, 0.9999)` 被 SONIC 当作
+`(w, x, y, z)` 后接近错误的 180° 旋转。关节状态和手臂命令本身仍是正确的，因此手臂
+可以响应；依赖 pelvis IMU 姿态和机体系加速度的 locomotion policy 则无法正常控制腿部。
+
+`isaaclab_compat.py` 现在读取已安装 Isaac Sim 包的主版本来处理边界：Isaac 5 保持
+`wxyz`，Isaac 6 把运行时 `xyzw` 转为 `wxyz`，之后再进行世界系到 IMU 机体系的
+加速度、角速度变换并写入 DDS。同一个兼容函数也用于跌倒检测和 SONIC 姿态统计，
+避免诊断值再次按错顺序。版本检查只读取包元数据，不会在纯 Python 测试中启动 Kit。
+
 ## 3. 修改范围
 
 ### `unitree_sim_isaaclab`
@@ -149,6 +165,11 @@ schema 和零阈值。
 - `robots/g1_sonic_visuals.py`
   - 支持 Isaac Sim 6 的 nested `Geometry` render instance；
   - 排除碰撞 instance，防止 PhysX articulation 失效。
+- `isaaclab_compat.py`、`tasks/common_observations/g1_29dof_state.py`
+  - 将 Isaac 6 运行时姿态从 `xyzw` 转为 Unitree DDS 所需的 `wxyz`；
+  - 使用转换后的姿态计算 IMU 机体系加速度和角速度。
+- `sim_main.py`、`action_provider/action_provider_sonic_dds.py`
+  - 修正 Isaac 6 下的跌倒检测和姿态统计。
 
 ### `IsaacLab` fork
 
@@ -186,6 +207,8 @@ git diff --check
 4. 三个方块落在桌面上，而不是穿过桌面或飞离场景；
 5. XR 中地面位于脚下，桌子与桌面窗口中方向一致；
 6. 日志不出现 `Simulation view object is invalidated` 或 `prim deleted`。
+7. `rt/lowstate` 中直立 pelvis 的四元数接近 `(w, x, y, z) = (1, 0, 0, 0)`，
+   SONIC 启动后腿部 `rt/lowcmd` 持续更新且下半身能够跟随。
 
 截至本文提交，URDF 导入、环境创建和静态旋转矩阵已经验证；最终四元数修复需要在
 结束旧 Isaac 进程并重新启动后完成一次头显运行验收。
