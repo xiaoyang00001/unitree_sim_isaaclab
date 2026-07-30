@@ -290,6 +290,48 @@ Windows 特有的坑（每条都有对应提交，`git log --grep="(win)"`）：
 | `--dds-interface lo` 失败 | Windows 没有 lo 网卡 | 用 `auto` 或本机 IP，注意选项名是**连字符** |
 | 锁步只有 0.4Hz、`Init Done` 等 6 分钟 | 纯 Python CRC 打满回调线程 | 已修：CRC 抽样校验（启动日志有提示行） |
 
+### Windows 帧率：两刀 36→50Hz，剩下的卡在网络
+
+**帧率账本对照**（win2 headless 跨机锁步，i5-14600KF + RTX 4070 Ti，与 Linux 同款 CPU）：
+
+| 阶段 | A(等ack) | E(物理) | S(余量) | T | 频率 |
+|---|---|---|---|---|---|
+| 基线 | 11.9 | 15.6 | 0.0 | 27.6ms | 36.2Hz |
+| + 跳过 LowState CRC | 9.4 | 12.7 | 0.0 | 22.6ms | 44.2Hz |
+| + `timeBeginPeriod(1)` | 8.2 | 10.4 | 0.4+ | 20.0ms | **50.0Hz** |
+| Linux 本机参考 | 0.9 | 6.2 | 5-6 | — | 50.00Hz |
+
+两刀都已默认生效（CRC 那刀需显式开环境变量）：
+
+1. **`timeBeginPeriod(1)`**（`sim_main.py` 顶部）——Windows 系统定时器周期默认
+   15.625ms，`threading.Event.wait` 与带 timeout 的锁全被量化到这个粒度，而 DDS
+   发布线程正用 `_wake_event.wait()` 排下一次发布（`dds_master.py:208`）⇒ lowstate
+   迟发 ⇒ ack 迟到。实测 `Event.wait(0.2ms)` 从 **15.50ms 降到 1.46ms**。
+   🪤 **`time.sleep` 不受影响**（py3.11+ 用高精度 waitable timer，0.50→0.50ms）——
+   只测 `time.sleep` 会得出"`timeBeginPeriod` 无效"的错误结论，本轮踩过。
+2. **`UNITREE_SKIP_LOWSTATE_CRC=1`**——纯 Python CRC 算 `LowState_` 要 2.15ms/包，
+   102.8Hz 发布 = 22% 单线程 GIL，且跑在发布线程里抢主循环的 GIL。
+   ⚠️ 必须同时给 deploy 传 `--disable-crc-check`，否则对端丢弃每一帧。
+
+**剩余瓶颈是 WiFi，不是代码**：长跑 55+ 样本中位 20.6ms（48.5Hz）但 p90 37.4ms、
+达标率仅 49%；拆开看超 25ms 的帧里 `A` 从 7.0 涨到 20.2ms（2.9 倍）而 `E` 只涨 27%。
+决定性验证：在 win2 **本地**用假冒 ack 跑（消除网络），锁步 **204.3Hz**。
+⇒ 要稳定 50Hz 必须把 win2 接**有线**到与本机同网段（它现在的以太网口在 192.168.10.x）。
+
+已被实测否决的方向（别重试）：
+
+| 方向 | 实测 | 为什么不行 |
+|---|---|---|
+| 钉 P 核 + High 优先级 | 39.8Hz（比默认 44.2 差） | Linux 的"钉 P 核"不能照搬：227 线程挤进 12 逻辑核加剧争抢，E 核的并行容量是净收益 |
+| `sys.setswitchinterval(0.5ms)` | **17.6Hz**（差 2.5 倍） | 切换过频，上下文切换开销压倒尾延迟收益，A/E 同时恶化 2 倍 |
+| 优化 lowcmd 解析/json | 各 0.02ms | 可忽略，不是瓶颈（CRC 抽样后回调仅占 2.4% GIL） |
+| 降分辨率 / GPU 侧 | GPU 仅 23% | 卡在 CPU 提交路径，与 GPU 无关 |
+
+⚠️ **测量纪律**：跨机 A/B 必须**两侧同时重启**。只重启一侧会让 tick/epoch 失配，
+特征是 `A ≡ 250ms`（等于 `sonic_sync_wait_timeout`）、`sync_waits` 每周期整百递增、
+`physics_steps=0`。另外 `just run` 起的 deploy 被 timeout 打断会留残余进程，多实例
+同时发 ack 会让数据完全不可信，测前先确认进程数为 0。
+
 环境侧的两个前提（不在代码里，装机时要做）：
 
 - **cyclonedds 必须是 0.10.x**，且只能自编（无 cp311 wheel）。⚠️ **千万别用 11.0.1**：
