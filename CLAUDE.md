@@ -208,6 +208,80 @@ provider 在 `action_provider/create_action_provider.py` 里按需惰性导入�
   **kit CPU 地板**（与场景内容无关），所以降分辨率/`rendering_mode=performance` 都无效
   （已复验否决），真正有效的是减扩展与减每帧重绘的 UI。
 
+<!-- BEGIN win-port -->
+## Windows 部署与帧率（win2，跨机闭环）
+
+仿真端可以跑在 Windows、GR00T 留在 Ubuntu，两端走原生 DDS 跨机。启动一律用工程根的
+`run_win.bat`（封装了两个必需环境变量）；对端 `./deploy.sh isaac:enp4s0`
+（`isaac:<iface>` 是跨机专用模式，传裸网卡名会被判成 real 而**静默丢掉 `--isaac-sim`**）。
+
+### 🔥 跑性能测试前必做：关掉 XR 常驻服务
+
+**这是 Windows 侧掉帧最大的隐形杀手，比所有代码优化加起来都重要。**
+
+`XRLink`（NOLO 串流）常驻会吃 **245% CPU**（2.45 核），`vrserver`+`vrcompositor`
+再吃 **92%**。即使 Isaac 完全不用 XR，它们照样满载抢核——而 kit 主循环是单线程的。
+
+```powershell
+Get-Process XRLink,vrserver,vrmonitor,vrcompositor -EA SilentlyContinue | Stop-Process -Force
+```
+
+同一台机、同一份代码、同样跨机 WiFi，仅此一项差异的实测对比：
+
+| | A(等ack) | S(余量) | T max | 达标率 |
+|---|---|---|---|---|
+| XRLink 在跑 | 8.2ms（p90 27.3） | 0.0ms | 47.6ms | 49% |
+| **XRLink 关掉** | **2.1ms** | **5.8ms** | **20.2ms** | **~100%** |
+
+⚠️ **曾错误归因于 WiFi**：看到 `A` 尾部尖峰（p90 27.3ms）就判定是跨机 WiFi 抖动，
+还写进过文档。实际关掉 XRLink 后网络条件完全没变，`A` 却降到 2.1ms、抖动归零。
+**"跨机 = 网络背锅"是个容易上钩的假设，先排除主机侧常驻负载。**
+
+### 帧率账本（headless 跨机锁步，i5-14600KF + RTX 4070 Ti，与 Linux 同款 CPU）
+
+| 阶段 | A | E | S | T | 频率 |
+|---|---|---|---|---|---|
+| 基线 | 11.9 | 15.6 | 0.0 | 27.6ms | 36.2Hz |
+| + 跳过 LowState CRC | 9.4 | 12.7 | 0.0 | 22.6ms | 44.2Hz |
+| + `timeBeginPeriod(1)` | 8.2 | 10.4 | 0.4 | 20.0ms | 50.0Hz |
+| **+ 关 XR 常驻服务** | **2.1** | **11.6** | **5.8** | **19.9ms** | **50.4Hz** ✅ |
+| Linux 本机参考 | 0.9 | 6.2 | 5-6 | — | 50.00Hz |
+
+两个代码修复（均已默认生效，CRC 那刀需显式开环境变量）：
+
+1. **`timeBeginPeriod(1)`**（`sim_main.py` 顶部）——Windows 系统定时器周期默认 15.625ms，
+   `threading.Event.wait` 与带 timeout 的锁全被量化，而 DDS 发布线程正用
+   `_wake_event.wait()` 排下次发布（`dds_master.py`）⇒ lowstate 迟发 ⇒ ack 迟到。
+   🪤 **`time.sleep` 不受影响**（py3.11+ 用高精度 waitable timer）：
+   `time.sleep(0.2ms)` 0.50→0.50ms 无变化，而 `Event.wait(0.2ms)` **15.50→1.46ms**。
+   只测 `time.sleep` 会得出"`timeBeginPeriod` 无效"的错误结论——本轮踩过。
+2. **`UNITREE_SKIP_LOWSTATE_CRC=1`**——纯 Python 算 `LowState_` 的 CRC 要 2.15ms/包，
+   102.8Hz 发布 = 22% GIL 且跑在发布线程里抢主循环。
+   ⚠️ 必须同时给 deploy 传 `--disable-crc-check`，否则对端丢弃每一帧。
+
+### 已被实测否决（别重试）
+
+| 方向 | 实测 | 为什么不行 |
+|---|---|---|
+| 钉 P 核 + High 优先级 | 39.8Hz（比默认 44.2 差） | Linux 的"钉 P 核"不能照搬：200+ 线程挤进 12 逻辑核加剧争抢，E 核的并行容量是净收益 |
+| `sys.setswitchinterval(0.5ms)` | **17.6Hz**（差 2.5 倍） | 切换过频，上下文切换开销压倒尾延迟收益，A/E 同时恶化 2 倍 |
+| 优化 lowcmd 解析 / json | 各 0.02ms | CRC 抽样后回调仅占 2.4% GIL，不是瓶颈 |
+| 降分辨率 / GPU 侧 | GPU 仅 11-23% | 卡在 CPU 提交路径 |
+
+### 口径与测量纪律
+
+- **`--xr` 是另一条链路**：走专属 experience、帧节奏由 compositor 和 `xrWaitFrame` 决定，
+  上表数据全部不适用。启动日志里 action source 不是 `sonic_dds`、或加载的是
+  `isaaclab.python.xr.openxr.kit`，就说明跑的不是这条路。
+- **跨机 A/B 必须两侧同时重启**。只重启一侧会让 tick/epoch 失配，特征是
+  `A ≡ 250ms`（等于 `sonic_sync_wait_timeout`）、`sync_waits` 每周期整百递增、
+  `physics_steps=0`。健康时 `sync_waits` 应该几乎不涨（实测 1）。
+- `just run` 起的 deploy 被 timeout 打断会留残余进程，多实例同时发 ack 会让数据
+  完全不可信，测前先确认进程数为 0。
+- headless 的 `[Performance]` 行没有 `R` 项；GUI 才有。**headless 通过 ≠ GUI 通过**
+  （精简 kit 的 TOML 转义、h5py DLL 抢占两个坑都只在 GUI 暴露）。
+<!-- END win-port -->
+
 ## 参考文档
 
 - `README_zh-CN.md` / `README.md`：任务清单、环境安装（`auto_setup_env.sh 4.5|5.0|5.1 <env_name>`）、
