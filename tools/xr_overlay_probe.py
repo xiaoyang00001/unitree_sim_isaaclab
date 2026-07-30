@@ -26,14 +26,29 @@ compositor 就必须自己合成，于是顺带每帧按最新头姿重新变换
 
 主观判据仍需戴头显：转头看 Isaac 画面还抖不抖。
 
-## 用法
+## 用法：必须两个终端，Isaac 先起
 
+本工具**只提供一个 overlay，不提供场景画面**。单独跑它，头显里只会看到 SteamVR 的空环境
+加上探针的图案——看不到 Isaac，而且此时 compositor 正在渲染 SteamVR 自己的环境，
+``comp_gpu`` 必然非零，读数会被误读成"假设成立"。所以默认**没有 scene app 就拒绝测量**
+（逃生门 ``--allow-no-scene``）。
+
+    # 终端 A：先起 Isaac，等头显里看到画面
     conda activate env_isaaclab
-    # 需要 SteamVR 已在跑（NOLO Link 或 ALVR 拉起），且 Isaac 已作为 scene app 接入
+    GR00T_WBC_ROOT=/home/nolo/GR00T-WholeBodyControl \
+    UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo \
+    python sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor --robot_type g129 \
+        --action_source sonic_dds --device cpu --teleop_device motion_controllers --xr
+
+    # 终端 B：确认 Isaac 画面已在头显里之后再跑
+    conda activate env_isaaclab
     python tools/xr_overlay_probe.py --mode none      # 先拿基线
     python tools/xr_overlay_probe.py --mode tiny      # 假设的零代价解
-    python tools/xr_overlay_probe.py --mode panel     # 测 overlay 自身是否稳
+    python tools/xr_overlay_probe.py --mode panel     # 测 overlay 自身是否稳（会挡住中间视野）
     python tools/xr_overlay_probe.py --mode blink     # 自动交替，做 A/B
+
+启动时会打印 ``✅ scene app pid = ...`` 确认 Isaac 已接入；中途 Isaac 退出也会报出来，
+免得后半段读数悄悄变成另一个工况。
 
 依赖 ``pip install openvr``（纯 ctypes 绑定，无需编译）。本工具以
 ``VRApplication_Overlay`` 身份接入，**不会**抢占 Isaac 的 scene app 身份。
@@ -44,6 +59,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import math
+import os
 import signal
 import sys
 import time
@@ -140,6 +156,7 @@ class Probe:
         self.openvr: Any = None
         self.overlay_handle = None
         self.visible = False
+        self.scene_pid: int | None = None
         self._stop = False
 
     # ---------- 生命周期 ----------
@@ -158,20 +175,68 @@ class Probe:
                 f"连接 SteamVR 失败：{e}\n"
                 "先把 SteamVR 拉起来（NOLO Link 或 ALVR），确认 vrserver/vrcompositor 在跑。"
             )
-        self._report_scene_app()
+        self._self_check_timing_fields()
+        # 残留实例的检查要在这里、而不是 create_overlay 里:mode=none 也会被残留实例
+        # 贴的 overlay 污染("基线"其实不是基线)。
+        self._warn_on_stale_instances()
+        self.scene_pid = self._query_scene_pid()
+        self._require_scene_app()
 
-    def _report_scene_app(self):
-        openvr = self.openvr
+    def _query_scene_pid(self) -> int | None:
+        """当前 scene app 的 pid；None 表示查不到（接口不可用）。0 表示确实没有。"""
         try:
-            apps = openvr.VRApplications()
-            pid = apps.getCurrentSceneProcessId()
+            return int(self.openvr.VRApplications().getCurrentSceneProcessId())
         except Exception:
-            print("[probe] 无法查询 scene app（不影响测量）")
+            return None
+
+    def _require_scene_app(self):
+        """没有 scene app 就拒绝继续——这是本工具最容易出的假阳性。
+
+        没有 scene app 时 compositor 要自己渲染 SteamVR 的默认环境，comp_gpu **必然非零**,
+        看起来就像"假设成立"，实际上什么也没证明。而且头显里只会看到本探针的图案、
+        看不到 Isaac 画面（2026-07-30 用户实际踩到）。
+        """
+        if self.scene_pid is None:
+            print("[probe] ⚠️ 无法查询 scene app（IVRApplications 不可用），测量继续但请自行确认 Isaac 在跑")
+            return
+        if self.scene_pid:
+            print(f"[probe] ✅ scene app pid = {self.scene_pid}（Isaac 已接入）")
+            return
+        if self.args.allow_no_scene:
+            print(
+                "[probe] ⚠️⚠️ 没有 scene app,但 --allow-no-scene 已指定。"
+                "注意 comp_gpu 读数此时**不能**用来判断假设成立与否。"
+            )
+            return
+        sys.exit(
+            "[probe] ❌ 当前没有 scene app 接入,拒绝测量。\n"
+            "\n"
+            "  没有 scene app 时 compositor 会渲染 SteamVR 自己的默认环境,comp_gpu 必然非零,\n"
+            "  读数看起来像'假设成立'但什么也没证明;头显里也只会看到本探针的图案。\n"
+            "\n"
+            "  正确流程是两个终端:\n"
+            "    终端 A: GR00T_WBC_ROOT=/home/nolo/GR00T-WholeBodyControl \\\n"
+            "            UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo \\\n"
+            "            python sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor \\\n"
+            "              --robot_type g129 --action_source sonic_dds --device cpu \\\n"
+            "              --teleop_device motion_controllers --xr\n"
+            "    终端 B: 等头显里看到 Isaac 画面后,再跑本探针\n"
+            "\n"
+            "  确实要在无 scene app 下空跑,加 --allow-no-scene。"
+        )
+
+    def _check_scene_app_alive(self):
+        """Isaac 中途退出/崩掉必须让人看见,否则后半段读数是另一个工况的。"""
+        if self.scene_pid is None:
+            return
+        pid = self._query_scene_pid()
+        if pid == self.scene_pid:
             return
         if not pid:
-            print("[probe] ⚠️ 当前没有 scene app 接入——请先启动 Isaac（--xr），否则测的不是真实工况")
-            return
-        print(f"[probe] scene app pid = {pid}")
+            print("[probe] ⚠️ scene app 已消失(Isaac 退出?)——此后的读数不再是真实工况")
+        else:
+            print(f"[probe] ⚠️ scene app 变了:{self.scene_pid} -> {pid}")
+        self.scene_pid = pid
 
     def create_overlay(self):
         openvr = self.openvr
@@ -179,7 +244,13 @@ class Probe:
         ov = openvr.VROverlay()
         # createOverlay 而非 createDashboardOverlay：我们要的是 in-game overlay,
         # dashboard overlay 只在菜单打开时可见，那就变成复现已知现象而不是测新假设。
-        self.overlay_handle = ov.createOverlay("unitree.judder.probe", "Judder Probe")
+        #
+        # key 带 pid：overlay key 全局唯一，固定 key 会让"上一次忘了退出的实例"
+        # 直接把这次 createOverlay 打成 OverlayError_KeyInUse（2026-07-30 踩过）。
+        # 带 pid 后新实例总能起来，但残留实例仍会多贴一个 overlay 干扰读数，
+        # 所以下面还要显式查一次并提醒。
+        key = f"unitree.judder.probe.{os.getpid()}"
+        self.overlay_handle = ov.createOverlay(key, "Judder Probe")
 
         size = 64 if args.mode == "tiny" else 512
         kind = "solid" if args.mode == "tiny" else "grid"
@@ -198,6 +269,40 @@ class Probe:
             f"[probe] overlay 已创建 mode={args.mode} 宽={args.width}m alpha={args.alpha} "
             f"位置=({args.x}, {args.y}, {args.z}) pitch={args.pitch}°"
         )
+
+    def _warn_on_stale_instances(self):
+        """残留的探针实例会多贴一个 overlay，让"有几个 overlay"这个前提说不清。
+
+        用 findOverlay 扫其他 pid 的 key 不现实（要枚举 pid），改为扫 /proc:
+        这是本机诊断工具，直接看进程表最省事也最准。
+        """
+        me = os.getpid()
+        stale = []
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit() or int(entry) == me:
+                continue
+            try:
+                with open(f"/proc/{entry}/cmdline", "rb") as fh:
+                    cmd = fh.read().replace(b"\0", b" ").decode(errors="replace")
+            except OSError:
+                continue
+            if "xr_overlay_probe.py" not in cmd:
+                continue
+            # 只认真正的 python 进程：否则包裹本进程的 shell（cmdline 里带着整条命令）
+            # 和 `timeout ... python ...` 的包装进程都会被误报成残留实例。
+            try:
+                exe = os.path.basename(os.readlink(f"/proc/{entry}/exe"))
+            except OSError:
+                continue
+            if "python" not in exe:
+                continue
+            stale.append((entry, cmd.strip()))
+        if not stale:
+            return
+        print("[probe] ⚠️ 检测到其他探针实例仍在运行——它们各自贴着一个 overlay，会污染本次判读：")
+        for pid, cmd in stale:
+            print(f"[probe]     pid {pid}: {cmd}")
+        print("[probe]   建议先把它们停掉（kill <pid>）再测。")
 
     def show(self):
         if self.overlay_handle is None:
@@ -222,22 +327,77 @@ class Probe:
 
     # ---------- 遥测 ----------
 
-    def _frame_timing(self):
+    def _self_check_timing_fields(self):
+        """启动时核对 FrameTiming 字段名，缺了就当场报错。
+
+        ⚠️ 这里刻意**不用** ``getattr(..., default)`` 兜底：2026-07-30 第一版就是那么写的,
+        结果 ``getFrameTiming()`` 返回的是 ``(result, timing)`` **元组**而不是 struct,
+        getattr 全部落到默认值,整屏读数打成 ``nan`` 却不报错——白跑了三轮实验。
+        静默兜底在测量工具里是负资产。
+        """
+        required = (
+            "m_nSize",
+            "m_flCompositorRenderGpuMs",
+            "m_flCompositorRenderCpuMs",
+            "m_flPreSubmitGpuMs",
+            "m_flClientFrameIntervalMs",
+            "m_nNumFramePresents",
+            "m_nNumMisPresented",
+            "m_nNumDroppedFrames",
+            "m_nReprojectionFlags",
+        )
+        # 取 entry[0] 而不解包：ctypes 的 _fields_ 条目可以是 (name, type) 也可以是
+        # (name, type, bitwidth)，解包成两个会在带 bitfield 的绑定上直接崩。
+        have = {entry[0] for entry in self.openvr.Compositor_FrameTiming._fields_}
+        missing = [f for f in required if f not in have]
+        if missing:
+            sys.exit(
+                f"[probe] ❌ pyopenvr 的 Compositor_FrameTiming 缺字段:{missing}\n"
+                "  绑定版本与本工具预期不符,读数会失真。装一个较新的:pip install -U openvr"
+            )
+
+    def _dashboard_visible(self) -> bool | None:
+        """dashboard 当前是否可见；None 表示查不到。
+
+        这一列是整个工具里最有价值的东西：dashboard 是**已知会让 compositor 自己渲染**
+        的状态（§1 实证：那时连 Isaac 画面都不抖）。把它和 comp_gpu 一起采样，
+        既能验证 comp_gpu 这个读数到底反映不反映 compositor 的渲染状态，
+        又能自动分出"dashboard 开/关"两组做对照——不需要人工对时间戳。
+        """
         try:
-            t = self.openvr.VRCompositor().getFrameTiming()
+            return bool(self.openvr.VROverlay().isDashboardVisible())
         except Exception:
             return None
-        # 字段名按 openvr.h 的 C 名字；用 getattr 兜住绑定版本差异，
-        # 免得换个 pyopenvr 版本就 AttributeError 崩掉整次实验。
+
+    def _frame_timing(self):
+        """取一帧 timing。
+
+        ⚠️ 不能用 pyopenvr 的 ``getFrameTiming()`` 便捷封装:它返回 ``(result, timing)``
+        元组,且**不设** ``m_nSize``——而 openvr.h 明确要求调用前把 size 填好。
+        这里直接走 function_table 自己填。
+        """
+        cls = self.openvr.Compositor_FrameTiming
+        timing = cls()
+        timing.m_nSize = ctypes.sizeof(cls)
+        try:
+            ok = self.openvr.VRCompositor().function_table.getFrameTiming(
+                ctypes.byref(timing), 0
+            )
+        except Exception as e:
+            print(f"[probe] getFrameTiming 调用失败:{e}")
+            return None
+        if not ok:
+            # compositor 还没攒够历史,或本进程拿不到 timing。不要伪造读数。
+            return None
         return {
-            "comp_gpu": getattr(t, "m_flCompositorRenderGpuMs", float("nan")),
-            "comp_cpu": getattr(t, "m_flCompositorRenderCpuMs", float("nan")),
-            "app_gpu": getattr(t, "m_flPreSubmitGpuMs", float("nan")),
-            "presents": getattr(t, "m_nNumFramePresents", -1),
-            "mispresent": getattr(t, "m_nNumMisPresented", -1),
-            "dropped": getattr(t, "m_nNumDroppedFrames", -1),
-            "reproj": getattr(t, "m_nReprojectionFlags", 0),
-            "interval": getattr(t, "m_flClientFrameIntervalMs", float("nan")),
+            "comp_gpu": timing.m_flCompositorRenderGpuMs,
+            "comp_cpu": timing.m_flCompositorRenderCpuMs,
+            "app_gpu": timing.m_flPreSubmitGpuMs,
+            "presents": timing.m_nNumFramePresents,
+            "mispresent": timing.m_nNumMisPresented,
+            "dropped": timing.m_nNumDroppedFrames,
+            "reproj": timing.m_nReprojectionFlags,
+            "interval": timing.m_flClientFrameIntervalMs,
         }
 
     def run(self):
@@ -250,16 +410,32 @@ class Probe:
             f"（阈值 {COMPOSITE_GPU_MS_THRESHOLD}ms），说明 compositor 转入了合成模式。"
         )
         print(
+            "[probe] 对照：把 dashboard 开一会儿再关掉，退出时会自动分组对比两种状态下的 comp_gpu。"
+        )
+        print(
             "[probe] "
             + " | ".join(
-                ["t", "overlay", "comp_gpu", "comp_cpu", "app_gpu", "interval", "presents", "reproj"]
+                [
+                    "t",
+                    "overlay",
+                    "dash",
+                    "comp_gpu",
+                    "comp_cpu",
+                    "app_gpu",
+                    "interval",
+                    "presents",
+                    "reproj",
+                ]
             )
         )
 
         t0 = time.monotonic()
         last_blink = t0
         composited_seen = False
+        unavailable = 0
         samples: list[float] = []
+        # 按 dashboard 状态分组，用于退出时的自动对照
+        by_dash: dict[str, list[float]] = {"on": [], "off": []}
 
         while not self._stop:
             now = time.monotonic()
@@ -268,37 +444,107 @@ class Probe:
                 last_blink = now
                 print(f"[probe] --- overlay -> {'ON' if self.visible else 'OFF'} ---")
 
+            self._check_scene_app_alive()
             tm = self._frame_timing()
             if tm is None:
-                print("[probe] getFrameTiming 不可用（compositor 未就绪？）")
+                unavailable += 1
+                if unavailable == 1:
+                    print("[probe] ⚠️ getFrameTiming 返回 false —— compositor 未就绪或本进程拿不到 timing")
             else:
-                if tm["comp_gpu"] == tm["comp_gpu"]:  # 非 NaN
-                    samples.append(tm["comp_gpu"])
-                    if tm["comp_gpu"] > COMPOSITE_GPU_MS_THRESHOLD:
-                        composited_seen = True
+                samples.append(tm["comp_gpu"])
+                if tm["comp_gpu"] > COMPOSITE_GPU_MS_THRESHOLD:
+                    composited_seen = True
+                dash = self._dashboard_visible()
+                if dash is not None:
+                    by_dash["on" if dash else "off"].append(tm["comp_gpu"])
+                dash_txt = "?" if dash is None else ("ON " if dash else "off")
                 print(
-                    f"[probe] {now - t0:6.1f}s | {'ON ' if self.visible else 'OFF'} | "
+                    f"[probe] {now - t0:6.1f}s | {'ON ' if self.visible else 'OFF'} | {dash_txt} | "
                     f"{tm['comp_gpu']:8.3f} | {tm['comp_cpu']:8.3f} | {tm['app_gpu']:7.3f} | "
                     f"{tm['interval']:8.2f} | {tm['presents']:8d} | {_decode_reprojection(tm['reproj'])}"
                 )
             time.sleep(args.interval)
 
+        if unavailable:
+            print(f"\n[probe] ⚠️ 有 {unavailable} 次采样拿不到 timing（已排除，未计入统计）")
+        if not samples:
+            print(
+                "[probe] ❌ 一个有效样本都没有 —— 本次没有任何可用读数，不要据此下结论。"
+            )
         if samples:
             avg = sum(samples) / len(samples)
             peak = max(samples)
             print(
                 f"\n[probe] comp_gpu 均值 {avg:.4f}ms / 峰值 {peak:.4f}ms（{len(samples)} 个样本）"
             )
-            if composited_seen:
+            if not self.scene_pid:
+                # 没有 scene app 时 compositor 在渲染 SteamVR 自己的环境,
+                # 这个读数与"overlay 能否逼它退出直通"无关。不能给结论。
+                print(
+                    "[probe] ⚠️ 本次没有（或中途失去）scene app —— 上面的读数**不能**用来判断假设，"
+                    "compositor 此时在渲染 SteamVR 自己的环境。请先起 Isaac 再重测。"
+                )
+            elif composited_seen:
                 print(
                     "[probe] ✅ compositor 出现了明显的 GPU 渲染开销 —— 它没有在直通，"
                     "假设成立的可能性大。接着戴头显做主观判读。"
                 )
+            elif self.args.mode == "none":
+                # 基线模式没建 overlay，读数只说明"此刻 compositor 在直通",
+                # 不能拿来否决 overlay 假设——否决要由 tiny/panel 组给出。
+                print(
+                    "[probe] ℹ️ 基线：comp_gpu 贴近 0，compositor 在直通（符合预期）。"
+                    "这是对照用的基线，不构成对 overlay 假设的结论。"
+                )
             else:
                 print(
                     "[probe] ❌ comp_gpu 全程贴近 0 —— compositor 仍在直通，"
-                    "仅存在 overlay 不足以让它转入合成模式。"
+                    f"存在 overlay（mode={self.args.mode}）不足以让它转入合成模式。"
                 )
+        self._report_dashboard_contrast(by_dash)
+
+    @staticmethod
+    def _report_dashboard_contrast(by_dash: dict[str, list[float]]):
+        """dashboard 开/关两组 comp_gpu 的自动对照。
+
+        这一段决定上面那个结论能不能信：
+        - 两组都贴近 0 ⇒ **comp_gpu 反映不了 compositor 的渲染状态**，判据本身失效，
+          得换别的观测量，别急着说"假设否决";
+        - dashboard 开着时明显更高 ⇒ 判据有效，那么 overlay 组仍贴近 0 就是真的否决。
+        """
+        on, off = by_dash["on"], by_dash["off"]
+        if not on and not off:
+            return
+        print("\n[probe] --- dashboard 对照 ---")
+        for label, xs in (("dashboard 开", on), ("dashboard 关", off)):
+            if xs:
+                print(
+                    f"[probe]   {label}：comp_gpu 均值 {sum(xs) / len(xs):.4f}ms / "
+                    f"峰值 {max(xs):.4f}ms（{len(xs)} 样本）"
+                )
+            else:
+                print(f"[probe]   {label}：无样本")
+        if not on:
+            print(
+                "[probe]   ⚠️ 没采到 dashboard 打开的样本 —— 判据的有效性未被验证。"
+                "请戴头显把 dashboard 开一会儿再重测。"
+            )
+            return
+        if not off:
+            return
+        on_avg = sum(on) / len(on)
+        off_avg = sum(off) / len(off)
+        if on_avg > max(COMPOSITE_GPU_MS_THRESHOLD, off_avg * 3):
+            print(
+                f"[probe]   ✅ 判据有效：dashboard 开着时 comp_gpu 高出 {on_avg / max(off_avg, 1e-9):.0f}× "
+                "—— 这个读数确实反映 compositor 是否在渲染。"
+            )
+        else:
+            print(
+                "[probe]   ⚠️ dashboard 开关两组没有明显差异 —— comp_gpu 可能反映不了 compositor "
+                "的渲染状态（overlay 应用拿到的也许不是全局 timing）。**此时不能用它下结论**，"
+                "得另找观测量。"
+            )
 
     def _on_sigint(self, *_):
         self._stop = True
@@ -328,6 +574,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pitch", type=float, default=0.0, help="绕 X 轴俯仰（度）")
     p.add_argument("--interval", type=float, default=1.0, help="遥测打印间隔（秒）")
     p.add_argument("--blink-period", type=float, default=8.0, help="blink 模式切换周期（秒）")
+    p.add_argument(
+        "--allow-no-scene",
+        action="store_true",
+        help=(
+            "允许在没有 scene app（Isaac 未启动）时空跑。默认拒绝，"
+            "因为那时 compositor 在渲染 SteamVR 自己的环境，comp_gpu 必然非零、读数无意义"
+        ),
+    )
     return p
 
 

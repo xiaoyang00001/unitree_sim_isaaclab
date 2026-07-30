@@ -105,5 +105,126 @@ class ThresholdTest(unittest.TestCase):
         self.assertGreater(probe.COMPOSITE_GPU_MS_THRESHOLD, 0.011)
 
 
+class TimingFieldsTest(unittest.TestCase):
+    """守住那次 nan 事故：便捷封装返回元组，getattr 兜底把它静默成了 nan。"""
+
+    def test_required_fields_exist_in_installed_binding(self):
+        try:
+            import openvr
+        except ImportError:
+            self.skipTest("未装 pyopenvr")
+        have = {entry[0] for entry in openvr.Compositor_FrameTiming._fields_}
+        for field in (
+            "m_nSize",
+            "m_flCompositorRenderGpuMs",
+            "m_flCompositorRenderCpuMs",
+            "m_flPreSubmitGpuMs",
+            "m_flClientFrameIntervalMs",
+            "m_nNumFramePresents",
+            "m_nReprojectionFlags",
+        ):
+            self.assertIn(field, have)
+
+    def test_convenience_wrapper_returns_tuple_not_struct(self):
+        """锁死当初踩坑的根源，免得有人把 _frame_timing 又"简化"回便捷封装。"""
+        try:
+            import inspect
+
+            import openvr
+        except ImportError:
+            self.skipTest("未装 pyopenvr")
+        src = inspect.getsource(openvr.IVRCompositor.getFrameTiming)
+        self.assertIn("return result, timing", src)
+
+
+class StaleInstanceScanTest(unittest.TestCase):
+    """残留实例扫描必须只认真正的 python 进程。
+
+    第一版按 cmdline 子串匹配，把包裹自己的 shell（cmdline 里带着整条命令）和
+    ``timeout ... python ...`` 的包装进程全报成了残留实例——满屏假阳性。
+    """
+
+    def _scan(self, procs, me=999):
+        """procs: {pid: (cmdline_bytes, exe_path)}"""
+        import contextlib
+        import io
+        import unittest.mock as mock
+
+        def fake_open(path, *_):
+            pid = path.split("/")[2]
+            return io.BytesIO(procs[pid][0])
+
+        def fake_readlink(path):
+            return procs[path.split("/")[2]][1]
+
+        obj = probe.Probe.__new__(probe.Probe)
+        out = io.StringIO()
+        with (
+            mock.patch.object(probe.os, "listdir", return_value=list(procs)),
+            mock.patch.object(probe.os, "getpid", return_value=me),
+            mock.patch.object(probe.os, "readlink", side_effect=fake_readlink),
+            mock.patch("builtins.open", fake_open),
+            contextlib.redirect_stdout(out),
+        ):
+            probe.Probe._warn_on_stale_instances(obj)
+        return out.getvalue()
+
+    def test_reports_real_python_instance(self):
+        text = self._scan(
+            {"1234": (b"python\0tools/xr_overlay_probe.py\0--mode\0tiny", "/usr/bin/python3.11")}
+        )
+        self.assertIn("1234", text)
+        self.assertIn("检测到其他探针实例", text)
+
+    def test_ignores_shell_wrapper_with_script_name_in_cmdline(self):
+        text = self._scan({"1234": (b"bash\0-c\0eval 'python tools/xr_overlay_probe.py'", "/bin/bash")})
+        self.assertEqual(text, "")
+
+    def test_ignores_timeout_wrapper(self):
+        text = self._scan(
+            {"1234": (b"timeout\0-s\0TERM\0python\0tools/xr_overlay_probe.py", "/usr/bin/timeout")}
+        )
+        self.assertEqual(text, "")
+
+    def test_ignores_unrelated_processes(self):
+        text = self._scan({"1234": (b"python\0sim_main.py\0--xr", "/usr/bin/python3.11")})
+        self.assertEqual(text, "")
+
+    def test_skips_self(self):
+        text = self._scan(
+            {"999": (b"python\0tools/xr_overlay_probe.py", "/usr/bin/python3.11")}, me=999
+        )
+        self.assertEqual(text, "")
+
+
+class DashboardContrastTest(unittest.TestCase):
+    """dashboard 对照是"判据到底有效吗"的自检，三个分支都要说对话。"""
+
+    def _run(self, on, off):
+        import contextlib
+        import io
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            probe.Probe._report_dashboard_contrast({"on": on, "off": off})
+        return out.getvalue()
+
+    def test_no_samples_is_silent(self):
+        self.assertEqual(self._run([], []), "")
+
+    def test_missing_dashboard_samples_says_unvalidated(self):
+        text = self._run([], [0.007, 0.007])
+        self.assertIn("判据的有效性未被验证", text)
+
+    def test_clear_difference_marks_criterion_valid(self):
+        text = self._run([3.5, 4.0], [0.007, 0.008])
+        self.assertIn("判据有效", text)
+
+    def test_no_difference_warns_criterion_useless(self):
+        # 两组都贴近 0 ⇒ 不能据此说"假设否决"，必须提醒换观测量
+        text = self._run([0.007, 0.008], [0.007, 0.008])
+        self.assertIn("不能用它下结论", text)
+
+
 if __name__ == "__main__":
     unittest.main()

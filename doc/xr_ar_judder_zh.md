@@ -154,14 +154,67 @@ layer。**只要存在任何一个可见 overlay，compositor 就必须自己合
 `tiny` 下若它**显著上升**（阈值 0.10ms），就客观证明 compositor 退出了直通。
 退出时会打印结论行与均值/峰值。
 
-**实验步骤**（需要 SteamVR 已由 NOLO Link / ALVR 拉起，Isaac 已 `--xr` 接入）：
+**实验步骤**：必须**两个终端**，Isaac 先起。探针只提供一个 overlay、**不提供场景画面**，
+单独跑它头显里只会看到探针图案（2026-07-30 实际踩到，见 §4.1.1）。
 
 ```bash
+# 终端 A：先起 Isaac，等头显里确实看到画面。注意要带 --teleop_device motion_controllers,
+#         只给 --xr 不会建立视角锚定（anchor 由 OpenXRDevice 装配）。
+GR00T_WBC_ROOT=/home/nolo/GR00T-WholeBodyControl \
+UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo \
+python sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor --robot_type g129 \
+    --action_source sonic_dds --device cpu --teleop_device motion_controllers --xr
+
+# 终端 B：确认 Isaac 画面已在头显里之后
 python tools/xr_overlay_probe.py --mode none    # 1. 基线，看 comp_gpu ≈ 0.0x
 python tools/xr_overlay_probe.py --mode tiny    # 2. comp_gpu 是否跳起来
-# 3. 若 comp_gpu 跳起来了 → 戴头显转头，看 Isaac 画面还抖不抖
+#    跑 tiny 时戴头显把 dashboard 开 ~15s 再关掉 —— 探针会自动分组，
+#    退出时直接告诉你"判据有效/失效"（这一步不能省，见 §4.1.1）
+# 3. 若 comp_gpu 跳起来了 → 转头看 Isaac 画面还抖不抖
 python tools/xr_overlay_probe.py --mode panel   # 4. 若主画面仍抖，看 overlay 自身稳不稳
 ```
+
+启动时会打印 `✅ scene app pid = ...`；没有 scene app 会**直接拒绝测量**。
+若有上一轮忘了退出的探针实例，也会列出来提醒（它们各自贴着一个 overlay，会污染判读）。
+
+### 4.1.1 第一轮实测（2026-07-30，⚠️ 判据有效性尚未验证）
+
+第一轮跑出的读数（Isaac 为 scene app 已确认，`panel` overlay 正显示在头显里）：
+
+```
+comp_gpu = 0.006–0.008ms   ← 与日志里 6 次会话的 0.007ms 完全一致
+comp_cpu = 0.28–0.37ms
+app_gpu  = 10–12ms
+interval = 21.6–28.7ms     → 应用 ~35–46fps
+presents = 1   reproj = none
+```
+
+**初步结论：存在可见 overlay 不足以让 compositor 退出直通** —— comp_gpu 与无 overlay 的基线
+毫无差别。
+
+> ⚠️ **但这个结论还不能定案，因为判据本身的有效性还没验证。** 必须先采到
+> **dashboard 打开时**的样本：dashboard 是已知会让 compositor 自己渲染的状态（§1），
+> 所以——
+>
+> - dashboard 开着时 comp_gpu 明显跳高 ⇒ 判据有效，上面的否决是真的；
+> - dashboard 开着时 comp_gpu 也不动 ⇒ **overlay 应用拿到的 timing 反映不了 compositor
+>   的渲染状态**，判据失效，得另找观测量，不能据此否决。
+>
+> 探针已内置这个自检：它每秒调 `isDashboardVisible()`，按 dashboard 开/关自动分两组，
+> 退出时打印对照并直接给出"判据有效/失效"的判断。**所以只要戴头显把 dashboard 开一会儿
+> 再关掉，然后 Ctrl-C，结论就自己出来了。**
+
+**踩到的两个坑（已修）**：
+
+1. `--mode none/tiny/panel` 三轮跑完只看到探针图案、看不到 Isaac 画面 —— 探针是 overlay
+   应用，**不提供场景画面**。而且没有 scene app 时 compositor 要渲染 SteamVR 自己的环境，
+   comp_gpu 必然非零，会被误读成"假设成立"。现已改为**没有 scene app 就拒绝测量**
+   （逃生门 `--allow-no-scene`），并在启动时打印 `✅ scene app pid = ...`。
+2. 读数全是 `nan` 却不报错 —— pyopenvr 的 `getFrameTiming()` 便捷封装返回的是
+   `(result, timing)` **元组**而非 struct，且不设 `m_nSize`（openvr.h 明确要求）。
+   原实现用 `getattr(..., default)` 兜底"防崩"，结果把这个错误静默成了 nan，白跑三轮。
+   现已直接走 `function_table` 并自填 size；**测量工具里的静默兜底是负资产**，
+   改为启动时核对字段、缺了就当场退出。
 
 **三种结果分别指向**：
 
