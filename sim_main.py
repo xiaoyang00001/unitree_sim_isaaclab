@@ -11,7 +11,9 @@ os.environ["PROJECT_ROOT"] = project_root
 import argparse
 import contextlib
 import gc
+import getpass
 import math
+import stat
 import tempfile
 import time
 import sys
@@ -20,6 +22,48 @@ import threading
 import torch
 import gymnasium as gym
 from pathlib import Path
+
+# Windows: 抬高系统定时器分辨率。这是本工程在 Windows 上掉帧的最大单项。
+#
+# Windows 默认的系统定时器周期是 15.625ms,所有走 WaitForSingleObject 的等待
+# 都被量化到这个粒度——包括 threading.Event.wait 与带 timeout 的锁获取。
+# DDS 发布线程正是用 self._wake_event.wait(sleep_time) 排下一次发布
+# (dds/dds_master.py),于是 lowstate 迟发 -> ack 迟到 -> 锁步的 A 项被撑大。
+#
+# ⚠️ 易踩的坑:time.sleep 不受影响。Python 3.11+ 用高精度 waitable timer 实现
+# sleep,所以只测 time.sleep 会得出"timeBeginPeriod 无效"的错误结论(本轮踩过)。
+# win2 实测 (i5-14600KF, Win10 22H2, py3.11.15):
+#   time.sleep(0.2ms)   0.50ms -> 0.50ms   (无变化)
+#   Event.wait(0.2ms)  15.50ms -> 1.46ms   (省 14.03ms)  <- 发布线程走这条
+#   lock(timeout=0.2ms) 15.50ms -> 1.46ms
+#
+# 退出时归还(timeEndPeriod),硬崩残留重启即恢复。
+if os.name == "nt":
+    try:
+        import atexit
+        import ctypes
+
+        _winmm = ctypes.WinDLL("winmm")
+        if _winmm.timeBeginPeriod(1) == 0:  # TIMERR_NOERROR
+            atexit.register(_winmm.timeEndPeriod, 1)
+            print("[sim] Windows timer resolution raised to 1ms (Event.wait 15.5ms -> 1.5ms)")
+        else:
+            print("[sim] WARNING: timeBeginPeriod(1) rejected; Event.wait stays quantised to 15.6ms")
+    except Exception as _timer_error:
+        print(f"[sim] WARNING: timeBeginPeriod(1) failed: {_timer_error}")
+
+# Windows: import h5py 必须抢在 kit 起来之前。h5py 的 hdf5.dll/z.dll 没有
+# delvewheel 改名隔离,而 GUI/XR 的扩展集会先加载同名 DLL(Windows 同名 DLL
+# 先到先得),之后 isaaclab 在 kit 扩展里 import h5py 就报
+# "DLL load failed while importing _errors"。趁进程还干净先 import,
+# 正确的 DLL 被钉进内存,kit 后面加载什么都不影响(模块已在 sys.modules)。
+# headless 扩展集小、搜索空间干净,从来不触发——所以烟测测不出来,
+# 只有 GUI/XR/enable_cameras 会撞。
+if os.name == "nt":
+    try:
+        import h5py  # noqa: F401
+    except Exception as _h5py_preload_error:
+        print(f"[sim] WARNING: h5py preload failed: {_h5py_preload_error}")
 
 # Isaac Lab AppLauncher
 from isaaclab.app import AppLauncher
@@ -376,7 +420,11 @@ parser.add_argument(
         "render once every N control loops in late-render mode. Default 1 "
         "(GUI 画面与物理同频 50 fps): 实测非 AR 闭环下 A+E+R 约 13-14 ms, "
         "20 ms 预算里还剩 5-7 ms 余量,每圈渲染不掉主循环。设 2 可把渲染成本 "
-        "再摊薄一半(画面 25 fps),留给场景更重、余量吃紧的情况"
+        "再摊薄一半(画面 25 fps),留给场景更重、余量吃紧的情况。XR 下默认同样 "
+        "每圈,且**不建议改**:实测设 2 无法锁住匀速档——非渲染圈由 step_hz "
+        "deadline 网格定拍、渲染圈由 xrWaitFrame 帧槽网格定拍,两套时钟不整除 "
+        "会打拍(50Hz 对 72Hz:每对循环相位漂 ~12ms),画面仍在 2/3 帧槽间交替。 "
+        "保留此旋钮只为不静默覆盖用户输入与留档该负结论"
     ),
 )
 parser.add_argument("--public_ip",type=str,default="127.0.0.1",help="public ip")
@@ -403,6 +451,29 @@ parser.add_argument("--env_reward_interval", type=int, default=5, help="environm
 parser.add_argument("--seed", type=int, default=42, help="environment seed")
 # add AppLauncher parameters
 AppLauncher.add_app_launcher_args(parser)
+
+# ⚠️ --xr_runtime 必须定义在 add_app_launcher_args() **之后**,别挪回上面。
+# 该函数内部会先跑一次 parser.parse_known_args() 探测(app_launcher.py:258),
+# 而 --xr 是在这次探测**之后**才注册的。若此时 --xr_runtime 已存在,argparse 的
+# 缩写匹配会把命令行里的 --xr 解析成 --xr_runtime 的缩写,于是它去吃下一个 token
+# 当参数值,报 "argument --xr_runtime: expected one argument"——等于把所有现有的
+# --xr 命令行全打断(2026-07-29 实测踩过)。定义在探测之后:探测期 --xr_runtime
+# 尚不存在会被当未知参数忽略,--xr 正常精确匹配;下面的 parse_args() 时两者都在,
+# 精确匹配优先于缩写,互不干扰。tests/test_xr_runtime_cli.py 锁死这个行为。
+parser.add_argument(
+    "--xr_runtime",
+    choices=("auto", "steamvr", "cloudxr"),
+    default="auto",
+    help=(
+        "选择 --xr 使用哪个 OpenXR runtime。"
+        "cloudxr:用 ~/.cloudxr 的外部 CloudXR runtime——**这是消除 AR 卡顿的正解**,"
+        "它的头显端客户端自带重投影/ATW,而 SteamVR+NOLO 这条链全程无重投影"
+        "(见 doc/xr_ar_judder_zh.md)。要求 runtime 已在跑,否则直接报错退出而**不是**"
+        "静默降级——静默跑回 SteamVR 是本方案最容易浪费半天的失败模式。"
+        "steamvr:显式清掉 XR_RUNTIME_JSON,强制走 active_runtime.json。"
+        "auto(默认):不干预环境,只在启动日志里报告实际会用哪个 runtime"
+    ),
+)
 args_cli = parser.parse_args()
 
 sonic_task_names = {
@@ -577,6 +648,141 @@ if args_cli.xr and args_cli.disable_xr_frame_cap:
     )
     print("[sim] ⚠️ XR frame-rate cap disabled (diagnostic mode: higher avg Hz, broken pacing)")
 
+
+# ---------------------------------------------------------------------------
+# OpenXR runtime 选择
+#
+# AR 卡顿的根因是 SteamVR + NOLO XrLink 这条链全程没有重投影/ATW(证据与机制见
+# doc/xr_ar_judder_zh.md)。CloudXR 的头显端客户端自带重投影,是目前唯一能根治的
+# 通路,且本机 runtime 已装好、Isaac Sim 已实连过。
+#
+# 两个必须同时满足的条件,少一个就会**静默**跑回 SteamVR:
+#   1. 进程环境里有 XR_RUNTIME_JSON(以及 NV_CXR_RUNTIME_DIR——libopenxr_cloudxr.so
+#      靠它定位 ipc_cloudxr 这个 unix socket 才连得上服务进程);
+#   2. kit 设置 xr/system/openxr/runtime=custom + activeRuntimeJSON。因为
+#      isaaclab.python.xr.openxr.kit 里硬写了 runtime="system",而命令行 --/ 设置
+#      优先级高于 .kit 文件。这条不依赖"system 模式是否尊重 XR_RUNTIME_JSON"。
+# ⚠️ 绝不能写 runtime=cloudxr:那个值指向 Isaac Sim 内置的 CloudXR 5.0.0 并会自己
+#    拉起内置 service,与外部 6.2.0 抢同一套 IPC 与 49100/48322 端口。
+# ---------------------------------------------------------------------------
+CLOUDXR_RUN_DIR_DEFAULT = os.path.expanduser("~/.cloudxr/run")
+
+
+def _append_kit_args(extra: str) -> None:
+    args_cli.kit_args = f"{args_cli.kit_args} {extra}" if args_cli.kit_args else extra
+
+
+def _set_openxr_runtime_kit_args(runtime_json: str | None) -> None:
+    """把 kit 的 OpenXR runtime 选择钉死。
+
+    ⚠️ 这些是 ``/persistent/`` 设置——它们会被写进 Isaac Sim 的 user.config.json
+    **跨进程残留**,而且**优先级高于** experience 文件里的
+    ``persistent.xr.system.openxr.runtime = "system"``(实测:跑过一次 CloudXR 之后,
+    下一次普通 --xr 启动仍会去连 CloudXR,报 "Failed to connect to monado service
+    process" 然后 xrCreateInstance 失败)。所以每种模式都必须**显式**写回自己要的值,
+    不能靠"不设置"来表达"用默认"。
+    """
+    if runtime_json:
+        _append_kit_args(
+            "--/persistent/xr/system/openxr/runtime=custom "
+            f"--/persistent/xr/system/openxr/activeRuntimeJSON={runtime_json}"
+        )
+    else:
+        # 一并清空 activeRuntimeJSON:system 模式不认 JSON 路径,残留值会让 kit 每次
+        # 都打 "runtime type 'system' selected, but JSON path provided" 的告警。
+        _append_kit_args(
+            "--/persistent/xr/system/openxr/runtime=system "
+            "--/persistent/xr/system/openxr/activeRuntimeJSON="
+        )
+
+
+def _load_cloudxr_env(run_dir: str) -> dict:
+    """读 CloudXR 的运行期环境快照,返回 {KEY: value}。
+
+    该文件由 runtime 启动时写出,每行形如 ``export KEY=value``(实测无引号、无续行)。
+    不做 shell 解析,避免把 source 的副作用带进来。
+    """
+    env_path = os.path.join(run_dir, "cloudxr.env")
+    parsed = {}
+    with open(env_path, "r", encoding="utf-8") as fp:
+        for line in fp:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):]
+            key, sep, value = line.partition("=")
+            if sep:
+                parsed[key.strip()] = value.strip().strip('"').strip("'")
+    return parsed
+
+
+if args_cli.xr_runtime == "cloudxr":
+    if not args_cli.xr:
+        parser.error(
+            "--xr_runtime cloudxr 需要 XR 模式;加 --xr 或 "
+            "--teleop_device motion_controllers"
+        )
+    _cxr_run_dir = os.environ.get("CLOUDXR_RUN_DIR", CLOUDXR_RUN_DIR_DEFAULT)
+    # 就绪判据与 IsaacLab fork 的 start_ubuntu_isaaclab_sonic.sh 保持一致。
+    # 这里刻意用 parser.error 硬失败,而不是本工程惯用的 try/except+print 降级:
+    # 降级会让人对着 SteamVR 测半天卡顿,还以为在测 CloudXR。
+    if not os.path.exists(os.path.join(_cxr_run_dir, "runtime_started")):
+        parser.error(
+            f"CloudXR runtime 未就绪:{_cxr_run_dir}/runtime_started 不存在。"
+            "先启动 runtime:python -m isaacteleop.cloudxr --accept-eula --host-client"
+        )
+    _cxr_ipc = os.path.join(_cxr_run_dir, "ipc_cloudxr")
+    if not (os.path.exists(_cxr_ipc) and stat.S_ISSOCK(os.stat(_cxr_ipc).st_mode)):
+        parser.error(
+            f"CloudXR runtime 未就绪:{_cxr_run_dir}/ipc_cloudxr 不是 unix socket。"
+            "runtime 可能已死或残留孤儿进程占着 49100(ss -ltnp | grep 49100 查)"
+        )
+    try:
+        _cxr_env = _load_cloudxr_env(_cxr_run_dir)
+    except OSError as e:
+        parser.error(f"读取 CloudXR 环境快照失败:{e}")
+    _cxr_runtime_json = _cxr_env.get("XR_RUNTIME_JSON")
+    if not _cxr_runtime_json or not os.path.isfile(_cxr_runtime_json):
+        parser.error(
+            f"CloudXR 环境快照里的 XR_RUNTIME_JSON 无效:{_cxr_runtime_json!r}"
+        )
+    os.environ.update(_cxr_env)
+    _set_openxr_runtime_kit_args(_cxr_runtime_json)
+    print(f"[xr] OpenXR runtime = CloudXR ({_cxr_runtime_json})")
+    print(
+        "[xr] 头显端连 https://<本机IP>:48322/client/ ;"
+        "重投影由客户端负责,这是消卡顿的关键"
+    )
+elif args_cli.xr_runtime == "steamvr":
+    # 显式清掉,免得"上一条命令 source 过 cloudxr.env"这种残留把人绕晕。
+    if os.environ.pop("XR_RUNTIME_JSON", None):
+        print("[xr] cleared inherited XR_RUNTIME_JSON")
+    _set_openxr_runtime_kit_args(None)
+    print("[xr] OpenXR runtime = SteamVR (~/.config/openxr/1/active_runtime.json)")
+    print("[xr] ⚠️ 该链无重投影,应用帧率低于面板刷新率必然卡顿——见 doc/xr_ar_judder_zh.md")
+elif args_cli.xr:
+    # auto:跟随环境,但必须把"实际会用哪个"喊出来——漏 source 时静默走 SteamVR 是
+    # 这条路最容易浪费半天的失败模式,一行日志就能挡住。
+    # 注意 auto 并非"什么都不做":kit 那侧的 runtime 选择必须显式写回,否则会继承
+    # 上一次 CloudXR 运行残留在 user.config.json 里的 custom(见
+    # _set_openxr_runtime_kit_args 的说明)。
+    _inherited = os.environ.get("XR_RUNTIME_JSON")
+    if _inherited:
+        # 用户自己 source 过 cloudxr.env。把 kit 也对齐到同一个 runtime,
+        # 免得"环境变量指 CloudXR、kit 走 system"两头不一致。
+        _set_openxr_runtime_kit_args(_inherited)
+        print(f"[xr] OpenXR runtime = 继承自环境 XR_RUNTIME_JSON={_inherited}")
+        if "cloudxr" not in _inherited.lower():
+            print("[xr] ⚠️ 不是 CloudXR;要消卡顿请加 --xr_runtime cloudxr")
+    else:
+        _set_openxr_runtime_kit_args(None)
+        print(
+            "[xr] OpenXR runtime = 系统默认(active_runtime.json,本机为 SteamVR)。"
+            "⚠️ 该链无重投影必卡顿,消卡顿请加 --xr_runtime cloudxr"
+        )
+
+
 def _resolve_slim_experience() -> str | None:
     """把本工程的精简 kit 模板解析成可用的 experience 文件,返回其路径。
 
@@ -609,11 +815,18 @@ def _resolve_slim_experience() -> str | None:
 
     with open(template, "r", encoding="utf-8") as fp:
         content = fp.read()
-    content = content.replace("@ISAACLAB_APPS@", str(isaaclab_apps))
-    content = content.replace("@ISAACLAB_SOURCE@", str(isaaclab_source))
+    # 必须用正斜杠:kit 是 TOML,Windows 路径里的反斜杠会被当成转义序列
+    # (D:\Isaac 的 \I 就是无效转义),整个 experience 会解析失败、扩展目录全丢。
+    # kit 在 Windows 上同样认正斜杠,模板里内建的 ${exe-path}/exts 也是这么写的。
+    content = content.replace("@ISAACLAB_APPS@", isaaclab_apps.as_posix())
+    content = content.replace("@ISAACLAB_SOURCE@", isaaclab_source.as_posix())
 
+    # 后缀在 POSIX 上沿用 uid(保持既有 /tmp 产物路径不变);Windows 没有
+    # os.getuid,退回登录名。
+    getuid = getattr(os, "getuid", None)
+    user_suffix = str(getuid()) if getuid is not None else getpass.getuser()
     out_dir = os.path.join(
-        tempfile.gettempdir(), f"unitree_sim_isaaclab_kit_{os.getuid()}"
+        tempfile.gettempdir(), f"unitree_sim_isaaclab_kit_{user_suffix}"
     )
     os.makedirs(out_dir, exist_ok=True)
     resolved = os.path.join(out_dir, "isaaclab.sonic.kit")
@@ -829,8 +1042,7 @@ def main():
         # 观测已发布之后),让 C++ 推理窗口与渲染并行,ack 等待被渲染时间掩盖。
         # 用 --no_late_render 恢复旧行为。
         # XR 也走晚渲染:除藏住 ack 等待外,渲染用的是本步最新物理状态,
-        # 头显 motion-to-photon 延迟更低。XR 下渲染间隔强制每圈(循环本身
-        # 慢,隔圈会把 AR 帧率再砍半)。
+        # 头显 motion-to-photon 延迟更低。
         late_render_active = (
             is_sonic_task
             and not args_cli.no_late_render
@@ -838,6 +1050,16 @@ def main():
             and not getattr(args_cli, "headless", False)
             and not args_cli.replay_data
             and args_cli.render_interval is None
+        )
+        # 渲染间隔默认每圈(非 AR 画面=物理=50fps;XR 每圈撞 xrWaitFrame,全环
+        # 单时钟才能锁相)。此前 XR 下硬编码为 1、静默丢弃用户输入,现改为接受
+        # 显式覆盖——但 XR 下改它救不了抖动:2026-07-29 实测 interval=2 仍抖,
+        # 因为非渲染圈走 step_hz deadline 网格、渲染圈走帧槽网格,两套刚性时钟
+        # 不整除必打拍。AR 卡顿的真因是全链无重投影(见 doc/xr_ar_judder_*.md)。
+        late_render_interval = (
+            1
+            if args_cli.late_render_interval is None
+            else max(1, int(args_cli.late_render_interval))
         )
         # ⚠️ late_render 不能在这里把 interval 拨大:GUI 模式下 rendering_dt =
         # dt × interval 会被 SimulationContext.__init__ 的 kit manual-loop 节拍器
@@ -883,8 +1105,9 @@ def main():
         if late_render_active:
             print(
                 "[sim] rendering: late render enabled — env.step runs physics "
-                "only; the controller renders once per loop after the LowState "
-                "publish (disable with --no_late_render); "
+                f"only; the controller renders every {late_render_interval} "
+                "control loop(s) after the LowState publish (disable with "
+                "--no_late_render); "
                 f"self_collisions={self_collisions_enabled}"
             )
         else:
@@ -1144,6 +1367,18 @@ def main():
             env.close()
             return
         print("========= create OpenXR teleop device success =========")
+
+        # XR anchor 同步归因探针(XR_ANCHOR_PROBE=timing|nowrite|fabric|noop,
+        # 默认 off)。用于拆解 OpenXRDevice 的每帧 anchor 同步成本与 XR 帧闸门
+        # 阻塞,详见 tools/xr_anchor_probe.py 模块 docstring。
+        xr_probe_mode = os.environ.get("XR_ANCHOR_PROBE", "off")
+        if xr_probe_mode.strip().lower() not in ("", "off"):
+            try:
+                from tools.xr_anchor_probe import install_xr_anchor_probe
+
+                install_xr_anchor_probe(teleop_interface, xr_probe_mode)
+            except Exception as e:
+                print(f"[xr_probe] failed to install: {e}")
     
     # create simplified control configuration
     try:    
@@ -1151,13 +1386,7 @@ def main():
             step_hz=args_cli.step_hz,
             replay_mode=args_cli.replay_data,
             late_render=late_render_active,
-            # 非 AR 默认每圈渲染(画面 = 物理 = 50 fps)。XR 下同样强制每圈:
-            # 循环本身慢,隔圈会把 AR 帧率再砍半。
-            late_render_interval=(
-                1
-                if args_cli.xr or args_cli.late_render_interval is None
-                else max(1, int(args_cli.late_render_interval))
-            ),
+            late_render_interval=late_render_interval,
             late_render_repeat=max(1, int(args_cli.late_render_repeat)),
         )
     except Exception as e:
@@ -1635,6 +1864,22 @@ def main():
                             f"{render_frames / stats_window_s:.2f} fps, "
                             f"mean {1000.0 * render_work_s / render_frames:.2f} ms/frame"
                         )
+                    if args_cli.xr:
+                        # /xr/status/fps 由 omni.kit.xr C++ 侧每帧写入,是 XR 侧
+                        # 自己的帧率口径,与主循环 Hz / GUI render fps 分列对照
+                        # (判读铁律:这些是不同口径,不能互相冒充)。
+                        # 恒打印(含 0/缺失时的 n/a):这行是统计块的结尾标记,
+                        # 条件打印会让日志解析对不齐窗口。
+                        try:
+                            import carb
+
+                            xr_fps = carb.settings.get_settings().get("/xr/status/fps")
+                            xr_fps_text = (
+                                f"{float(xr_fps):.2f}" if xr_fps is not None else "n/a"
+                            )
+                        except Exception:
+                            xr_fps_text = "n/a"
+                        print(f"XR status fps: {xr_fps_text}")
                     print(f"=============================")
                     
                     # print_stats(controller)
