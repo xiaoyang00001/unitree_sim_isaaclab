@@ -1839,14 +1839,18 @@ def main():
                         # /xr/status/fps 由 omni.kit.xr C++ 侧每帧写入,是 XR 侧
                         # 自己的帧率口径,与主循环 Hz / GUI render fps 分列对照
                         # (判读铁律:这些是不同口径,不能互相冒充)。
+                        # 恒打印(含 0/缺失时的 n/a):这行是统计块的结尾标记,
+                        # 条件打印会让日志解析对不齐窗口。
                         try:
                             import carb
 
                             xr_fps = carb.settings.get_settings().get("/xr/status/fps")
-                            if xr_fps:
-                                print(f"XR status fps: {float(xr_fps):.2f}")
+                            xr_fps_text = (
+                                f"{float(xr_fps):.2f}" if xr_fps is not None else "n/a"
+                            )
                         except Exception:
-                            pass
+                            xr_fps_text = "n/a"
+                        print(f"XR status fps: {xr_fps_text}")
                     print(f"=============================")
                     
                     # print_stats(controller)

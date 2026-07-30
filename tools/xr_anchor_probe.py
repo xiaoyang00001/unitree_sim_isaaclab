@@ -22,6 +22,10 @@
           → XRCore 的默认写路径;若成本骤降,说明贵在 USD layer 写
   noop    整个 sync_headset_to_anchor 直接返回,只计数
           → 归因"回调全部工作"的成本;anchor 静止,视角会漂,仅诊断用
+  noanchor 在 noop 之上,把 kit 的 anchorMode 拨回 "scene origin"
+          → 只有 noop 仍慢时才需要这一档:它把 kit C++ 侧的
+            custom-anchor(锚到移动 prim)通路也一并关掉,用于区分
+            "我们的 Python 回调" / "kit 的自定义锚通路" / "XR 会话本身"
 
 统计每 ~5s 打一行 [xr_probe],回调次数/秒 ≈ pre_sync_update 派发频率
 ≈ XR 帧循环频率,可与 stats 窗口的 GUI render fps 对照。
@@ -34,7 +38,7 @@ from __future__ import annotations
 
 from time import perf_counter
 
-VALID_MODES = ("timing", "nowrite", "fabric", "noop")
+VALID_MODES = ("timing", "nowrite", "fabric", "noop", "noanchor")
 
 
 def _fmt_ms(seconds: float) -> str:
@@ -138,8 +142,26 @@ def install_xr_anchor_probe(teleop_interface, mode: str) -> bool:
     if mode in ("timing", "nowrite", "fabric"):
         sync._xr_core = _XrCoreWriteProxy(sync._xr_core, mode, stats)
 
+    if mode == "noanchor":
+        # OpenXRDevice.__init__ 已经写过 anchorMode=custom anchor 与
+        # customAnchor=<XRAnchor 路径>,这里拨回 scene origin。kit 的
+        # XRViewportController 监听这两个键,变更会触发 _reset_anchor,
+        # 把 stage anchor 从"锚在移动 prim 上"改回场景原点。
+        try:
+            import carb
+
+            settings = carb.settings.get_settings()
+            settings.set_string("/persistent/xr/profile/ar/anchorMode", "scene origin")
+            settings.set_string("/xrstage/profile/ar/customAnchor", "")
+            print(
+                "[xr_probe] anchorMode → 'scene origin'(kit 自定义锚通路已关);"
+                "⚠️ 视角不再跟随机器人,仅用于成本归因"
+            )
+        except Exception as e:
+            print(f"[xr_probe] failed to revert anchorMode: {e}")
+
     original_sync = sync.sync_headset_to_anchor
-    if mode == "noop":
+    if mode in ("noop", "noanchor"):
         def wrapped_sync():
             stats.add_call(0.0)
     else:
