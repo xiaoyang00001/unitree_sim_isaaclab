@@ -90,8 +90,21 @@ ATW 需要三样东西，你们**已经全部具备**：
 `IVRDriverDirectModeComponent::PostPresent` 与 `GetFrameTiming` 未被重载
 （`nm` 显示仍是 `openvr_driver.h` 里的 weak 空实现）。
 
-后果：compositor 不受节流、自由运行——实测 `FrameEncoder` 以 **104–109fps** 编码并发送
-**内容重复**的帧，而面板只有 72Hz。这是纯粹的 CPU/GPU/带宽浪费，也让帧节奏无法对齐。
+后果：编码侧不受 compositor 节流约束，可以跑到远超面板刷新率的速率去发送**内容重复**的帧。
+
+实测（`~/nolo_driver_deploy/log/nolo-link-driver.log` 全量 11024 个 `FrameEncoder FPS` 采样）：
+
+| 统计量 | 值 |
+|---|---|
+| 峰值 | **112.39 fps**（面板 72Hz，超出 56%） |
+| 超过 100fps 的采样占比 | 1.32%（145 / 11024），集中在应用未提交/静止内容的窗口 |
+| p90 / 中位 | 49.6 / 15.5 fps |
+
+> 说明：**这不是稳态现象**，中位数很低（日志累积了大量空转时段）。我们据以判断的是
+> **结构**而非平均值——`PostPresent` / `GetFrameTiming` 是 weak 空实现，意味着编码速率
+> 没有任何来自 compositor 的节流约束，因此在内容静止时会自由跑到 112fps 发重复帧。
+> 这是确定的 CPU/GPU/带宽浪费，也让帧节奏无从对齐。请以 `nm` 的符号证据为准，
+> 上表仅为其外在表现的量化。
 
 ## 6. 一个待确认项：FOV 配置
 
