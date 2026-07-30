@@ -6,6 +6,7 @@ Handle the state publishing and command receiving of the G1 robot
 """
 
 import numpy as np
+import os
 import time
 from typing import Any, Dict, Optional
 # from dds.dds_base import BaseDDSNode, node_manager
@@ -49,6 +50,14 @@ class G1RobotDDS(DDSObject):
         # (~0.01ms),保持逐包全验不变。
         self._crc_sample_interval = 1 if getattr(self.crc, "platform", "") == "Linux" else 50
         self._crc_sample_counter = 0
+        # 见 dds_publisher() 里的说明:跳过 LowState 的 CRC 计算需要对端配合
+        # (deploy --disable-crc-check),所以只能显式开启,不做平台自动推断。
+        self._skip_lowstate_crc = os.environ.get("UNITREE_SKIP_LOWSTATE_CRC", "").strip() in ("1", "true", "True")
+        if self._skip_lowstate_crc:
+            print(
+                f"g1_robot_dds [{node_name}] ⚠️ skipping LowState CRC "
+                f"(saves ~22% GIL on Windows); peer MUST run with --disable-crc-check"
+            )
         if self._crc_sample_interval > 1:
             print(
                 f"g1_robot_dds [{node_name}] pure-python CRC detected; "
@@ -269,7 +278,18 @@ class G1RobotDDS(DDSObject):
             self.low_state.reserve[1] = 1  # protocol version
             self.low_state.reserve[2] = 0
             self.low_state.reserve[3] = ISAAC_LOWSTATE_SYNC_MAGIC
-            self.low_state.crc = self.crc.Crc(self.low_state)
+            # LowState 的 CRC 由对端(C++ deploy)校验,不能像 lowcmd 那样抽样。
+            # 但在 Windows 上它是纯 Python 回退,实测 2.15ms/包 @102.8Hz =
+            # 22% 单线程 GIL,跑在发布线程里,主循环轮询 ack 时与它抢 GIL,
+            # 把每次 sleep(1ms) 拉长、轮询次数翻倍(A 从 0.9ms 涨到 11.9ms)。
+            # 置 UNITREE_SKIP_LOWSTATE_CRC=1 可跳过,但**必须**同时给 deploy 传
+            # --disable-crc-check,否则对端会丢弃每一帧。仿真场景下链路可靠性
+            # 由 DDS 保证,这个校验不是必需的。
+            # getattr 兜底:tests 用 __new__ + 手工赋属性构造实例
+            if getattr(self, "_skip_lowstate_crc", False):
+                self.low_state.crc = 0
+            else:
+                self.low_state.crc = self.crc.Crc(self.low_state)
 
             # Publish the secondary IMU first and LowState last.  In the
             # synchronized bridge the unique LowState tick is the commit marker
