@@ -47,6 +47,9 @@ python sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor \
 - **只有 ID=1 侧机器人能与物体发生物理交互**（镜像体无碰撞；物体在 ID=2 侧是 kinematic）。
 - ID=1 出生朝向是 yaw 180°（面对面布局）；SONIC 底座任务刻意保持 identity 朝向，
   **deploy 行走在 180° 出生下是否正常需实测**，异常先设 `ISAACLAB_ROBOT_YAW_IDENTITY=1` 兜底。
+- Isaac Lab 6 场景配置使用 `xyzw`：ID=1 的 yaw 180°、ID=2 的 identity、warehouse
+  的 +90° Z 旋转和传送带碰撞板 identity 均已按该顺序配置。若整个 warehouse 倾倒或
+  两台机器人没有面对面，优先检查是否又混入了 Isaac 5 的 `wxyz` 字面量。
 - 同步挂载模式（`ISAACLAB_SCENE_SYNC_MAINLOOP`，本分支默认 1）：主循环挂载下
   deploy 断连/锁步暂停时镜像仍活着；置 0 退回 ActionTerm 挂载（方案 a——
   deploy 停发 lowcmd 时 env.step 停摆，同步随之冻结）。

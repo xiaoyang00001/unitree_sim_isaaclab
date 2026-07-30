@@ -178,10 +178,15 @@ def install_xr_anchor_probe(teleop_interface, mode: str) -> bool:
             import carb
 
             settings = carb.settings.get_settings()
-            settings.set_string("/persistent/xr/profile/ar/anchorMode", "scene origin")
-            settings.set_string("/xrstage/profile/ar/customAnchor", "")
+            xr_core = getattr(teleop_interface, "_xr_core", None)
+            current_profile_name = xr_core.get_current_profile_name() if xr_core is not None else None
+            profile_name = str(current_profile_name) if current_profile_name else "ar"
+            persistence_prefix = "/persistent/xr" if settings.get("/xr/persistence/enabled") is True else "/xr"
+            settings.set_string(f"{persistence_prefix}/profile/{profile_name}/anchorMode", "scene origin")
+            settings.set_string(f"/xrstage/profile/{profile_name}/customAnchor", "")
             print(
-                "[xr_probe] anchorMode → 'scene origin'(kit 自定义锚通路已关);"
+                f"[xr_probe] profile={profile_name} anchorMode → 'scene origin'"
+                "(kit 自定义锚通路已关);"
                 "⚠️ 视角不再跟随机器人,仅用于成本归因"
             )
         except Exception as e:

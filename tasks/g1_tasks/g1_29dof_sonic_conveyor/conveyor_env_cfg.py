@@ -321,9 +321,20 @@ CART2_TOTE2_POS = [-5.89, 17.0, 0.775] if TOTES_ON_CONVEYOR else [CART_GROUP_X, 
 # ⚠️ SONIC 底座任务刻意保持 identity 出生朝向（policy/world 约定）；ID=1 的 180° yaw
 # 出生是否影响 deploy 行走需 Phase 1 实测，异常时先用 ISAACLAB_ROBOT_YAW_IDENTITY=1
 # 兜底（两台都 identity 朝 +X，牺牲面对面布局）。
+# Isaac Lab 6 的配置四元数是 xyzw。这里保留具名常量，避免把源任务的 wxyz
+# 字面量再次直接移植进来。
+_ISAAC6_QUAT_IDENTITY_XYZW = (0.0, 0.0, 0.0, 1.0)
+_ISAAC6_QUAT_YAW_180_XYZW = (0.0, 0.0, 1.0, 0.0)
+_ISAAC6_QUAT_YAW_POS_90_XYZW = (0.0, 0.0, 0.70710678, 0.70710678)
+_ISAAC6_QUAT_ROLL_POS_45_XYZW = (0.38268343, 0.0, 0.0, 0.92387953)
+
 _ROBOT_YAW_IDENTITY = _env_bool("ISAACLAB_ROBOT_YAW_IDENTITY", False)
-_ROBOT_1_ROT = (1.0, 0.0, 0.0, 0.0) if _ROBOT_YAW_IDENTITY else (0.0, 0.0, 0.0, 1.0)
-_ROBOT_2_ROT = (1.0, 0.0, 0.0, 0.0)
+_ROBOT_1_ROT = (
+    _ISAAC6_QUAT_IDENTITY_XYZW
+    if _ROBOT_YAW_IDENTITY
+    else _ISAAC6_QUAT_YAW_180_XYZW
+)
+_ROBOT_2_ROT = _ISAAC6_QUAT_IDENTITY_XYZW
 
 LOCAL_ROBOT_POS = (
     (ROBOT_1_X, ROBOT_WORKSTATION_Y, 0.76) if LOCAL_ROBOT_ID == 1 else (ROBOT_2_X, ROBOT_WORKSTATION_Y, 0.76)
@@ -372,6 +383,12 @@ def _log_scene_layout() -> None:
         f"{tag}   拖车/筐 x={PUSHCART_2_POS[0]:.3f} y={PUSHCART_2_POS[1]:.3f}"
         f" | robot_1 x={ROBOT_1_X:.3f} robot_2 x={ROBOT_2_X:.3f} y={ROBOT_WORKSTATION_Y:.3f}"
         f" | 流水线中线 x=-5.620 入料端 y=18.222"
+    )
+    print(
+        f"{tag}   朝向(xyzw): robot_1={_ROBOT_1_ROT}"
+        f"（{'朝 +X' if _ROBOT_YAW_IDENTITY else '朝 -X'}）"
+        f" | robot_2={_ROBOT_2_ROT}（朝 +X）"
+        f" | warehouse={_ISAAC6_QUAT_YAW_POS_90_XYZW}（+90° Z）"
     )
     drive = (
         "关"
@@ -567,7 +584,11 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
 
     background = AssetBaseCfg(
         prim_path="/World/envs/env_.*/Background",
-        init_state=AssetBaseCfg.InitialStateCfg(pos=[-4.68, 14.39363, 0], rot=[0.7071, 0.0, 0.0, 0.7071]),
+        init_state=AssetBaseCfg.InitialStateCfg(
+            pos=[-4.68, 14.39363, 0],
+            # +90 degrees around Z in Isaac Lab 6 xyzw order.
+            rot=_ISAAC6_QUAT_YAW_POS_90_XYZW,
+        ),
         spawn=UsdFileCfg(
             usd_path=str(_ASSETS_DIR / "warehouse-simple6_v48.usd"),
         ),
@@ -581,7 +602,7 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
         prim_path="{ENV_REGEX_NS}/ConveyorCollider",
         init_state=AssetBaseCfg.InitialStateCfg(
             pos=[-5.62, 14.205, 0.752],
-            rot=[1.0, 0.0, 0.0, 0.0],
+            rot=_ISAAC6_QUAT_IDENTITY_XYZW,
         ),
         spawn=sim_utils.CuboidCfg(
             size=(0.90, 8.03, 0.04),
@@ -671,7 +692,7 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
     # 方向光制造明暗面，避免 DomeLight 均匀照明导致的"塑料感"。
     sun = AssetBaseCfg(
         prim_path="/World/sunLight",
-        init_state=AssetBaseCfg.InitialStateCfg(rot=(0.9238795, 0.3826834, 0.0, 0.0)),
+        init_state=AssetBaseCfg.InitialStateCfg(rot=_ISAAC6_QUAT_ROLL_POS_45_XYZW),
         spawn=sim_utils.DistantLightCfg(color=(1.0, 0.98, 0.95), intensity=3000.0, angle=0.53),
     )
 

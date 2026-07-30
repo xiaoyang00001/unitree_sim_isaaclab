@@ -154,6 +154,39 @@ schema 和零阈值。
 加速度、角速度变换并写入 DDS。同一个兼容函数也用于跌倒检测和 SONIC 姿态统计，
 避免诊断值再次按错顺序。版本检查只读取包元数据，不会在纯 Python 测试中启动 Kit。
 
+### 2.8 Conveyor 子任务还有独立的旧顺序字面量
+
+`Isaac-G1-29DoF-Sonic-Conveyor` 虽然继承了基础 SONIC 的机器人和 XR 修复，但它会
+重新覆盖双机出生姿态、warehouse 背景和传送带碰撞板。迁移时这些覆盖项仍是 Isaac 5
+的 `wxyz`：robot_1 的 yaw 180° 被解释成 identity，robot_2 和碰撞板的 identity 被
+解释成绕 X 轴 180°，warehouse 的 +90° Z 旋转则被解释成 +90° X 旋转。
+
+这些覆盖项现已全部改为 Isaac 6 `xyzw`。正常布局中 robot_1 朝 `-X`、robot_2 朝
+`+X`，两者面对面；warehouse 只绕 Z 轴 +90°，不会倾斜其 Z-up 地面。方向光原有的
++45° X 旋转也同步转换为 `xyzw`。
+
+### 2.9 Isaac Sim 6 的 XR anchor 设置按 profile 隔离
+
+`OpenXRDevice` 创建了正确的 `XRAnchor` prim 并不代表 XR viewport 会使用它。Isaac Sim
+6 的 viewport 读取当前 profile 下的设置；本任务使用 `ar` profile，且 Kit 默认
+`/xr/persistence/enabled=false`，所以有效路径是：
+
+```text
+/xr/profile/ar/anchorMode = "custom anchor"
+/xrstage/profile/ar/customAnchor = <XRAnchor prim path>
+```
+
+Isaac 5 代码写入的全局路径 `/persistent/xr/anchorMode` 和
+`/xrstage/customAnchor` 在 Isaac Sim 6 中不会被 `ar` profile 读取。典型日志表现是
+`Resolving anchor prim:` 和 `Schedule set stage anchor:` 冒号后都为空。基础 SONIC 的
+机器人位于场景原点，错误容易被遮住；Conveyor 的 robot1 位于
+`(-4.75, 14.148, 0.76)`，因此 XR 仍停在原点时会明显看到视角没有落在 robot1 上。
+
+IsaacLab fork 现按当前 profile 和 `/xr/persistence/enabled` 计算 profile 级路径，同时
+写入 near plane、anchor mode 和 custom anchor。Conveyor 默认
+`ISAACLAB_LOCAL_ROBOT_ID=1`，所以本机 `Robot` prim 就是 robot1，XR 的 torso/pelvis
+锚路径无需另加 `robot1` 名称。
+
 ## 3. 修改范围
 
 ### `unitree_sim_isaaclab`
@@ -177,7 +210,8 @@ schema 和零阈值。
 - `sim/schemas/schemas.py`：支持嵌套刚体的 contact report；
 - `devices/openxr/xr_cfg.py`、`xr_anchor_utils.py`：支持独立旋转锚；
 - `devices/openxr/openxr_device.py`、`manus_vive.py`：在 XrCfg 与
-  `SingleXFormPrim` 边界转换 `xyzw -> wxyz`。
+  `SingleXFormPrim` 边界转换 `xyzw -> wxyz`，并按当前 XR profile 写入 Isaac Sim 6
+  的 anchor 设置。
 
 ## 4. 验证清单
 
@@ -206,8 +240,10 @@ git diff --check
 3. PackingTable 桌面朝上，桌面约位于 `z=0.6996 m`；
 4. 三个方块落在桌面上，而不是穿过桌面或飞离场景；
 5. XR 中地面位于脚下，桌子与桌面窗口中方向一致；
-6. 日志不出现 `Simulation view object is invalidated` 或 `prim deleted`。
-7. `rt/lowstate` 中直立 pelvis 的四元数接近 `(w, x, y, z) = (1, 0, 0, 0)`，
+6. Conveyor 下 XR 起点位于本机 robot1 的 torso，而不是 warehouse 场景原点；Kit 日志
+   中 `Resolving anchor prim:` 后应显示 `/World/envs/env_0/Robot/.../XRAnchor`；
+7. 日志不出现 `Simulation view object is invalidated` 或 `prim deleted`；
+8. `rt/lowstate` 中直立 pelvis 的四元数接近 `(w, x, y, z) = (1, 0, 0, 0)`，
    SONIC 启动后腿部 `rt/lowcmd` 持续更新且下半身能够跟随。
 
 截至本文提交，URDF 导入、环境创建和静态旋转矩阵已经验证；最终四元数修复需要在
