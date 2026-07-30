@@ -152,8 +152,14 @@ presents = 1   reproj = none
 > "这个和 isaac 是分开渲染的，问题一样，都会晃动。steamvr 的 dashboard 是和 isaac
 > 合成为一个画面，在头显侧不晃动。"
 
-两个独立证据指向同一结论，**假设否决定案**：主观上 overlay 自己就在晃，客观上 comp_gpu
-与基线毫无差别。
+**假设否决定案** —— 依据是上面这条主观判读。
+
+> ⚠️ **撤回一条曾用来支撑它的证据（2026-07-30）**：原文写"客观上 comp_gpu 与基线毫无差别，
+> 两个独立证据同向"。**那条支撑无效** —— 后来在 dashboard 开着（`dash=ON` 确认、画面确认
+> 不晃）时采到 comp_gpu 均值 **0.0080ms**（12 样本），与直通基线一样。
+> 所以 `m_flCompositorRenderGpuMs` 在 direct-mode 下**没有区分力**（overlay 应用拿到的
+> 大概不是全局渲染开销，或 compositor 自绘不计入该字段）。
+> **别再把它当判据**，它只是诊断读数；工具里已改为每次运行都打印这句提醒。
 
 **错在哪**：我把"compositor 必须合成 overlay"等同于"compositor 每 vsync 重新渲染"。
 实际上 compositor 只在**应用提交新帧时**把 overlay + scene layer 合成一张，然后整张原样
@@ -214,23 +220,56 @@ python tools/xr_overlay_probe.py --mode none                                 # �
 启动时会打印 `✅ scene app pid = ...`；没有 scene app 会**直接拒绝测量**。
 若有上一轮忘了退出的探针实例，也会列出来提醒（它们各自贴着一个 overlay，会污染判读）。
 
+### 4.2.1 ✅ 首次实证：dashboard 开着确实不晃（2026-07-30）
+
+跑了一次 `--mode dashboard`（进程随后就退出了），用户随即报告：
+
+> "我看到的画面不晃动了，现在画面有 Isaac、steamvr dashboard、3cm overlay"
+
+三点确认与一个新发现：
+
+1. ✅ **不晃了** —— 这是第二次独立确认 dashboard 模式有效（第一次是 §1 手动开菜单）。
+   而且此时 Isaac 画面**正常显示**、机器人照常动，不是定格。
+2. ⚠️ **SteamVR 主菜单仍在显示** —— `showDashboard(自有 key)` 没能只显示我们那个小
+   overlay。**遮挡问题未解决**，这是这条路能否变成正式方案的主要障碍。
+3. ℹ️ 用户看到的 3cm overlay 是他自己那个 `--mode tiny` 实例（tiny 默认宽度正好 0.03m），
+   与 dashboard 无关。
+4. ⭐ **dashboard 状态在探针进程退出后仍然保持** —— 探针死了、它的 dashboard overlay 被
+   destroy 了，dashboard 却还开着、画面还不晃。**意味着"打开一次"就够，不需要常驻进程**。
+   代价是回落到显示 SteamVR 主菜单（因为自有 overlay 已经没了）。
+
+同期采到的读数（`dash=ON`，Isaac 为 scene app）：
+
+```
+comp_gpu = 0.007–0.010ms   ← 与直通基线一样 ⇒ 这个字段没有区分力（见 §4.1.1 的撤回说明）
+comp_cpu = 0.48–0.72ms
+app_gpu / interval 时有时无（0.000 / 0.00 与 0.029 / 28–34ms 交替）
+    ⇒ dashboard 模式下应用帧提交变得断续，但画面仍不晃
+      —— 反过来印证 compositor 在自己按 vsync 出帧
+```
+
+**下一步要回答的就是遮挡**：让探针**持续运行**（我那次跑得太短就退出了），看它的 dashboard
+overlay 保持活动时，主菜单会不会让位给那个小 overlay。
+
 **判读三件事**（前两件只能戴头显看）：
 
-1. **Isaac 画面还晃不晃** —— 这是唯一的成败判据；
+1. **Isaac 画面还晃不晃** —— 唯一的成败判据；
 2. **视野被挡多少** —— 我们的小 overlay 加上 SteamVR 自己的工具栏/背景；
-3. `comp_gpu` 是否明显上升 —— 客观确认 compositor 真的成了每帧渲染源
-   （探针会自动按 dashboard 开/关分两组对比；在头显里手动关掉 dashboard 即可拿到对照）。
+3. `dash` 列是否为 `ON` —— 确认 dashboard 真的开着（⚠️ 不要看 comp_gpu，它无区分力）。
 
 **已知代价与未决项**（决定它能不能变成正式方案）：
 
 | 项 | 状态 |
 |---|---|
+| 消除 judder | ✅ **已实证两次**（§1 手动开菜单、§4.2.1 探针） |
+| SteamVR 主菜单遮挡 | ⚠️ **当前主要障碍**：`showDashboard(自有 key)` 后主菜单仍在显示。待测"探针持续运行时主菜单是否让位" |
 | 输入焦点被 dashboard 抢 | ⚠️ 右手柄 B 键 recenter 大概率失效。机器人控制不受影响（100% 来自 SONIC DDS），recenter 可改键盘/DDS 触发 |
-| SteamVR 工具栏/背景遮挡 | ⏳ 待实测。若挡得厉害，这条路的可用性就打折 |
-| Isaac 画面是否仍为全视野立体 | ⏳ 待确认（会不会被降级成一个面板） |
-| compositor 每帧渲染的额外开销 | ⏳ 待测。20ms 预算本来就紧，conveyor 场景 S≈0 |
-| OpenXR session 变 `VISIBLE_UNFOCUSED` 的副作用 | 用户实测机器人照常走动，暂无异常 |
+| Isaac 画面是否仍为全视野立体 | ⏳ 待确认（会不会被降级成一个面板）。已知它**正常显示且机器人照常动** |
+| 应用帧提交变断续 | ℹ️ 已观察到（`interval` 时有时无），但画面不晃 —— compositor 在自己按 vsync 出帧 |
+| compositor 每帧渲染的额外开销 | ⏳ 待测。20ms 预算本来就紧，conveyor 场景 S≈0。⚠️ comp_gpu 量不出来（无区分力） |
+| OpenXR session 变 `VISIBLE_UNFOCUSED` 的副作用 | 暂无异常（机器人照常走动） |
 | 延迟 | ⚠️ **治不了**。它只补 PC 内那一段，编码 + 网络 + 解码的几十毫秒仍在（§7 第 3 条） |
+| 是否需要常驻进程 | ✅ 不需要 —— dashboard 状态在进程退出后保持（§4.2.1） |
 
 **这是 hack，不是正解。** 正解仍是 CloudXR（§6）或 NOLO 头显端 ATW（§7）——
 但如果它挡得不厉害，就是当前链路上立刻可用的止痛药。

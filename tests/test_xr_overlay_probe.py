@@ -113,6 +113,17 @@ class ThresholdTest(unittest.TestCase):
         # vrcompositor.txt 实测直通时 GPU 0.007-0.011ms，阈值必须明显高于它
         self.assertGreater(probe.COMPOSITE_GPU_MS_THRESHOLD, 0.011)
 
+    def test_comp_gpu_is_documented_as_not_a_criterion(self):
+        """2026-07-30 实测:dashboard 开着(画面不晃)时 comp_gpu 也只有 0.008ms。
+
+        这个字段没有区分力,工具里必须把它标成诊断读数而非判据——否则下一个人
+        又会拿它下结论。
+        """
+        import inspect
+
+        src = inspect.getsource(probe)
+        self.assertIn("不是判据", src)
+
 
 class TimingFieldsTest(unittest.TestCase):
     """守住那次 nan 事故：便捷封装返回元组，getattr 兜底把它静默成了 nan。"""

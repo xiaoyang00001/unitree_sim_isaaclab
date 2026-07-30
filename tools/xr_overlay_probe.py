@@ -32,14 +32,17 @@ dashboard 的机制不同:它让 compositor 成为**每 vsync 的渲染源**，I
 就有机会既拿到"不晃"、又不被 SteamVR 主菜单挡住视野。**这是目前唯一被实测证明不晃、
 且留在 SteamVR + NOLO 链上的方向。** 已知代价与判读要点见 ``doc/xr_ar_judder_zh.md`` §4.2。
 
-## 客观判据（不需要戴头显）
+## ⚠️ comp_gpu 不是判据（2026-07-30 实测撤回）
 
-本工具每秒打印 ``IVRCompositor::GetFrameTiming`` 的 ``m_flCompositorRenderGpuMs``。
+本工具每秒打印 ``m_flCompositorRenderGpuMs``，原本想把它当"不需要戴头显的客观判据"。
+**实测证明它没有区分力**：dashboard 开着、画面确认不晃时，该值仍是 0.007–0.010ms，
+与直通基线毫无差别。原因大概是 overlay 应用拿到的不是全局渲染开销，
+或 direct-mode 下 compositor 的自绘不计入这个字段。
 
-- 基线（``--mode none``）应当接近 0（对应日志里的 0.007ms）
-- 若 ``--mode tiny`` 下该值**显著上升**，就客观证明 compositor 转入了合成模式
+所以它现在只是**诊断读数**，别拿它下结论。真正可靠的两个量：
 
-主观判据仍需戴头显：转头看 Isaac 画面还抖不抖。
+- ``dash`` 列 —— ``isDashboardVisible()``，直接的状态事实，不需要推断；
+- **主观判读** —— 戴头显慢速转头看 Isaac 画面晃不晃。这是唯一的成败判据。
 
 ## 用法：必须两个终端，Isaac 先起
 
@@ -79,8 +82,9 @@ import sys
 import time
 from typing import Any
 
-# 与 vrcompositor.txt 里 "Compositor Time ... GPU: 0.007ms" 对应的判定阈值。
-# 直通模式下该值 ~0.01ms；一旦 compositor 真的开始渲染，量级会完全不同。
+# ⚠️ 这个阈值**已被实测证明没有区分力**（2026-07-30）：dashboard 开着、画面确认不晃时，
+# comp_gpu 仍是 0.007-0.010ms，与直通基线一样。保留它只为把读数标出来提醒"别当判据"。
+# 真正可靠的是 dash 列（isDashboardVisible）与主观判读。
 COMPOSITE_GPU_MS_THRESHOLD = 0.10
 
 # IVRCompositor 的重投影标志位（openvr.h）
@@ -488,11 +492,8 @@ class Probe:
         signal.signal(signal.SIGTERM, self._on_sigint)
 
         print(
-            "[probe] 判据：直通模式下 comp_gpu ≈ 0.01ms；若它显著上升"
-            f"（阈值 {COMPOSITE_GPU_MS_THRESHOLD}ms），说明 compositor 转入了合成模式。"
-        )
-        print(
-            "[probe] 对照：把 dashboard 开一会儿再关掉，退出时会自动分组对比两种状态下的 comp_gpu。"
+            "[probe] ⚠️ comp_gpu 只是诊断读数,**不是判据**——实测 dashboard 开着(画面确认不晃)时"
+            "它也是 0.007-0.010ms,没有区分力。看 dash 列 + 戴头显主观判读。"
         )
         print(
             "[probe] "
@@ -562,51 +563,32 @@ class Probe:
                 f"\n[probe] comp_gpu 均值 {avg:.4f}ms / 峰值 {peak:.4f}ms（{len(samples)} 个样本）"
             )
             if not self.scene_pid:
-                # 没有 scene app 时 compositor 在渲染 SteamVR 自己的环境,
-                # 这个读数与"overlay 能否逼它退出直通"无关。不能给结论。
                 print(
-                    "[probe] ⚠️ 本次没有（或中途失去）scene app —— 上面的读数**不能**用来判断假设，"
-                    "compositor 此时在渲染 SteamVR 自己的环境。请先起 Isaac 再重测。"
+                    "[probe] ⚠️ 本次没有（或中途失去）scene app —— 测的不是真实工况，"
+                    "请先起 Isaac 再重测。"
                 )
-            elif self.args.mode == "dashboard":
-                if composited_seen:
-                    print(
-                        "[probe] ✅ dashboard 模式下 comp_gpu 明显上升 —— compositor 确实成了"
-                        "每帧的渲染源（符合预期）。**结论要靠主观**：Isaac 画面还晃不晃、"
-                        "视野被挡多少。"
-                    )
-                else:
-                    print(
-                        "[probe] ⚠️ dashboard 模式下 comp_gpu 却没上升 —— 与 §1 的实证不符，"
-                        "先确认 dashboard 真的开着（看 dash 列）再判读。"
-                    )
-            elif composited_seen:
+            if composited_seen:
+                # 从没见过这一支成立;万一哪天成立了,说明 direct-mode 下这个字段
+                # 又有区分力了,值得回头改判据。
                 print(
-                    "[probe] ✅ compositor 出现了明显的 GPU 渲染开销 —— 它没有在直通，"
-                    "假设成立的可能性大。接着戴头显做主观判读。"
+                    f"[probe] ❗ comp_gpu 超过了 {COMPOSITE_GPU_MS_THRESHOLD}ms —— 这与 2026-07-30 的"
+                    "实测不符（那次 dashboard 开着它也只有 0.008ms）。值得复核这个字段是否"
+                    "又有区分力了。"
                 )
-            elif self.args.mode == "none":
-                # 基线模式没建 overlay，读数只说明"此刻 compositor 在直通",
-                # 不能拿来否决 overlay 假设——否决要由 tiny/panel 组给出。
-                print(
-                    "[probe] ℹ️ 基线：comp_gpu 贴近 0，compositor 在直通（符合预期）。"
-                    "这是对照用的基线，不构成对 overlay 假设的结论。"
-                )
-            else:
-                print(
-                    "[probe] ❌ comp_gpu 全程贴近 0 —— compositor 仍在直通，"
-                    f"存在 overlay（mode={self.args.mode}）不足以让它转入合成模式。"
-                )
+            print(
+                "[probe] ⚠️ 重申：comp_gpu 不是判据。**成败只看主观**——"
+                "戴头显慢速转头，Isaac 画面晃不晃；以及视野被挡多少。"
+            )
         self._report_dashboard_contrast(by_dash)
 
     @staticmethod
     def _report_dashboard_contrast(by_dash: dict[str, list[float]]):
         """dashboard 开/关两组 comp_gpu 的自动对照。
 
-        这一段决定上面那个结论能不能信：
-        - 两组都贴近 0 ⇒ **comp_gpu 反映不了 compositor 的渲染状态**，判据本身失效，
-          得换别的观测量，别急着说"假设否决";
-        - dashboard 开着时明显更高 ⇒ 判据有效，那么 overlay 组仍贴近 0 就是真的否决。
+        ⚠️ **2026-07-30 已用这个对照证明 comp_gpu 判据失效**：dashboard 开着、画面确认
+        不晃时，comp_gpu 仍是 0.0080ms（12 样本），与直通基线一样。这段代码保留下来，
+        是因为它正确地报出了"两组无差异 ⇒ 不能用它下结论"——这个自检本身有价值，
+        别把它删了。
         """
         on, off = by_dash["on"], by_dash["off"]
         if not on and not off:
