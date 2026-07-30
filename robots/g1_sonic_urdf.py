@@ -21,6 +21,7 @@ directories remain untouched.
 from __future__ import annotations
 
 import copy
+import getpass
 import os
 import tempfile
 import xml.etree.ElementTree as ET
@@ -51,12 +52,23 @@ _HAND_LINK_PREFIXES = ("left_hand_", "right_hand_")
 _OUTPUT_FILE_NAME = "g1_29dof_with_hand_rev_1_0_sonic_isaaclab.urdf"
 
 
+def _user_scoped_suffix() -> str:
+    """Per-user suffix for the temp output directory.
+
+    POSIX keeps using the uid so already generated paths stay valid; Windows
+    has no ``os.getuid`` and falls back to the login name.
+    """
+
+    getuid = getattr(os, "getuid", None)
+    return str(getuid()) if getuid is not None else getpass.getuser()
+
+
 def default_sonic_g1_43dof_output_path() -> Path:
     """Return the stable per-user path used for the generated URDF."""
 
     return (
         Path(tempfile.gettempdir())
-        / f"unitree_sim_isaaclab_sonic_{os.getuid()}"
+        / f"unitree_sim_isaaclab_sonic_{_user_scoped_suffix()}"
         / _OUTPUT_FILE_NAME
     )
 
