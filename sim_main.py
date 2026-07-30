@@ -1338,6 +1338,18 @@ def main():
             env.close()
             return
         print("========= create OpenXR teleop device success =========")
+
+        # XR anchor 同步归因探针(XR_ANCHOR_PROBE=timing|nowrite|fabric|noop,
+        # 默认 off)。用于拆解 OpenXRDevice 的每帧 anchor 同步成本与 XR 帧闸门
+        # 阻塞,详见 tools/xr_anchor_probe.py 模块 docstring。
+        xr_probe_mode = os.environ.get("XR_ANCHOR_PROBE", "off")
+        if xr_probe_mode.strip().lower() not in ("", "off"):
+            try:
+                from tools.xr_anchor_probe import install_xr_anchor_probe
+
+                install_xr_anchor_probe(teleop_interface, xr_probe_mode)
+            except Exception as e:
+                print(f"[xr_probe] failed to install: {e}")
     
     # create simplified control configuration
     try:    
@@ -1823,6 +1835,18 @@ def main():
                             f"{render_frames / stats_window_s:.2f} fps, "
                             f"mean {1000.0 * render_work_s / render_frames:.2f} ms/frame"
                         )
+                    if args_cli.xr:
+                        # /xr/status/fps 由 omni.kit.xr C++ 侧每帧写入,是 XR 侧
+                        # 自己的帧率口径,与主循环 Hz / GUI render fps 分列对照
+                        # (判读铁律:这些是不同口径,不能互相冒充)。
+                        try:
+                            import carb
+
+                            xr_fps = carb.settings.get_settings().get("/xr/status/fps")
+                            if xr_fps:
+                                print(f"XR status fps: {float(xr_fps):.2f}")
+                        except Exception:
+                            pass
                     print(f"=============================")
                     
                     # print_stats(controller)
