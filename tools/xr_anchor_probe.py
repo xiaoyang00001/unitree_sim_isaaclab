@@ -46,7 +46,10 @@ def _fmt_ms(seconds: float) -> str:
 
 
 class _ProbeStats:
-    """窗口化统计:回调总耗时与写入子耗时,含 p95/max。"""
+    """窗口化统计:回调总耗时,及其中"Fabric 读"与"USD 写"两段子耗时。
+
+    三段之差即纯 Python 四元数计算,不必单独计时。
+    """
 
     def __init__(self, mode: str, print_interval_s: float = 5.0):
         self.mode = mode
@@ -54,9 +57,13 @@ class _ProbeStats:
         self._window_start = perf_counter()
         self._call_samples: list[float] = []
         self._write_samples: list[float] = []
+        self._read_samples: list[float] = []
 
     def add_write(self, dt: float) -> None:
         self._write_samples.append(dt)
+
+    def add_read(self, dt: float) -> None:
+        self._read_samples.append(dt)
 
     def add_call(self, dt: float) -> None:
         self._call_samples.append(dt)
@@ -68,6 +75,7 @@ class _ProbeStats:
         self._window_start = now
         self._call_samples.clear()
         self._write_samples.clear()
+        self._read_samples.clear()
 
     @staticmethod
     def _summary(samples: list[float]) -> str:
@@ -80,16 +88,18 @@ class _ProbeStats:
 
     def _print(self, window: float) -> None:
         n = len(self._call_samples)
+        total = sum(self._call_samples)
         line = (
             f"[xr_probe:{self.mode}] {n} calls in {window:.1f}s "
             f"({n / window:.1f}/s), sync mean/p95/max {self._summary(self._call_samples)}"
         )
-        if self._write_samples:
-            total = sum(self._call_samples)
-            write_total = sum(self._write_samples)
-            share = write_total / total if total > 0.0 else 0.0
+        for name, samples in (("read", self._read_samples), ("write", self._write_samples)):
+            if not samples:
+                continue
+            share = sum(samples) / total if total > 0.0 else 0.0
+            # read 每次 sync 调 2 次(位置锚 + 旋转锚),故 share 是两次之和的占比
             line += (
-                f", write mean/p95/max {self._summary(self._write_samples)}"
+                f", {name} mean/p95/max {self._summary(samples)}"
                 f" (share {share:.0%})"
             )
         print(line, flush=True)
@@ -141,6 +151,18 @@ def install_xr_anchor_probe(teleop_interface, mode: str) -> bool:
 
     if mode in ("timing", "nowrite", "fabric"):
         sync._xr_core = _XrCoreWriteProxy(sync._xr_core, mode, stats)
+        # 读取侧:每次 sync 调 2 次(位置锚 head_link + 旋转锚 pelvis),每次都
+        # 重新 usdrt.Usd.Stage.Attach + GetFabricHierarchyWorldMatrixAttr().Get()
+        original_read = sync._get_prim_world_matrix
+
+        def timed_read(prim_path):
+            t0 = perf_counter()
+            try:
+                return original_read(prim_path)
+            finally:
+                stats.add_read(perf_counter() - t0)
+
+        sync._get_prim_world_matrix = timed_read
 
     if mode == "noanchor":
         # OpenXRDevice.__init__ 已经写过 anchorMode=custom anchor 与
