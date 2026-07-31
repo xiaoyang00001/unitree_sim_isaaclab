@@ -15,7 +15,17 @@ REM       synthesises its URDF at import time. Without this the run dies during
 REM       "import tasks" no matter which --task you asked for. The hard-coded
 REM       fallback in the source points at another machine's Linux path.
 REM
-REM Override either variable from the environment before calling this script.
+REM Defaults below are probed per machine (win2 = D:\Isaac + user admin, the
+REM newer box = D:\reboot + user nolovr) so the same script runs on both.
+REM Override any variable from the environment before calling this script.
+REM
+REM   SIM_LOG
+REM       If set, stdout/stderr are redirected to this file. Needed whenever
+REM       the sim is started from the desktop session (double-click/schtasks):
+REM       that console window is unreachable over ssh, and frame attribution
+REM       needs the [Performance] lines. Plain > redirection on purpose - a
+REM       PowerShell Tee pipeline would re-quote %* and swallow stdin, which
+REM       the keyboard-driven path needs.
 REM
 REM Usage:
 REM   run_win.bat --device cpu --enable_cameras --robot_type g129 ^
@@ -27,8 +37,20 @@ set "PYTHONUTF8=1"
 
 if not defined UNITREE_SKIP_LOWSTATE_CRC set "UNITREE_SKIP_LOWSTATE_CRC=1"
 
-if not defined GR00T_WBC_ROOT set "GR00T_WBC_ROOT=D:\reboot\GR00T-WholeBodyControl"
-if not defined SIM_PYTHON set "SIM_PYTHON=C:\Users\nolovr\miniconda3\envs\env_isaaclab\python.exe"
+if not defined GR00T_WBC_ROOT (
+    if exist "D:\Isaac\groot_assets\gear_sonic\data" (
+        set "GR00T_WBC_ROOT=D:\Isaac\groot_assets"
+    ) else (
+        set "GR00T_WBC_ROOT=D:\reboot\GR00T-WholeBodyControl"
+    )
+)
+if not defined SIM_PYTHON (
+    if exist "C:\Users\admin\miniconda3\envs\env_isaaclab\python.exe" (
+        set "SIM_PYTHON=C:\Users\admin\miniconda3\envs\env_isaaclab\python.exe"
+    ) else (
+        set "SIM_PYTHON=C:\Users\nolovr\miniconda3\envs\env_isaaclab\python.exe"
+    )
+)
 
 cd /d "%~dp0"
 
@@ -43,4 +65,9 @@ if not exist "%GR00T_WBC_ROOT%\gear_sonic\data" (
     exit /b 1
 )
 
-"%SIM_PYTHON%" sim_main.py %*
+if defined SIM_LOG (
+    echo [run_win] logging to %SIM_LOG%
+    "%SIM_PYTHON%" sim_main.py %* > "%SIM_LOG%" 2>&1
+) else (
+    "%SIM_PYTHON%" sim_main.py %*
+)

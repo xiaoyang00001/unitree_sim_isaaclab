@@ -24,11 +24,19 @@ REM duplicate:  Get-Process XRLink
 REM (Do NOT kill SteamVR here - unlike the non-AR case, AR needs it.)
 REM
 REM Overridable:
-REM   SIM_DDS_IFACE  - this machine's IP on the DDS network (default below)
+REM   SIM_DDS_IFACE  - this machine's IP on the DDS network. Default is probed
+REM                    by COMPUTERNAME: win2 (DESKTOP-CMSDIPM) = 192.168.50.127,
+REM                    anything else = 192.168.1.130 (the newer box).
 REM   GR00T_WBC_ROOT / SIM_PYTHON - see run_win.bat
 REM ---------------------------------------------------------------------------
 
-if not defined SIM_DDS_IFACE set "SIM_DDS_IFACE=192.168.1.130"
+if not defined SIM_DDS_IFACE (
+    if /i "%COMPUTERNAME%"=="DESKTOP-CMSDIPM" (
+        set "SIM_DDS_IFACE=192.168.50.127"
+    ) else (
+        set "SIM_DDS_IFACE=192.168.1.130"
+    )
+)
 
 call "%~dp0run_win.bat" ^
     --task Isaac-G1-29DoF-Sonic ^
