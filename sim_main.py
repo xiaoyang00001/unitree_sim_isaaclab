@@ -84,8 +84,25 @@ parser.add_argument(
     default="none",
     help=(
         "optional teleoperation device; motion_controllers currently enables "
-        "only the OpenXR view anchor and right-controller B yaw recenter"
+        "only the OpenXR view anchor, the right-controller B yaw recenter and "
+        "the --xr_reset_button scene reset"
     ),
+)
+parser.add_argument(
+    "--xr_reset_button",
+    type=str,
+    default="left/x",
+    help=(
+        "controller button that triggers a full scene reset while in XR mode, "
+        'as "<hand>/<button>" (left/x, right/a, ...); "none" disables it. '
+        "right/b is already taken by the yaw recenter"
+    ),
+)
+parser.add_argument(
+    "--xr_reset_button_cooldown",
+    type=float,
+    default=2.0,
+    help="ignore repeated XR reset-button presses within this many seconds",
 )
 parser.add_argument("--enable_dex1_dds", action="store_true", help="enable gripper DDS")
 parser.add_argument("--enable_dex3_dds", action="store_true", help="enable dexterous hand DDS")
@@ -1343,6 +1360,51 @@ def main():
         except Exception as e:
             print(f"[sim] failed to disable kit loop pacing: {e}")
 
+    # XR 手柄复位按键的请求位。carb 的按键回调是在 kit 消息泵的调用栈里跑的
+    # （env.step 内部的 render 期间），在那儿就地 env.reset 等于在渲染中途改物理
+    # 场景，所以回调只置位，真正的复位交主循环在处理 rt/reset_pose/cmd 的同一处做。
+    xr_reset_request = {"pending": False, "last_accept": 0.0}
+
+    def request_xr_reset() -> None:
+        xr_reset_request["pending"] = True
+
+    def bind_xr_reset_button(device, on_press) -> None:
+        """把 --xr_reset_button 指定的手柄键绑成整场景复位。
+
+        首选 OpenXRDevice 的 ``_bind_button_press``（能绑任意键）。老版本没有这个
+        方法时退回 ``add_callback("RESET")``——它在 Isaac Lab 里是**写死左手 X** 的，
+        那种情况下 --xr_reset_button 不生效，日志会说明。绑定失败只告警不抛，
+        免得一个可选交互把整个仿真带崩。
+        """
+
+        spec = (args_cli.xr_reset_button or "").strip().lower()
+        if spec in ("", "none", "off"):
+            print("[xr] controller reset button disabled (--xr_reset_button none)")
+            return
+        hand, _, button = spec.partition("/")
+        if not hand or not button:
+            print(f'[xr] ⚠️ bad --xr_reset_button {spec!r}; expected "<hand>/<button>", e.g. left/x')
+            return
+        device_path = f"/user/hand/{hand}"
+        # 右手 B 已经是视角 recenter，绑同一个键会让一次按下既复位又对正视角。
+        recenter = getattr(getattr(device, "_xr_cfg", None), "recenter_yaw_button", None)
+        if recenter is not None and tuple(recenter) == (device_path, button):
+            print(f"[xr] ⚠️ {device_path}/{button} is the yaw recenter button; reset button not bound")
+            return
+        binder = getattr(device, "_bind_button_press", None)
+        try:
+            if callable(binder):
+                binder(device_path, button, "unitree_sim_xr_reset", lambda _ev: on_press())
+                print(f"[xr] press {device_path}/{button} for a full scene reset (totes return to the belt infeed)")
+            else:
+                device.add_callback("RESET", on_press)
+                print(
+                    "[xr] press /user/hand/left/x for a full scene reset "
+                    "(legacy add_callback path; --xr_reset_button ignored)"
+                )
+        except Exception as exc:
+            print(f"[xr] ⚠️ failed to bind reset button {device_path}/{button}: {exc}")
+
     if args_cli.teleop_device != "none":
         print("========= create OpenXR teleop device =========")
         try:
@@ -1362,6 +1424,7 @@ def main():
                 "[xr] Release right-controller B to recenter view yaw; "
                 "OpenXR commands are not connected to robot actions"
             )
+            bind_xr_reset_button(teleop_interface, request_xr_reset)
         except Exception as e:
             print(f"Failed to create OpenXR teleop device: {e}")
             env.close()
@@ -1745,6 +1808,19 @@ def main():
                         except Exception as e:
                             print(f"Failed to write reset pose command: {e}")
                             raise e
+
+                    # XR 手柄复位键：和上面的 DDS 复位命令同处消费。按键回调只置位，
+                    # 复位在这里做——回调本身跑在 kit 消息泵的栈里，不是安全的复位时机。
+                    if xr_reset_request["pending"]:
+                        xr_reset_request["pending"] = False
+                        xr_reset_now = monotonic()
+                        if xr_reset_now - xr_reset_request["last_accept"] < args_cli.xr_reset_button_cooldown:
+                            print("[xr] reset button ignored (within cooldown)")
+                        else:
+                            xr_reset_request["last_accept"] = xr_reset_now
+                            print("[xr] reset button pressed: full scene reset")
+                            trigger_robot_reset("reset_all_self", "XR controller reset button")
+                            reset_performed = True
 
                     # 方案 b：同步收发挂主循环——deploy 断连/锁步暂停时镜像仍活着
                     if scene_sync_term is not None and getattr(scene_sync_term.cfg, "external_pump", False):
