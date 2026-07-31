@@ -28,6 +28,7 @@ import re
 from pathlib import Path
 
 import isaaclab.sim as sim_utils
+from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
@@ -515,11 +516,47 @@ _PEER_RIGID_PROPS = dict(
 )
 
 
+def _merge_peer_actuator_groups(actuators: dict) -> dict:
+    """镜像体专用：把 6 组执行器合并成 1 组 Implicit。
+
+    Isaac Lab 对每组执行器在**每个物理子步**都有一轮 Python 张量记账
+    （articulation._apply_actuator_model），组数直接乘在 CPU 开销上——py-spy 实测
+    该记账占主线程 39%（两台机器人合计 ~7.6ms/圈，win2 headless，2026-07-31）。
+    镜像体关节每帧被 scene_state 直写，PD 只在两帧间兜底；合并时逐关节参数原样
+    并入 dict，每个关节的驱动参数不变，纯减组数 6→1。
+    ⚠️ 只用于镜像体；主机器人的组划分随 SONIC 动力学对齐验证走，不动。
+    """
+
+    fields = (
+        "effort_limit", "velocity_limit", "effort_limit_sim", "velocity_limit_sim",
+        "stiffness", "damping", "armature", "friction", "dynamic_friction",
+        "viscous_friction",
+    )
+    exprs: list[str] = []
+    merged: dict[str, dict] = {f: {} for f in fields}
+    for group in actuators.values():
+        exprs.extend(group.joint_names_expr)
+        for f in fields:
+            value = getattr(group, f, None)
+            if value is None:
+                continue
+            if isinstance(value, dict):
+                merged[f].update(value)
+            else:
+                for expr in group.joint_names_expr:
+                    merged[f][expr] = value
+    # 只设真正出现过的字段；某字段只有部分组设置时（如 hands 的摩擦三项），
+    # 未匹配的关节由 Isaac Lab 参数解析回落到 USD 默认值——与原多组行为一致。
+    kwargs = {f: v for f, v in merged.items() if v}
+    return {"peer_all": ImplicitActuatorCfg(joint_names_expr=exprs, **kwargs)}
+
+
 def _make_peer_robot_cfg() -> ArticulationCfg:
     cfg = make_sonic_robot_cfg()
     cfg.prim_path = "{ENV_REGEX_NS}/PeerRobot"
     cfg.init_state.pos = PEER_ROBOT_POS
     cfg.init_state.rot = PEER_ROBOT_ROT
+    cfg.actuators = _merge_peer_actuator_groups(cfg.actuators)
     if _PEER_ROBOT_USD.exists():
         # 首选：tools/build_peer_robot_usd.py 烘好的无碰撞产物。
         # 不能直接在 URDF 直转的产物上关碰撞：UrdfConverter 固定输出
