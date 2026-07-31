@@ -25,8 +25,10 @@ REM ---------------------------------------------------------------------------
 chcp 65001 >nul
 set "PYTHONUTF8=1"
 
-if not defined GR00T_WBC_ROOT set "GR00T_WBC_ROOT=D:\Isaac\groot_assets"
-if not defined SIM_PYTHON set "SIM_PYTHON=C:\Users\admin\miniconda3\envs\env_isaaclab\python.exe"
+if not defined UNITREE_SKIP_LOWSTATE_CRC set "UNITREE_SKIP_LOWSTATE_CRC=1"
+
+if not defined GR00T_WBC_ROOT set "GR00T_WBC_ROOT=D:\reboot\GR00T-WholeBodyControl"
+if not defined SIM_PYTHON set "SIM_PYTHON=C:\Users\nolovr\miniconda3\envs\env_isaaclab\python.exe"
 
 cd /d "%~dp0"
 
