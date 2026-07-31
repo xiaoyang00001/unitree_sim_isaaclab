@@ -290,3 +290,7 @@ Get-Process XRLink,vrserver,vrmonitor,vrcompositor -EA SilentlyContinue | Stop-P
   DDS 协议顺序、生命周期与安全降级、启动顺序、已验证结论与**明确未覆盖的范围**。
   改 SONIC 相关动力学/时序参数前必读，避免重跑已被否决的实验。
 - `doc/isaacsim{4.5,5.0,5.1}_install_zh.md`：分版本手工安装步骤。
+- `doc/windows_deployment_zh.md`：**从零部署一台新 Windows 机器的完整任务书**——系统前置、
+  conda/Isaac Sim、cyclonedds 自编 0.10.5（含 MSVC 与 `__library__.py` 两个必踩坑）、
+  该拉哪些分支、GR00T 资产子集、冒烟测试与判读。上面「Windows 部署」章节是**已部署机器**的
+  速查与帧率账本，这份是**新机器**的施工顺序，互补不重复。
