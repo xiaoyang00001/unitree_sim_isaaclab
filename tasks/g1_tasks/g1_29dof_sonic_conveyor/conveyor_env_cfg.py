@@ -45,7 +45,6 @@ from tasks.g1_tasks.g1_29dof_dex3_sonic.g1_29dof_dex3_sonic_env_cfg import (
 )
 
 from . import conveyor_events
-from .peer_usd_builder import ensure_peer_robot_usd, peer_usd_path
 from .zmq_scene_sync import ZmqEnvResetSyncActionCfg, ZmqSceneStateSyncActionCfg
 
 _ASSETS_DIR = Path(__file__).resolve().parent / "scene_assets"
@@ -501,9 +500,7 @@ def _make_local_robot_cfg() -> ArticulationCfg:
     return cfg
 
 
-# 镜像机器人 USD：机器本地缓存产物（与合成 URDF 同级的临时目录），任务被选中时由
-# ensure_peer_robot_usd() 按需生成，URDF 变更自动重转。不入库、无手动构建步骤。
-_PEER_ROBOT_USD = peer_usd_path()
+_PEER_ROBOT_USD = _ASSETS_DIR / "peer_robot" / "g1_43dof_peer.usd"
 
 # 镜像体的无重力/零阻尼自由体刚体参数：关节与 root 由 scene_state 帧直写，
 # 去穿透无意义，但 PhysX 不接受 0，只能不设置（None）。
@@ -523,25 +520,36 @@ def _make_peer_robot_cfg() -> ArticulationCfg:
     cfg.prim_path = "{ENV_REGEX_NS}/PeerRobot"
     cfg.init_state.pos = PEER_ROBOT_POS
     cfg.init_state.rot = PEER_ROBOT_ROT
-    # 镜像体必须用烘掉碰撞的 USD：不能直接在 URDF 直转产物上关碰撞——UrdfConverter
-    # 固定输出 instanceable 格式，碰撞体在 instance 原型里，spawn 的 collision_props
-    # 改不到（实测镜像体开局被地面弹出、无重力下 ~0.58 m/s 恒速上飘）。
-    # 产物由 __post_init__ 的 ensure_peer_robot_usd() 在 gym.make 阶段按需生成；
-    # import 期只挂路径，eager import 不要求 kit 已启动。
-    cfg.spawn = UsdFileCfg(
-        usd_path=str(_PEER_ROBOT_USD),
-        activate_contact_sensors=False,
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(**_PEER_RIGID_PROPS),
-        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-            enabled_self_collisions=False,
-            # 镜像体关节/root 每帧由 scene_state 硬写,PD 只在两帧间兜底,
-            # 求解精度不影响语义。默认 1/1:8/4 时第二台 43-DoF articulation
-            # 的 CPU 求解要多吃 ~2-3ms/步,是闭环 50Hz 预算的大头之一
-            # (2026-07-28 实测,闭环 E 14→11.5ms)。
-            solver_position_iteration_count=_env_int("ISAACLAB_PEER_SOLVER_POS_ITERS", 1),
-            solver_velocity_iteration_count=_env_int("ISAACLAB_PEER_SOLVER_VEL_ITERS", 1),
-        ),
-    )
+    if _PEER_ROBOT_USD.exists():
+        # 首选：tools/build_peer_robot_usd.py 烘好的无碰撞产物。
+        # 不能直接在 URDF 直转的产物上关碰撞：UrdfConverter 固定输出
+        # instanceable 格式，碰撞体在 instance 原型里，spawn 的 collision_props
+        # 改不到（实测镜像体开局被地面弹出、无重力下 ~0.58 m/s 恒速上飘）。
+        cfg.spawn = UsdFileCfg(
+            usd_path=str(_PEER_ROBOT_USD),
+            activate_contact_sensors=False,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(**_PEER_RIGID_PROPS),
+            articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+                enabled_self_collisions=False,
+                # 镜像体关节/root 每帧由 scene_state 硬写,PD 只在两帧间兜底,
+                # 求解精度不影响语义。默认 1/1:8/4 时第二台 43-DoF articulation
+                # 的 CPU 求解要多吃 ~2-3ms/步,是闭环 50Hz 预算的大头之一
+                # (2026-07-28 实测,闭环 E 14→11.5ms)。
+                solver_position_iteration_count=_env_int("ISAACLAB_PEER_SOLVER_POS_ITERS", 1),
+                solver_velocity_iteration_count=_env_int("ISAACLAB_PEER_SOLVER_VEL_ITERS", 1),
+            ),
+        )
+    else:
+        # 回退：URDF 直转（带碰撞体，镜像体会上飘）。不能 raise——tasks 包是
+        # eager import，抛异常会把其他任务一起带崩。
+        print(
+            "[conveyor_env_cfg] ⚠️ 缺少无碰撞镜像机器人产物 "
+            f"{_PEER_ROBOT_USD}\n"
+            "[conveyor_env_cfg] ⚠️ 先运行: python tools/build_peer_robot_usd.py"
+            "（否则 peer_robot 会被地面弹出上飘）"
+        )
+        cfg.spawn.rigid_props = sim_utils.RigidBodyPropertiesCfg(**_PEER_RIGID_PROPS)
+        cfg.spawn.collision_props = sim_utils.CollisionPropertiesCfg(collision_enabled=False)
     return cfg
 
 
@@ -770,9 +778,12 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
                         )
                     ),
                 )
-        # 镜像机器人 USD 在任务被实际选中时按需生成（import 期不能做：会连坐其他
-        # 任务的注册，且 UrdfConverter 需要 kit 已启动）。URDF 没变时走 hash 缓存秒过。
-        ensure_peer_robot_usd()
+        # fail-fast 放在任务被实际选中时（import 期不能抛，会连坐其他任务的注册）：
+        # 回退的 URDF 直转 peer 带碰撞体，会被地面弹出后无重力恒速上飘。
+        if not _PEER_ROBOT_USD.exists():
+            raise RuntimeError(
+                f"缺少无碰撞镜像机器人产物 {_PEER_ROBOT_USD}\n先运行: python tools/build_peer_robot_usd.py"
+            )
         if MIRROR_OBJECTS:
             # 基座注册的 reset_scene_to_default 会向 kinematic 镜像物体写速度，
             # CPU pipeline 下每次复位刷 ~14 条 PhysX 错误、累计 1000 条掐停仿真。

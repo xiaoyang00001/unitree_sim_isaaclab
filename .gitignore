@@ -129,8 +129,7 @@ ${data}
 !tasks/g1_tasks/g1_29dof_sonic_conveyor/scene_assets/**/*.usda
 !tasks/g1_tasks/g1_29dof_sonic_conveyor/scene_assets/*.usda
 
-# 镜像机器人 USD 自动生成于系统临时目录(peer_usd_builder.ensure_peer_robot_usd),不再落此目录;
-# 规则保留:旧机器可能残留本地构建产物,别让它刷 git status
-tasks/g1_tasks/g1_29dof_sonic_conveyor/scene_assets/peer_robot/
+# 镜像机器人 USD 2026-07-31 起入库(win2 构建产物,自包含无绝对路径):异机免跑 build_peer_robot_usd.py;
+# 已有本地未跟踪产物的机器 pull 前先移走该目录,否则 checkout 会拒绝覆盖
 
 # ConveyorBelt02.usd(46.7MB) 2026-07-31 起入库:异机验证踩过"手拷缺失→流水线不显示"的坑,体积让位于开箱即跑
