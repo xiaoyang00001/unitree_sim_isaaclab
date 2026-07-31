@@ -7,7 +7,7 @@
 
 用法（conda env_isaaclab，仓库根目录）：
 
-  # Phase 0 单机场景冒烟（不建 socket）：筐应从 y=16.4/17.0 流到工位 y≈14.148 停住
+  # Phase 0 单机场景冒烟（不建 socket）：筐应从入料端 y=17.4/18.0 流到工位 y≈14.148 停住
   python tools/smoke_conveyor_scene.py --steps 800
 
   # Phase 2 双进程同步自测（127.0.0.1）：先起 ID=1，再起 ID=2
