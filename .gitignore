@@ -132,5 +132,4 @@ ${data}
 # 镜像机器人 USD 为 derived 产物（tools/build_peer_robot_usd.py 生成），不入库
 tasks/g1_tasks/g1_29dof_sonic_conveyor/scene_assets/peer_robot/
 
-# ConveyorBelt02.usd 46.7MB 体积过大不入库（warehouse USD 相对引用它，换机需手拷，见任务 README）
-tasks/g1_tasks/g1_29dof_sonic_conveyor/scene_assets/ConveyorBelt02.usd
+# ConveyorBelt02.usd(46.7MB) 2026-07-31 起入库:异机验证踩过"手拷缺失→流水线不显示"的坑,体积让位于开箱即跑
