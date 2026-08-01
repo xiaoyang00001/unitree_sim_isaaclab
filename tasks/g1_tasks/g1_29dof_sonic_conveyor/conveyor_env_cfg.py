@@ -291,8 +291,8 @@ def _env_reset_sync_cfg() -> ZmqEnvResetSyncActionCfg:
 # ==================================================================
 # 场景布局开关 ISAACLAB_TOTES_ON_CONVEYOR（默认 1）——语义与源分支一致：
 #
-#   1 = 流水线布局：两塑料筐缩小一半（scale 0.005）放上流水线滚轮面，
-#       由 drive_totes 事件沿 -Y 从第一段送到第二段工位停住；双机站第二段两侧
+#   1 = 流水线布局：两塑料筐缩小一半（scale 0.005）放上流水线滚轮面的**入料端**，
+#       由 drive_totes 事件沿 -Y 送到第二段工位停住；双机站第二段两侧
 #       (x=-4.75 / -6.7, y=14.148)，pushcart_2 空车留在 y=19.39363。
 #   0 = 原布局：两筐恢复原尺寸（scale 0.01）叠放回 pushcart_2 拖车顶面
 #       (x=-5.62, y=18.75)；双机回到拖车两侧工位；筐被机器人搬上入料端后
@@ -314,9 +314,22 @@ ROBOT_2_X = _env_float("ISAACLAB_ROBOT_2_X", -6.7 if TOTES_ON_CONVEYOR else CART
 # 第二台拖车。流水线布局下是留在原工作位的空车；原布局下载着两筐顶到流水线入料端。
 PUSHCART_2_POS = [-5.4, 19.39363, 0.0] if TOTES_ON_CONVEYOR else [CART_GROUP_X, CART_GROUP_Y, 0.0]
 
+# 两塑料筐在流水线上的出生 y：贴着入料端排布，保持原来 0.6 m 的前后错位
+# （tote1 在前，沿 -Y 先到工位）。碰撞板 y 跨度 [10.19, 18.22]，筐在 y 方向半长
+# 0.1 m，所以后车最多到 18.0 左右；再往上会悬出板尾。
+#
+# ⚠️ 这同时是**复位落点**：整场景复位（手动 rt/reset_pose/cmd、倒地自动、对端同步）
+# 走的是 mdp.reset_scene_to_default，把筐写回这里的 init_state。放在入料端才能让
+# 一次复位＝重新完整流一遍。早期取 16.4/17.0 时复位只剩 2.25/2.85 m 的行程。
+# 到工位 14.148 分别是 3.25 / 3.85 m；筐是被拖拽滑行不是被带动，实测速度约
+# 0.244 m/s（低于 velocity_y 的 0.3，见 README「已知限制 / 待实测」），所以约 13.3 / 15.8 s
+# 到位，各自越过 y_stop 约 11 mm 后被动摩擦停住（smoke 900 步实测 14.136 / 14.137）。
+TOTE_SPAWN_Y_LEAD = _env_float("ISAACLAB_TOTE_SPAWN_Y_LEAD", 17.4)
+TOTE_SPAWN_Y_TRAIL = _env_float("ISAACLAB_TOTE_SPAWN_Y_TRAIL", 18.0)
+
 # 两塑料筐的初始摆放（几何推导见源分支 docs/场景布局开关-流水线与原布局切换.md）。
-CART2_TOTE1_POS = [-5.35, 16.4, 0.775] if TOTES_ON_CONVEYOR else [CART_GROUP_X, CART_GROUP_Y, 0.3794]
-CART2_TOTE2_POS = [-5.89, 17.0, 0.775] if TOTES_ON_CONVEYOR else [CART_GROUP_X, CART_GROUP_Y, 0.6814]
+CART2_TOTE1_POS = [-5.35, TOTE_SPAWN_Y_LEAD, 0.775] if TOTES_ON_CONVEYOR else [CART_GROUP_X, CART_GROUP_Y, 0.3794]
+CART2_TOTE2_POS = [-5.89, TOTE_SPAWN_Y_TRAIL, 0.775] if TOTES_ON_CONVEYOR else [CART_GROUP_X, CART_GROUP_Y, 0.6814]
 
 # 双机站位（面对面）：robot_1 在 +X 侧朝 -X（yaw 180°），robot_2 在 -X 侧朝 +X（identity）。
 # ⚠️ SONIC 底座任务刻意保持 identity 出生朝向（policy/world 约定）；ID=1 的 180° yaw
@@ -374,6 +387,11 @@ def _log_scene_layout() -> None:
         f" | robot_1 x={ROBOT_1_X:.3f} robot_2 x={ROBOT_2_X:.3f} y={ROBOT_WORKSTATION_Y:.3f}"
         f" | 流水线中线 x=-5.620 入料端 y=18.222"
     )
+    if TOTES_ON_CONVEYOR:
+        print(
+            f"{tag}   筐出生/复位落点 y: tote1={CART2_TOTE1_POS[1]:.3f} tote2={CART2_TOTE2_POS[1]:.3f}"
+            f"（整场景复位写回同一位置；碰撞板尽头 y=18.220）"
+        )
     drive = (
         "关"
         if not CONVEYOR_ENABLED
