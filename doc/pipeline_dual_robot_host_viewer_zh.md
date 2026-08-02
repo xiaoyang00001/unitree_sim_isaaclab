@@ -221,6 +221,9 @@ G1_LOCAL_ROBOT_ID=2 bash deploy.sh --disable-crc-check --input-type keyboard isa
 
 ## 8. Pico VR 控制接入（工作包 Pico-①：单 Pico → deploy#1，⏳头显侧待实测）
 
+> 从零部署的施工顺序/操作手册/判读表在 `doc/pipeline_pico_vr_deployment_zh.md`，
+> 本节只放架构盘点结论与设计取舍。
+
 拓扑（PC 侧已跑通到"等头显数据"，`tools/pipeline_pico_bringup.sh` 一键拉起）：
 
 ```

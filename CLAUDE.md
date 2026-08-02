@@ -182,6 +182,12 @@ env cfg 共用，进程环境变量优先于 `configs/scene_sync.env`——别�
 `UNITREE_SKIP_LOWSTATE_CRC=1` + `UNITREE_LOWCMD_CRC_SAMPLE_INTERVAL=50` + 两套 deploy
 `--disable-crc-check`（**Linux 的 unitree CRC 也是纯 Python**，双通道 1000 包/秒下占 35% GIL）。
 
+Pico VR 控制接入（分支 `feat/pipeline-pico-vr-control`，正路；keyboard 只是调试）：
+`tools/pipeline_pico_bringup.sh` 一键拉起（deploy#1 换 `--input-type zmq_manager`，Isaac 段
+零改动）。部署/操作/判读见 `doc/pipeline_pico_vr_deployment_zh.md`，架构盘点见权威文档 §8。
+⚠️ manager 必带 `--no_auto_pose`（默认数据一到就进全身跟随）；"VR 链绕过 planner 退化 bug"
+只对 POSE 子模式成立，摇杆行走的 PLANNER 子模式 bug 同样在环。
+
 ### OpenXR：只接管视角，不接管机器人
 
 `--teleop_device motion_controllers`（仅上表前三个任务可用；会自动置 `--xr`；与 `--no_render` 互斥）。
