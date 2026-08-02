@@ -525,8 +525,18 @@ if args_cli.task == "Isaac-G1-29DoF-Sonic-Conveyor":
     _sync_identity = _sync_ilu.module_from_spec(_sync_spec)
     _sync_spec.loader.exec_module(_sync_identity)
     is_scene_sync_viewer = _sync_identity.resolve_local_robot_id(verbose_tag="[sync_identity]") == 0
+    # host 双机器人（工作包 B）：ID=1 + ISAACLAB_HOST_BOTH_ROBOTS=1，与 cfg 同源判定。
+    is_scene_sync_host = _sync_identity.resolve_host_both_robots(
+        verbose_tag="[sync_identity]", load_env=False
+    )
+else:
+    is_scene_sync_host = False
 if is_scene_sync_viewer:
     print("[viewer] Pure-mirror viewer mode (ISAACLAB_LOCAL_ROBOT_ID=0)")
+if is_scene_sync_host:
+    print("[host] Dual-robot host mode (ISAACLAB_HOST_BOTH_ROBOTS=1): robot_2 <- rt/r2/*")
+# host 需要第二套 G1/Dex3 DDS 通道（create_dds_objects 按此标志注册 g129_r2/dex3_r2）。
+args_cli.enable_second_robot_dds = is_scene_sync_host
 
 if args_cli.teleop_device == "motion_controllers":
     if args_cli.task not in sonic_dex3_task_names:
@@ -1197,11 +1207,15 @@ def main():
                         + ", ".join(material_report.unmapped_visual_links)
                     )
                 if args_cli.task == "Isaac-G1-29DoF-Sonic-Conveyor":
-                    # 对端镜像 G1 也上涂装，避免双机时看到通体白模误判机型
-                    apply_g1_sonic_visual_materials("/World/envs/env_0/PeerRobot")
-                    if is_scene_sync_viewer:
-                        # viewer 有第二个镜像体（robot_2 工位）
-                        apply_g1_sonic_visual_materials("/World/envs/env_0/PeerRobot2")
+                    if is_scene_sync_host:
+                        # host 的第二台真身机器人
+                        apply_g1_sonic_visual_materials("/World/envs/env_0/Robot2")
+                    else:
+                        # 对端镜像 G1 也上涂装，避免双机时看到通体白模误判机型
+                        apply_g1_sonic_visual_materials("/World/envs/env_0/PeerRobot")
+                        if is_scene_sync_viewer:
+                            # viewer 有第二个镜像体（robot_2 工位）
+                            apply_g1_sonic_visual_materials("/World/envs/env_0/PeerRobot2")
             except Exception as e:
                 # Appearance must never prevent the DDS/physics validation from
                 # starting.  A missing material asset is therefore reported but
@@ -1524,17 +1538,24 @@ def main():
         # 平均白等 5ms(最坏 10ms),直接吃掉每帧 ack 往返预算。SONIC 锁步改为
         # "新样本即发"(事件唤醒发布线程),保活重发节奏保持 100Hz 不变——
         # 单纯拉高发布频率会让序列化抢 GIL,省下的等待又亏在 env.step 里。
+        robot_dds_names = ["g129", "g129_r2"] if is_scene_sync_host else ["g129"]
         if args_cli.lowstate_pub_hz:
-            try:
-                dds_manager.set_publish_rate("g129", float(args_cli.lowstate_pub_hz))
-                print(f"[sim] rt/lowstate publish rate set to {args_cli.lowstate_pub_hz:.0f} Hz")
-            except Exception as e:
-                print(f"[sim] failed to set lowstate publish rate: {e}")
+            for _dds_name in robot_dds_names:
+                try:
+                    dds_manager.set_publish_rate(_dds_name, float(args_cli.lowstate_pub_hz))
+                    print(
+                        f"[sim] lowstate publish rate set to {args_cli.lowstate_pub_hz:.0f} Hz ({_dds_name})"
+                    )
+                except Exception as e:
+                    print(f"[sim] failed to set lowstate publish rate ({_dds_name}): {e}")
         if is_sonic_task and args_cli.sonic_sync_with_lowstate:
-            try:
-                dds_manager.enable_immediate_publish("g129")
-            except Exception as e:
-                print(f"[sim] failed to enable immediate lowstate publish: {e}")
+            # 锁步"新样本即发"：host 模式对两条通道都要开，否则第二套 deploy 的
+            # ack 往返每圈多等一个发布调度周期（5-10ms）。
+            for _dds_name in robot_dds_names:
+                try:
+                    dds_manager.enable_immediate_publish(_dds_name)
+                except Exception as e:
+                    print(f"[sim] failed to enable immediate lowstate publish ({_dds_name}): {e}")
         if is_sonic_task and not is_scene_sync_viewer:
             # The first env.reset happens before the DDS object is registered,
             # so its observation cannot seed rt/lowstate. Lock-step control
@@ -1552,6 +1573,17 @@ def main():
                     dds_min_interval_ms=0.0,
                 )
                 print("[sonic_dds] Initial PhysX state seeded for LowState lock-step")
+                if is_scene_sync_host:
+                    # 第二套锁步同样需要首个真实 PhysX 样本，漏掉即死锁：
+                    # g129_r2 的 sample_seq 恒为 None → ack 永不匹配 → env 永不 step。
+                    get_robot_boy_joint_states(
+                        env,
+                        enable_dds=True,
+                        dds_min_interval_ms=0.0,
+                        asset_name="robot_2",
+                        dds_object_name="g129_r2",
+                    )
+                    print("[sonic_dds:r2] Initial PhysX state seeded for LowState lock-step")
                 if args_cli.task in sonic_dex3_task_names:
                     from tasks.common_observations.dex3_state import (
                         get_robot_dex3_joint_states,
@@ -1563,6 +1595,15 @@ def main():
                         dds_min_interval_ms=0.0,
                     )
                     print("[sonic_dds] Initial PhysX Dex3 state seeded")
+                    if is_scene_sync_host:
+                        get_robot_dex3_joint_states(
+                            env,
+                            enable_dds=True,
+                            dds_min_interval_ms=0.0,
+                            asset_name="robot_2",
+                            dds_object_name="dex3_r2",
+                        )
+                        print("[sonic_dds:r2] Initial PhysX Dex3 state seeded")
             except Exception as e:
                 print(f"Failed to seed initial SONIC LowState: {e}")
                 return
@@ -1589,6 +1630,9 @@ def main():
         if is_scene_sync_viewer and args_cli.action_source in ("dds", "sonic_dds"):
             print("[viewer] Selecting the hold action source (no deploy, no DDS lock-step)")
             args_cli.action_source = "hold"
+        elif is_scene_sync_host and args_cli.action_source in ("dds", "sonic_dds"):
+            print("[host] Selecting the dual-robot SONIC action source (two lock-step channels)")
+            args_cli.action_source = "sonic_dds_host"
         elif is_sonic_task and args_cli.action_source == "dds":
             print("[sonic_dds] Selecting the dedicated 29-DoF SONIC action source for this task")
             args_cli.action_source = "sonic_dds"
@@ -1612,7 +1656,7 @@ def main():
 
     sonic_reset_supported = (
         is_sonic_task
-        and args_cli.action_source == "sonic_dds"
+        and args_cli.action_source in ("sonic_dds", "sonic_dds_host")
         and hasattr(action_provider, "begin_fall_recovery")
         and hasattr(action_provider, "control_started")
         and hasattr(action_provider, "fall_recovery_active")
@@ -1620,14 +1664,31 @@ def main():
     fall_reset_enabled = bool(args_cli.auto_reset_on_fall and sonic_reset_supported)
     fall_reset_monitor = None
     sonic_env_ids = None
+    fall_reset_watch = []  # [(asset_name, monitor, control_started_fn)]
     if sonic_reset_supported:
-        fall_reset_monitor = SonicFallResetMonitor(
-            tilt_threshold_deg=args_cli.fall_reset_tilt_deg,
-            min_base_height_m=args_cli.fall_reset_min_base_height,
-            debounce_s=args_cli.fall_reset_debounce_seconds,
-            cooldown_s=args_cli.fall_reset_cooldown_seconds,
-        )
+        def _make_fall_monitor():
+            return SonicFallResetMonitor(
+                tilt_threshold_deg=args_cli.fall_reset_tilt_deg,
+                min_base_height_m=args_cli.fall_reset_min_base_height,
+                debounce_s=args_cli.fall_reset_debounce_seconds,
+                cooldown_s=args_cli.fall_reset_cooldown_seconds,
+            )
+
+        fall_reset_monitor = _make_fall_monitor()
         sonic_env_ids = torch.arange(env.num_envs, dtype=torch.int64, device=env.device)
+        provider_channels = getattr(action_provider, "channels", None)
+        if provider_channels:
+            # host 双机器人：每台机器人独立监控（未进 CONTROL 的通道 root 被 pin，
+            # 不可能真倒，按通道门控防误触发）；任一台确认倒地=整场景复位。
+            for _asset_index, (_asset_name, _channel) in enumerate(provider_channels.items()):
+                _monitor = fall_reset_monitor if _asset_index == 0 else _make_fall_monitor()
+                fall_reset_watch.append(
+                    (_asset_name, _monitor, (lambda ch=_channel: bool(ch.control_started)))
+                )
+        else:
+            fall_reset_watch.append(
+                ("robot", fall_reset_monitor, (lambda: bool(action_provider.control_started)))
+            )
 
     if fall_reset_enabled:
         print(
@@ -1675,14 +1736,21 @@ def main():
             broadcast_sync_reset()
             return False
 
-        robot_dds = dds_manager.get_object("g129")
-        if robot_dds is not None and hasattr(robot_dds, "begin_reset_epoch"):
-            robot_dds.begin_reset_epoch(reason)
-        if robot_dds is not None and hasattr(robot_dds, "begin_reset_state_grace"):
-            robot_dds.begin_reset_state_grace(
-                args_cli.fall_reset_lowstate_grace_seconds,
-                reason,
-            )
+        # host 双机器人：两套 DDS 通道都要推 reset epoch + grace 窗口——漏掉任一套，
+        # 对应 deploy 会把复位瞬移的 dq 当真实速度触发 35rad/s 安全限。
+        reset_dds_names = ["g129", "g129_r2"] if is_scene_sync_host else ["g129"]
+        reset_robot_dds_list = [
+            _dds for _dds in (dds_manager.get_object(_name) for _name in reset_dds_names)
+            if _dds is not None
+        ]
+        for robot_dds in reset_robot_dds_list:
+            if hasattr(robot_dds, "begin_reset_epoch"):
+                robot_dds.begin_reset_epoch(reason)
+            if hasattr(robot_dds, "begin_reset_state_grace"):
+                robot_dds.begin_reset_state_grace(
+                    args_cli.fall_reset_lowstate_grace_seconds,
+                    reason,
+                )
         action_provider.begin_fall_recovery(
             hold_duration_s=args_cli.fall_reset_hold_seconds,
             blend_duration_s=args_cli.fall_reset_blend_seconds,
@@ -1697,15 +1765,17 @@ def main():
         # CPU-loaded Isaac instance.  Re-arm the window after the reset so the
         # first live PhysX samples (where teleport-derived dq is most likely)
         # are always suppressed, independent of reset duration.
-        if robot_dds is not None and hasattr(robot_dds, "begin_reset_state_grace"):
-            robot_dds.begin_reset_state_grace(
-                args_cli.fall_reset_lowstate_grace_seconds,
-                f"{reason}: post-reset stabilization",
+        for robot_dds in reset_robot_dds_list:
+            if hasattr(robot_dds, "begin_reset_state_grace"):
+                robot_dds.begin_reset_state_grace(
+                    args_cli.fall_reset_lowstate_grace_seconds,
+                    f"{reason}: post-reset stabilization",
+                )
+        for _asset_name, _monitor, _started_fn in (fall_reset_watch or [("robot", fall_reset_monitor, None)]):
+            _monitor.mark_reset(
+                time.monotonic(),
+                args_cli.fall_reset_hold_seconds + args_cli.fall_reset_blend_seconds,
             )
-        fall_reset_monitor.mark_reset(
-            time.monotonic(),
-            args_cli.fall_reset_hold_seconds + args_cli.fall_reset_blend_seconds,
-        )
         print(
             f"[fall_reset] reset #{fall_reset_monitor.reset_count} complete: "
             "default standing state restored; waiting for safe SONIC re-entry"
@@ -1909,23 +1979,28 @@ def main():
                         recent_loop_times.pop(0)
 
                 if fall_reset_enabled and not reset_performed:
-                    if not bool(action_provider.control_started):
-                        fall_reset_monitor.clear_candidate()
-                    else:
-                        robot = env.scene["robot"]
-                        fall_info = fall_reset_monitor.update(
+                    for _asset_name, _monitor, _started_fn in fall_reset_watch:
+                        if reset_performed:
+                            break
+                        if not _started_fn():
+                            _monitor.clear_candidate()
+                            continue
+                        robot = env.scene[_asset_name]
+                        fall_info = _monitor.update(
                             time.monotonic(),
                             robot.data.root_pos_w[0],
                             robot.data.root_quat_w[0],
                         )
                         if fall_info is not None:
                             print(
-                                "[fall_reset] confirmed fall: "
+                                f"[fall_reset] confirmed fall ({_asset_name}): "
                                 f"{fall_info['reason']} "
                                 f"(tilt={fall_info['tilt_deg']:.1f}deg, "
                                 f"base_z={fall_info['base_z']:.3f}m)"
                             )
-                            trigger_robot_reset("reset_all_self", "automatic fall detection")
+                            trigger_robot_reset(
+                                "reset_all_self", f"automatic fall detection ({_asset_name})"
+                            )
                             reset_performed = True
                             last_loop_time = monotonic()
                             recent_loop_times.clear()

@@ -13,7 +13,7 @@ def create_dds_objects(args_cli,env):
         subscribe_names.append("g129")
     if args_cli.enable_dex3_dds:
         from dds.dex3_dds import Dex3DDS
-        dex3 = Dex3DDS() 
+        dex3 = Dex3DDS()
         dds_manager.register_object("dex3", dex3)
         publish_names.append("dex3")
         subscribe_names.append("dex3")
@@ -29,6 +29,20 @@ def create_dds_objects(args_cli,env):
         dds_manager.register_object("inspire", inspire)
         publish_names.append("inspire")
         subscribe_names.append("inspire")
+    # host 双机器人模式（工作包 B）：robot_2 的第二套 DDS 通道。话题前缀 rt/r2、
+    # shm 后缀 _r2 双双隔离——shm 同名会被静默 attach 共享（见 G1RobotDDS docstring）。
+    # 必须在 start_publishing/start_subscribing 之前注册。
+    if getattr(args_cli, "enable_second_robot_dds", False):
+        from dds.g1_robot_dds import G1RobotDDS
+        from dds.dex3_dds import Dex3DDS
+        g1_robot_r2 = G1RobotDDS(node_name="g1_robot_r2", topic_prefix="rt/r2", shm_suffix="_r2")
+        dds_manager.register_object("g129_r2", g1_robot_r2)
+        publish_names.append("g129_r2")
+        subscribe_names.append("g129_r2")
+        dex3_r2 = Dex3DDS(node_name="dex3_r2", topic_prefix="rt/r2", shm_suffix="_r2")
+        dds_manager.register_object("dex3_r2", dex3_r2)
+        publish_names.append("dex3_r2")
+        subscribe_names.append("dex3_r2")
     if "Wholebody" in args_cli.task or args_cli.enable_wholebody_dds:
         from dds.commands_dds import RunCommandDDS
         run_command_dds = RunCommandDDS()

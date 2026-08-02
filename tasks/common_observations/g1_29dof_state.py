@@ -78,24 +78,35 @@ def get_robot_arm_joint_names() -> list[str]:
         "right_wrist_yaw_joint",
     ]
 
-# global variable to cache the DDS instance
-_g1_robot_dds = None
+# DDS 实例缓存：按注册名键控（host 双机器人模式下有 "g129" 与 "g129_r2" 两套）。
+_g1_robot_dds_by_name: dict = {}
 
 # 观测缓存：索引张量 + 预分配缓冲。DDS 发布周期由调用任务决定；
 # SONIC 任务必须在每个 50 Hz 控制步发布一个新物理样本，不再用墙钟限速。
-_obs_cache = {
-    "device": None,
-    "joint_names": None,
-    "batch": None,
-    "boy_idx_t": None,
-    "boy_idx_batch": None,
-    "pos_buf": None,
-    "vel_buf": None,
-    "torque_buf": None,
-    "combined_buf": None,
-    "dds_last_ns": 0,
-    "sample_seq": 0,
-}
+# ⚠️ 按 asset 名键控：host 模式下 robot 与 robot_2 各有一个 ObsTerm，共用缓冲会让
+# 第二个 term 的 gather 就地覆盖第一个 term 已返回的观测张量（aliasing），
+# 共用 sample_seq 会让两条锁步链路的 tick 交错、ack 永不匹配。
+_obs_caches: dict = {}
+
+
+def _get_obs_cache(asset_name: str) -> dict:
+    cache = _obs_caches.get(asset_name)
+    if cache is None:
+        cache = {
+            "device": None,
+            "joint_names": None,
+            "batch": None,
+            "boy_idx_t": None,
+            "boy_idx_batch": None,
+            "pos_buf": None,
+            "vel_buf": None,
+            "torque_buf": None,
+            "combined_buf": None,
+            "dds_last_ns": 0,
+            "sample_seq": 0,
+        }
+        _obs_caches[asset_name] = cache
+    return cache
 
 # Cache body-name resolution; the selected wholebody asset has dedicated pelvis
 # and torso IMU links, but fallbacks keep diagnostics useful for related assets.
@@ -105,24 +116,26 @@ _imu_body_cache = {
 }
 
 
-def _get_g1_robot_dds_instance():
+def _get_g1_robot_dds_instance(dds_object_name: str = "g129"):
     """Borrow the manager-owned G1 DDS object once it has been registered."""
-    global _g1_robot_dds
+    instance = _g1_robot_dds_by_name.get(dds_object_name)
+    if instance is None:
+        instance = dds_manager.get_object(dds_object_name)
+        if instance is not None:
+            _g1_robot_dds_by_name[dds_object_name] = instance
+            print(f"[g1_state] G1 robot DDS communication instance obtained ({dds_object_name})")
 
-    if _g1_robot_dds is None:
-        _g1_robot_dds = dds_manager.get_object("g129")
-        if _g1_robot_dds is not None:
-            print("[g1_state] G1 robot DDS communication instance obtained")
-
-    return _g1_robot_dds
+    return instance
 
 def get_robot_boy_joint_states(
     env: ManagerBasedRLEnv,
     enable_dds: bool = True,
     dds_min_interval_ms: float = 20.0,
+    asset_name: str = "robot",
+    dds_object_name: str = "g129",
 ) -> torch.Tensor:
     """get the robot body joint states, positions and velocities
-    
+
     Args:
         env: ManagerBasedRLEnv - reinforcement learning environment instance
         enable_dds: bool - whether to enable the DDS publish function
@@ -131,7 +144,9 @@ def get_robot_boy_joint_states(
             distinct LowState sample.  A 20 ms wall-clock gate is not safe at
             a nominal 50 Hz because small scheduler jitter can alias it down
             to 25--33 Hz.
-    
+        asset_name: 场景里的机器人资产名（host 第二机器人传 "robot_2"）。
+        dds_object_name: DDS 管理器里的注册名（host 第二机器人传 "g129_r2"）。
+
     Returns:
         torch.Tensor
         - the first 29 elements are joint positions
@@ -139,15 +154,16 @@ def get_robot_boy_joint_states(
         - the last 29 elements are joint torques
     """
     # get all joint states
-    joint_pos = env.scene["robot"].data.joint_pos
-    joint_vel = env.scene["robot"].data.joint_vel
-    joint_torque = env.scene["robot"].data.applied_torque  # use applied_torque to get joint torques
+    robot = env.scene[asset_name]
+    joint_pos = robot.data.joint_pos
+    joint_vel = robot.data.joint_vel
+    joint_torque = robot.data.applied_torque  # use applied_torque to get joint torques
     device = joint_pos.device
     batch = joint_pos.shape[0]
 
-    # 预计算并缓存索引张量（列索引）
-    global _obs_cache
-    articulation_joint_names = tuple(env.scene["robot"].data.joint_names)
+    # 预计算并缓存索引张量（列索引）；缓存按 asset 键控
+    _obs_cache = _get_obs_cache(asset_name)
+    articulation_joint_names = tuple(robot.data.joint_names)
     if (
         _obs_cache["device"] != device
         or _obs_cache["joint_names"] != articulation_joint_names
@@ -204,17 +220,19 @@ def get_robot_boy_joint_states(
             now_ns = time.monotonic_ns()
             min_interval_ns = max(0, int(float(dds_min_interval_ms) * 1_000_000))
             if now_ns - _obs_cache["dds_last_ns"] >= min_interval_ns:
-                g1_robot_dds = _get_g1_robot_dds_instance()
+                g1_robot_dds = _get_g1_robot_dds_instance(dds_object_name)
                 if g1_robot_dds:
                     base_imu_data = get_robot_imu_data(
                         env,
                         # The released policy was trained from the articulation
                         # root (pelvis), not from a separate visual IMU body.
                         body_candidates=("pelvis", "imu_in_pelvis"),
+                        asset_name=asset_name,
                     )
                     torso_imu_data = get_robot_imu_data(
                         env,
                         body_candidates=("torso_link", "imu_in_torso"),
+                        asset_name=asset_name,
                     )
                     if base_imu_data.shape[0] > 0 and torso_imu_data.shape[0] > 0:
                         _obs_cache["sample_seq"] += 1
@@ -321,6 +339,7 @@ def _get_gravity_w(env, reference: torch.Tensor) -> torch.Tensor:
 def get_robot_imu_data(
     env,
     body_candidates: Sequence[str] = ("pelvis", "imu_in_pelvis"),
+    asset_name: str = "robot",
 ) -> torch.Tensor:
     """
     Returns [batch, 13] = pos(world,3) | quat(w,x,y,z) | acc_body(3) | gyro_body(3)
@@ -330,7 +349,7 @@ def get_robot_imu_data(
     selected IMU link frame. The accelerometer value is proper acceleration,
     so gravity is subtracted before the frame transform.
     """
-    data = env.scene["robot"].data
+    data = env.scene[asset_name].data
     body_index = _resolve_imu_body_index(data, body_candidates)
 
     body_pose_w = data.body_link_pose_w[:, body_index]

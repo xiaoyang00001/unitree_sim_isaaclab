@@ -16,6 +16,10 @@ def create_action_provider(env, args):
         from action_provider.action_provider_replay import FileActionProviderReplay
 
         return FileActionProviderReplay(env=env, args_cli=args)
+    if args.action_source == "sonic_dds_host":
+        from action_provider.action_provider_sonic_dds_host import SonicDDSHostActionProvider
+
+        return SonicDDSHostActionProvider(env=env, args_cli=args)
     if args.action_source == "hold":
         from action_provider.action_provider_hold import HoldActionProvider
 

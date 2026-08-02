@@ -112,3 +112,26 @@ def resolve_local_robot_id(verbose_tag: str = "[scene_sync]", load_env: bool = T
         print(f"{verbose_tag} Unsupported ISAACLAB_LOCAL_ROBOT_ID={raw_value!r}; using robot 1.")
         robot_id = 1
     return robot_id
+
+
+def resolve_host_both_robots(verbose_tag: str = "[scene_sync]", load_env: bool = True) -> bool:
+    """host 双机器人模式（工作包 B）：``ISAACLAB_HOST_BOTH_ROBOTS=1`` 且身份是 ID=1。
+
+    host 天然继承 ID=1 的全部权威语义（物体权威、复位广播、bind 15555——正是 viewer
+    固定连接的上游）。ID=0（viewer）或 ID=2（对等端）下该标志无意义，打印警告并忽略，
+    保证既有模式零回归。与 :func:`resolve_local_robot_id` 一样必须作为单一真源被
+    sim_main 与 conveyor_env_cfg 共用——别在任何一侧重新实现这个判定。
+    """
+    if load_env:
+        load_scene_sync_env(verbose_tag)
+    raw_value = os.environ.get("ISAACLAB_HOST_BOTH_ROBOTS", "").strip().lower()
+    enabled = raw_value in {"1", "true", "yes", "on"}
+    if not enabled:
+        return False
+    if resolve_local_robot_id(verbose_tag, load_env=False) != 1:
+        print(
+            f"{verbose_tag} ISAACLAB_HOST_BOTH_ROBOTS=1 只在 ISAACLAB_LOCAL_ROBOT_ID=1 "
+            "下生效（host 必须是权威端）；已忽略该标志。"
+        )
+        return False
+    return True

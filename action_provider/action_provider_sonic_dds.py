@@ -76,15 +76,32 @@ DEX3_FALLBACK_UPPER_LIMITS = (
 class SonicDDSActionProvider(ActionProvider):
     """Map complete SONIC body and optional Dex3 commands to Isaac Lab."""
 
-    def __init__(self, env, args_cli):
-        super().__init__("sonic_dds")
+    def __init__(
+        self,
+        env,
+        args_cli,
+        *,
+        asset_name: str = "robot",
+        robot_dds_name: str = "g129",
+        dex3_dds_name: str = "dex3",
+        foot_contact_name: str = "foot_contact",
+        validate_action_layout: bool = True,
+        log_suffix: str = "",
+    ):
+        """默认参数即既有单机器人行为。host 双机器人模式把本类当"单机器人通道"用：
+        第二通道传 asset_name="robot_2", robot_dds_name="g129_r2", dex3_dds_name="dex3_r2",
+        foot_contact_name="foot_contact_2", validate_action_layout=False（六 term 的全局
+        布局校验由组合器 SonicDDSHostActionProvider 负责）, log_suffix=":r2"。"""
+        super().__init__(f"sonic_dds{log_suffix}")
+        self._log_tag = f"[sonic_dds{log_suffix}]"
 
         self.env = env
-        self.robot = env.scene["robot"]
+        self.robot = env.scene[asset_name]
+        self.asset_name = asset_name
         self.device = env.device
-        self.robot_dds = dds_manager.get_object("g129")
+        self.robot_dds = dds_manager.get_object(robot_dds_name)
         if self.robot_dds is None:
-            raise RuntimeError("G1 DDS object 'g129' is not registered")
+            raise RuntimeError(f"G1 DDS object '{robot_dds_name}' is not registered")
 
         self.command_timeout_s = max(0.01, float(getattr(args_cli, "sonic_lowcmd_timeout", 0.10)))
         self.hand_command_timeout_s = max(
@@ -122,7 +139,7 @@ class SonicDDSActionProvider(ActionProvider):
 
         action_manager = getattr(env, "action_manager", None)
         expected_action_dim = SONIC_ACTION_FIELDS_PER_JOINT * self._num_joints
-        if action_manager is not None:
+        if action_manager is not None and validate_action_layout:
             active_terms = tuple(action_manager.active_terms)
             # 前三项必须是 q/dq/tau；其后允许追加零维辅助 term（如 conveyor 任务的
             # ZMQ 场景同步）——action_dim=0 不占动作切片，total_action_dim 校验仍保证
@@ -199,16 +216,16 @@ class SonicDDSActionProvider(ActionProvider):
         }
         self.dex3_dds = None
         if dex3_indices:
-            self.dex3_dds = dds_manager.get_object("dex3")
+            self.dex3_dds = dds_manager.get_object(dex3_dds_name)
             if self.dex3_dds is None:
                 raise RuntimeError(
-                    "43-DoF SONIC task requires the Dex3 DDS object; "
+                    f"43-DoF SONIC task requires the Dex3 DDS object '{dex3_dds_name}'; "
                     "sim_main should enable it automatically"
                 )
         self._foot_contact_sensor = None
         self._foot_body_indices = torch.empty(0, dtype=torch.long, device=self.device)
         try:
-            self._foot_contact_sensor = env.scene["foot_contact"]
+            self._foot_contact_sensor = env.scene[foot_contact_name]
             robot_body_names = getattr(
                 self.robot.data,
                 "body_names",
@@ -318,36 +335,36 @@ class SonicDDSActionProvider(ActionProvider):
 
         hand_description = "SONIC Dex3 DDS (14)" if dex3_indices else "not articulated (0)"
         print(
-            "[sonic_dds] Control ownership: "
+            f"{self._log_tag} Control ownership: "
             f"articulation={self._num_joints}, G1 body=SONIC DDS (29), "
             f"Dex3={hand_description}, root=PhysX"
         )
         print(
-            "[sonic_dds] LowCmd execution: mode/q/dq/tau/kp/kd enabled; "
+            f"{self._log_tag} LowCmd execution: mode/q/dq/tau/kp/kd enabled; "
             f"environment action={expected_action_dim} (q/dq/tau field-major)"
         )
-        print("[sonic_dds] Startup hold: pinning the default root state until the SONIC CONTROL marker")
+        print(f"{self._log_tag} Startup hold: pinning the default root state until the SONIC CONTROL marker")
         for motor_index, (name, articulation_index) in enumerate(
             zip(G1_29DOF_DDS_JOINT_ORDER, body_indices)
         ):
-            print(f"[sonic_dds] motor[{motor_index:02d}] -> joint[{articulation_index:02d}] {name}")
-        print(f"[sonic_dds] Body mapping 29/29, Dex3 mapping {len(dex3_indices)}/14")
+            print(f"{self._log_tag} motor[{motor_index:02d}] -> joint[{articulation_index:02d}] {name}")
+        print(f"{self._log_tag} Body mapping 29/29, Dex3 mapping {len(dex3_indices)}/14")
         if dex3_indices:
             for hand_index, (name, articulation_index) in enumerate(
                 zip(DEX3_HAND_JOINT_NAMES, dex3_indices)
             ):
                 print(
-                    f"[sonic_dds] dex3[{hand_index:02d}] -> "
+                    f"{self._log_tag} dex3[{hand_index:02d}] -> "
                     f"joint[{articulation_index:02d}] {name}"
                 )
             print(
-                "[sonic_dds] Dex3 execution: mode/q/dq/tau/kp/kd enabled; "
+                f"{self._log_tag} Dex3 execution: mode/q/dq/tau/kp/kd enabled; "
                 f"timeout={self.hand_command_timeout_s:.3f}s, "
                 f"max_target_error={self.hand_max_target_error:.3f}rad"
             )
         if self.sync_with_lowstate:
             print(
-                "[sonic_dds] Isaac lock-step enabled: one unique LowState tick -> "
+                f"{self._log_tag} Isaac lock-step enabled: one unique LowState tick -> "
                 "one SONIC command -> one environment step"
             )
         enabled_group_limits = {
@@ -355,12 +372,12 @@ class SonicDDSActionProvider(ActionProvider):
         }
         if self.max_target_step > 0.0 or enabled_group_limits:
             print(
-                "[sonic_dds] Joint-target impulse protection: "
+                f"{self._log_tag} Joint-target impulse protection: "
                 f"global={self.max_target_step:.4f}rad/step, groups={enabled_group_limits}"
             )
         if self._foot_contact_sensor is not None:
             print(
-                "[sonic_dds] Foot diagnostics enabled for bodies: "
+                f"{self._log_tag} Foot diagnostics enabled for bodies: "
                 f"{list(self._foot_contact_sensor.body_names)}"
             )
 
@@ -416,7 +433,7 @@ class SonicDDSActionProvider(ActionProvider):
 
     def _warn_hand_command(self, side: str, now: float, reason: str) -> None:
         if now - self._hand_last_warning_time[side] >= 1.0:
-            print(f"[sonic_dds][dex3:{side}] HOLD: {reason}")
+            print(f"{self._log_tag}[dex3:{side}] HOLD: {reason}")
             self._hand_last_warning_time[side] = now
 
     def _parse_hand_command(
@@ -575,7 +592,7 @@ class SonicDDSActionProvider(ActionProvider):
             if not self._hand_first_command_logged[side]:
                 enabled_count = int(torch.count_nonzero(motor_enabled).item())
                 print(
-                    f"[sonic_dds][dex3:{side}] First complete HandCmd applied: "
+                    f"{self._log_tag}[dex3:{side}] First complete HandCmd applied: "
                     f"enabled={enabled_count}/7, "
                     f"q=[{float(q_target.min().item()):.3f}, "
                     f"{float(q_target.max().item()):.3f}], "
@@ -618,13 +635,13 @@ class SonicDDSActionProvider(ActionProvider):
 
         if self._control_started:
             print(
-                f"[sonic_dds] FALL RECOVERY #{self._fall_recovery_count}: {reason}; "
+                f"{self._log_tag} FALL RECOVERY #{self._fall_recovery_count}: {reason}; "
                 f"holding the default standing pose for {max(0.0, float(hold_duration_s)):.2f}s, "
                 "discarding pre-reset LowCmd, then waiting for a fresh CONTROL packet"
             )
         else:
             print(
-                f"[sonic_dds] RESET #{self._fall_recovery_count}: {reason}; "
+                f"{self._log_tag} RESET #{self._fall_recovery_count}: {reason}; "
                 "SONIC control has not started, keeping the normal startup hold"
             )
 
@@ -863,7 +880,7 @@ class SonicDDSActionProvider(ActionProvider):
             self._pin_initial_root_state()
             if now - self._last_timeout_warning_time >= 1.0:
                 print(
-                    "[sonic_dds] STARTUP HOLD: waiting for SONIC CONTROL marker "
+                    f"{self._log_tag} STARTUP HOLD: waiting for SONIC CONTROL marker "
                     f"(mode=0x{bridge_mode & 0xFF:02x})"
                 )
                 self._last_timeout_warning_time = now
@@ -873,13 +890,13 @@ class SonicDDSActionProvider(ActionProvider):
             self._metrics_last_report_time = now
             self._metrics_total_samples = 0
             self._reset_metrics_window()
-            print("[sonic_dds] CONTROL marker received: releasing the floating base to PhysX")
+            print(f"{self._log_tag} CONTROL marker received: releasing the floating base to PhysX")
         elif self._fall_recovery_waiting_for_control:
             self._fall_recovery_waiting_for_control = False
             self._fall_recovery_blend_start_time = now
             self._restore_default_command()
             print(
-                "[sonic_dds] FALL RECOVERY: fresh CONTROL packet received; "
+                f"{self._log_tag} FALL RECOVERY: fresh CONTROL packet received; "
                 f"releasing the root and blending SONIC targets over "
                 f"{self._fall_recovery_blend_duration_s:.2f}s"
             )
@@ -924,7 +941,7 @@ class SonicDDSActionProvider(ActionProvider):
             kd_target = torch.lerp(self._default_kd, kd_target, recovery_alpha)
             if recovery_alpha >= 1.0:
                 self._fall_recovery_blend_start_time = None
-                print("[sonic_dds] FALL RECOVERY complete: normal SONIC control restored")
+                print(f"{self._log_tag} FALL RECOVERY complete: normal SONIC control restored")
 
         if self.max_target_step > 0.0:
             delta = torch.clamp(
@@ -1002,11 +1019,11 @@ class SonicDDSActionProvider(ActionProvider):
         )
         if damping_only and not self._damping_only_active:
             print(
-                "[sonic_dds] Applying SONIC damping-only LowCmd "
+                f"{self._log_tag} Applying SONIC damping-only LowCmd "
                 "(q is inactive because kp=0; dq/tau/kd remain effective)"
             )
         elif self._damping_only_active and not damping_only:
-            print("[sonic_dds] Leaving damping-only LowCmd; active PD control restored")
+            print(f"{self._log_tag} Leaving damping-only LowCmd; active PD control restored")
         self._damping_only_active = damping_only
 
         self._apply_joint_gains(kp_target, kd_target)
@@ -1020,7 +1037,7 @@ class SonicDDSActionProvider(ActionProvider):
         if not self._full_lowcmd_logged:
             enabled_count = int(torch.count_nonzero(motor_enabled).item())
             print(
-                "[sonic_dds] First complete LowCmd applied: "
+                f"{self._log_tag} First complete LowCmd applied: "
                 f"enabled={enabled_count}/29, "
                 f"max|dq_target|={float(torch.abs(self._incoming_velocities).max().item()):.4f}, "
                 f"max|tau_ff|={float(torch.abs(body_tau).max().item()):.4f}, "
@@ -1376,7 +1393,7 @@ class SonicDDSActionProvider(ActionProvider):
         per_joint_max_list = self._metrics_joint_max.index_select(0, top_indices).cpu().tolist()
 
         print(
-            "[sonic_dds][metrics] "
+            f"{self._log_tag}[metrics] "
             f"samples={self._metrics_samples}, total={self._metrics_total_samples}, "
             f"tilt_mean={tilt_mean:.2f}deg, tilt_max={tilt_max:.2f}deg, "
             f"roll_abs={roll_abs_mean:.2f}/{roll_abs_max:.2f}deg(mean/max), "
@@ -1393,7 +1410,7 @@ class SonicDDSActionProvider(ActionProvider):
             f"torque_sat={torque_saturation_pct:.2f}%, gain_updates={self._gain_update_count}"
         )
         print(
-            "[sonic_dds][balance_metrics] "
+            f"{self._log_tag}[balance_metrics] "
             f"estimated_pd_peak=[{estimated_pd_torque_text}], "
             f"foot_force={foot_force_mean:.2f}/{foot_force_max:.2f}N(mean/max), "
             f"double_support={double_support_pct:.1f}%, "
@@ -1402,7 +1419,7 @@ class SonicDDSActionProvider(ActionProvider):
         )
         if self.sync_with_lowstate:
             print(
-                "[sonic_dds][sync] "
+                f"{self._log_tag}[sync] "
                 f"expected={self._sync_expected_reset_epoch}:{self._sync_expected_tick}, "
                 f"ack={self._sync_last_ack_reset_epoch}:{self._sync_last_ack_tick}, "
                 f"matched={self._sync_wait_count}, timeouts={self._sync_timeout_count}, "
@@ -1418,7 +1435,7 @@ class SonicDDSActionProvider(ActionProvider):
                 per_joint_max_list,
             )
         )
-        print(f"[sonic_dds][joint_metrics] top_pd_target_errors: {top_joint_text}")
+        print(f"{self._log_tag}[joint_metrics] top_pd_target_errors: {top_joint_text}")
         self._metrics_last_report_time = now
         self._reset_metrics_window()
 
@@ -1432,7 +1449,7 @@ class SonicDDSActionProvider(ActionProvider):
 
         self._apply_joint_gains(self._last_kp, self._last_kd)
         if now - self._last_timeout_warning_time >= 1.0:
-            print(f"[sonic_dds] HOLD: {reason}")
+            print(f"{self._log_tag} HOLD: {reason}")
             self._last_timeout_warning_time = now
         return self._pack_action(
             self._last_position_target,

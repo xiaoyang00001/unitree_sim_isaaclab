@@ -13,21 +13,32 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
 
-_obs_cache = {
-    "mapping_key": None,
-    "hand_idx_t": None,
-    "batch": None,
-    "dtype": None,
-    "hand_idx_batch": None,
-    "pos_buf": None,
-    "vel_buf": None,
-    "torque_buf": None,
-    "dds_last_monotonic": 0.0,
-    "missing_mapping_logged": False,
-}
+# 观测缓存按 asset 名键控（host 双机器人下 robot 与 robot_2 各一份）：
+# 共用 pos_buf 会让两个 ObsTerm 互相覆写返回值（aliasing），不是性能问题是正确性问题。
+_obs_caches: dict = {}
 
-_dex3_dds = None
-_dds_obtained_logged = False
+
+def _get_obs_cache(asset_name: str) -> dict:
+    cache = _obs_caches.get(asset_name)
+    if cache is None:
+        cache = {
+            "mapping_key": None,
+            "hand_idx_t": None,
+            "batch": None,
+            "dtype": None,
+            "hand_idx_batch": None,
+            "pos_buf": None,
+            "vel_buf": None,
+            "torque_buf": None,
+            "dds_last_monotonic": 0.0,
+            "missing_mapping_logged": False,
+        }
+        _obs_caches[asset_name] = cache
+    return cache
+
+
+_dex3_dds_by_name: dict = {}
+_dds_obtained_logged_names: set = set()
 
 
 def get_robot_girl_joint_names() -> list[str]:
@@ -36,33 +47,35 @@ def get_robot_girl_joint_names() -> list[str]:
     return list(DEX3_HAND_JOINT_NAMES)
 
 
-def _get_dex3_dds_instance():
+def _get_dex3_dds_instance(dds_object_name: str = "dex3"):
     """Get the DDS object after it has been registered by ``sim_main``.
 
     Environment reset observations run before DDS registration, so a failed
     early lookup must not be cached permanently.
     """
 
-    global _dex3_dds, _dds_obtained_logged
-    if _dex3_dds is not None:
-        return _dex3_dds
+    instance = _dex3_dds_by_name.get(dds_object_name)
+    if instance is not None:
+        return instance
 
     try:
         from dds.dds_master import dds_manager
 
         # Avoid DDSManager.get_object() here because its expected pre-startup
         # miss prints a warning every time an environment is reset.
-        _dex3_dds = dds_manager.objects.get("dex3")
-        if _dex3_dds is not None and not _dds_obtained_logged:
-            print("[dex3_state] Dex3 DDS state publisher connected")
-            _dds_obtained_logged = True
+        instance = dds_manager.objects.get(dds_object_name)
+        if instance is not None:
+            _dex3_dds_by_name[dds_object_name] = instance
+            if dds_object_name not in _dds_obtained_logged_names:
+                print(f"[dex3_state] Dex3 DDS state publisher connected ({dds_object_name})")
+                _dds_obtained_logged_names.add(dds_object_name)
     except Exception as exc:
         print(f"[dex3_state] Failed to obtain Dex3 DDS object: {exc}")
-        _dex3_dds = None
-    return _dex3_dds
+        instance = None
+    return instance
 
 
-def _resolve_hand_indices(robot, device: torch.device) -> torch.Tensor | None:
+def _resolve_hand_indices(robot, device: torch.device, _obs_cache: dict) -> torch.Tensor | None:
     joint_names = tuple(robot.data.joint_names)
     mapping_key = (str(device), joint_names)
     if _obs_cache["mapping_key"] == mapping_key:
@@ -99,15 +112,19 @@ def get_robot_dex3_joint_states(
     env: ManagerBasedRLEnv,
     enable_dds: bool = True,
     dds_min_interval_ms: float = 20.0,
+    asset_name: str = "robot",
+    dds_object_name: str = "dex3",
 ) -> torch.Tensor:
     """Return Dex3 joint positions and optionally publish actual hand states.
 
     Joint lookup is name-based and always follows the Unitree command/state
     order.  This is important for the SONIC 43-DoF carrier because Isaac's
     articulation order is not guaranteed to match URDF or DDS order.
+    host 第二机器人传 asset_name="robot_2", dds_object_name="dex3_r2"。
     """
 
-    robot = env.scene["robot"]
+    _obs_cache = _get_obs_cache(asset_name)
+    robot = env.scene[asset_name]
     joint_pos = robot.data.joint_pos
     joint_vel = robot.data.joint_vel
     joint_torque = getattr(robot.data, "applied_torque", None)
@@ -118,7 +135,7 @@ def get_robot_dex3_joint_states(
 
     device = joint_pos.device
     batch = joint_pos.shape[0]
-    idx_t = _resolve_hand_indices(robot, device)
+    idx_t = _resolve_hand_indices(robot, device, _obs_cache)
     if idx_t is None:
         return joint_pos.new_empty((batch, 0))
 
@@ -156,7 +173,7 @@ def get_robot_dex3_joint_states(
         interval_s = max(0.0, float(dds_min_interval_ms)) / 1000.0
         now = time.monotonic()
         if now - _obs_cache["dds_last_monotonic"] >= interval_s:
-            dex3_dds = _get_dex3_dds_instance()
+            dex3_dds = _get_dex3_dds_instance(dds_object_name)
             if dex3_dds is not None:
                 pos = pos_buf[0].detach().cpu().tolist()
                 vel = vel_buf[0].detach().cpu().tolist()

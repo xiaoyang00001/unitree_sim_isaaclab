@@ -33,14 +33,26 @@ class G1RobotDDS(DDSObject):
     - Receive the control command of the G1 robot (rt/lowcmd)
     """
     
-    def __init__(self,node_name:str="g1_robot"):
-        """Initialize the G1 robot DDS node"""
+    def __init__(self, node_name: str = "g1_robot", topic_prefix: str = "rt", shm_suffix: str = ""):
+        """Initialize the G1 robot DDS node.
+
+        Args:
+            node_name: 实例名（日志用）。
+            topic_prefix: DDS 话题前缀，默认 "rt"（rt/lowcmd 等）。host 双机器人
+                模式的第二实例传 "rt/r2" → rt/r2/lowcmd、rt/r2/lowstate、
+                rt/r2/secondary_imu。尾部斜杠会被剥掉（与 deploy C++ 侧归一化一致）。
+            shm_suffix: 共享内存名后缀。⚠️ SharedMemoryManager 对已存在的同名段是
+                attach 而非报错——第二实例不改名会与第一套静默共享同段内存，
+                两台机器人互相执行对方的 lowcmd 且无任何报错。第二实例传 "_r2"。
+        """
         # avoid duplicate initialization
         if hasattr(self, '_initialized'):
             return
-            
+
         super().__init__()
         self.node_name = node_name
+        self.topic_prefix = str(topic_prefix).rstrip("/") or "rt"
+        self.shm_suffix = str(shm_suffix)
         self.crc = CRC()
         # Windows 上 SDK 的 CRC 走纯 Python 回退,单次 LowCmd 校验实测 1.08ms;
         # C++ 侧以 500Hz 发 lowcmd,逐包校验要吃掉 54% 单线程,再叠加解析/json/
@@ -91,25 +103,29 @@ class G1RobotDDS(DDSObject):
         self._reset_state_grace_max_abs_dq = 0.0
         self._initialized = True
         
-        # setup the shared memory
+        # setup the shared memory（带后缀隔离多实例；名字打进日志便于现场核对）
         self.setup_shared_memory(
-            input_shm_name="isaac_robot_state",  # read the state of the G1 robot from Isaac Lab
-            output_shm_name="dds_robot_cmd",  # output the command to Isaac Lab
+            input_shm_name=f"isaac_robot_state{self.shm_suffix}",  # read the state of the G1 robot from Isaac Lab
+            output_shm_name=f"dds_robot_cmd{self.shm_suffix}",  # output the command to Isaac Lab
             input_size=8192,
             output_size=8192  # output the command to Isaac Lab
         )
-        
-        print(f"[{self.node_name}] G1 robot DDS node initialized")
+
+        print(
+            f"[{self.node_name}] G1 robot DDS node initialized "
+            f"(topics={self.topic_prefix}/lowcmd|lowstate|secondary_imu, "
+            f"shm=isaac_robot_state{self.shm_suffix}/dds_robot_cmd{self.shm_suffix})"
+        )
     
     def setup_publisher(self) -> bool:
         """Setup the publisher of the G1 robot"""
         try:
-            self.publisher = ChannelPublisher("rt/lowstate", LowState_)
+            self.publisher = ChannelPublisher(f"{self.topic_prefix}/lowstate", LowState_)
             self.publisher.Init()
-            self.torso_imu_publisher = ChannelPublisher("rt/secondary_imu", IMUState_)
+            self.torso_imu_publisher = ChannelPublisher(f"{self.topic_prefix}/secondary_imu", IMUState_)
             self.torso_imu_publisher.Init()
-            print(f"[{self.node_name}] State publisher initialized (rt/lowstate)")
-            print(f"[{self.node_name}] Torso IMU publisher initialized (rt/secondary_imu)")
+            print(f"[{self.node_name}] State publisher initialized ({self.topic_prefix}/lowstate)")
+            print(f"[{self.node_name}] Torso IMU publisher initialized ({self.topic_prefix}/secondary_imu)")
             return True
         except Exception as e:
             print(f"g1_robot_dds [{self.node_name}] State publisher initialization failed: {e}")    
@@ -142,8 +158,8 @@ class G1RobotDDS(DDSObject):
     def setup_subscriber(self) -> bool:
         """Setup the subscriber of the G1 robot"""
         try:
-            print(f"[{self.node_name}] Create ChannelSubscriber...")
-            self.subscriber = ChannelSubscriber("rt/lowcmd", LowCmd_)
+            print(f"[{self.node_name}] Create ChannelSubscriber ({self.topic_prefix}/lowcmd)...")
+            self.subscriber = ChannelSubscriber(f"{self.topic_prefix}/lowcmd", LowCmd_)
             self.subscriber.Init(lambda msg: self.dds_subscriber(msg, ""), 32)
             return True
         except Exception as e:

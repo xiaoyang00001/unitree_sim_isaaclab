@@ -17,12 +17,17 @@ from unitree_sdk2py.idl.unitree_hg.msg.dds_ import HandCmd_, HandState_
 class Dex3DDS(DDSObject):
     """Bridge both seven-motor Dex3 hands between DDS and Isaac Lab."""
 
-    def __init__(self, node_name: str = "dex3"):
+    def __init__(self, node_name: str = "dex3", topic_prefix: str = "rt", shm_suffix: str = ""):
+        """topic_prefix/shm_suffix 语义与 G1RobotDDS 相同：host 第二实例传
+        ("rt/r2", "_r2") → rt/r2/dex3/{left,right}/{cmd,state} + 独立 shm 段
+        （同名 shm 会被静默 attach 共享，两副手互相执行对方命令）。"""
         if hasattr(self, "_initialized"):
             return
 
         super().__init__()
         self.node_name = node_name
+        self.topic_prefix = str(topic_prefix).rstrip("/") or "rt"
+        self.shm_suffix = str(shm_suffix)
         self.left_hand_state = unitree_hg_msg_dds__HandState_()
         self.right_hand_state = unitree_hg_msg_dds__HandState_()
 
@@ -34,22 +39,25 @@ class Dex3DDS(DDSObject):
         self.existing_data = {"left_hand_cmd": {}, "right_hand_cmd": {}}
         self._command_lock = threading.Lock()
         self.setup_shared_memory(
-            input_shm_name="isaac_dex3_state",
+            input_shm_name=f"isaac_dex3_state{self.shm_suffix}",
             input_size=4096,
-            output_shm_name="isaac_dex3_cmd",
+            output_shm_name=f"isaac_dex3_cmd{self.shm_suffix}",
             output_size=4096,
         )
         self._initialized = True
-        print(f"[{self.node_name}] Hand DDS node initialized")
+        print(
+            f"[{self.node_name}] Hand DDS node initialized "
+            f"(topics={self.topic_prefix}/dex3/*, shm=isaac_dex3_state{self.shm_suffix})"
+        )
 
     def setup_publisher(self) -> bool:
         try:
             self.left_state_publisher = ChannelPublisher(
-                "rt/dex3/left/state", HandState_
+                f"{self.topic_prefix}/dex3/left/state", HandState_
             )
             self.left_state_publisher.Init()
             self.right_state_publisher = ChannelPublisher(
-                "rt/dex3/right/state", HandState_
+                f"{self.topic_prefix}/dex3/right/state", HandState_
             )
             self.right_state_publisher.Init()
             print(f"[{self.node_name}] Hand state publisher initialized")
@@ -64,13 +72,13 @@ class Dex3DDS(DDSObject):
     def setup_subscriber(self) -> bool:
         try:
             self.left_cmd_subscriber = ChannelSubscriber(
-                "rt/dex3/left/cmd", HandCmd_
+                f"{self.topic_prefix}/dex3/left/cmd", HandCmd_
             )
             self.left_cmd_subscriber.Init(
                 lambda message: self.dds_subscriber(message, "left"), 32
             )
             self.right_cmd_subscriber = ChannelSubscriber(
-                "rt/dex3/right/cmd", HandCmd_
+                f"{self.topic_prefix}/dex3/right/cmd", HandCmd_
             )
             self.right_cmd_subscriber.Init(
                 lambda message: self.dds_subscriber(message, "right"), 32
