@@ -24,7 +24,7 @@ env 文件"的双轨陷阱。
 from __future__ import annotations
 
 import os
-import re
+# re: 曾用于 env 文件引用展开，现随加载逻辑移入 sync_identity
 from pathlib import Path
 
 import isaaclab.sim as sim_utils
@@ -54,73 +54,13 @@ _ASSETS_DIR = Path(__file__).resolve().parent / "scene_assets"
 # 配置加载：configs/scene_sync.env → os.environ.setdefault（进程 env 永远优先）
 # ==================================================================
 
-_ENV_REF_RE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+# 配置加载与身份解析收敛到 sync_identity（单一真源）：sim_main 也从同一份实现取
+# 身份。曾经的双源判定（sim_main 字面比较进程 env vs 本文件 env 文件+int 解析）会在
+# 「ID 写在 env 文件」或 "00" 这类写法下裂脑——一侧按 viewer 建场景、另一侧仍按对等端
+# 选 sonic_dds/domain 1。详见 sync_identity 模块 docstring。
+from .sync_identity import load_scene_sync_env, resolve_local_robot_id
 
-
-def _expand_config_refs(values: dict[str, str]) -> dict[str, str]:
-    expanded = dict(values)
-    for _ in range(10):
-        changed = False
-        next_values = {}
-        for key, value in expanded.items():
-            next_value = _ENV_REF_RE.sub(
-                lambda match: expanded.get(match.group(1) or match.group(2), ""),
-                value,
-            )
-            next_values[key] = next_value
-            changed |= next_value != value
-        expanded = next_values
-        if not changed:
-            break
-    return expanded
-
-
-def _load_env_file(path: Path) -> dict[str, str]:
-    values: dict[str, str] = {}
-    if not path.exists():
-        return values
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[len("export ") :].strip()
-        if "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key:
-            values[key] = value
-    return _expand_config_refs(values)
-
-
-def _project_root() -> Path:
-    # sim_main.py 启动即设 PROJECT_ROOT；独立诊断脚本走 __file__ 回退
-    # （本文件在 tasks/g1_tasks/<pkg>/ 下，parents[3] 即仓库根）。
-    root = os.environ.get("PROJECT_ROOT", "").strip()
-    if root:
-        return Path(root)
-    return Path(__file__).resolve().parents[3]
-
-
-def _load_scene_sync_config() -> None:
-    candidates = []
-    explicit = os.environ.get("ISAACLAB_SCENE_SYNC_ENV_FILE", "").strip()
-    if explicit:
-        candidates.append(Path(explicit).expanduser())
-    candidates.append(_project_root() / "configs" / "scene_sync.env")
-    for path in candidates:
-        values = _load_env_file(path)
-        if values:
-            print(f"[conveyor_env_cfg] scene-sync config loaded: {path}")
-            for key, value in values.items():
-                os.environ.setdefault(key, value)
-            return
-    print("[conveyor_env_cfg] no scene-sync config file; using built-in defaults")
-
-
-_load_scene_sync_config()
+load_scene_sync_env(verbose_tag="[conveyor_env_cfg]")
 
 
 def _env_str(name: str, default: str) -> str:
@@ -171,22 +111,15 @@ def _env_str_tuple(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
 # ==================================================================
 
 
-def _local_robot_id() -> int:
-    raw_value = _env_str("ISAACLAB_LOCAL_ROBOT_ID", "1")
-    try:
-        robot_id = int(raw_value)
-    except ValueError:
-        print(f"[conveyor_env_cfg] Invalid ISAACLAB_LOCAL_ROBOT_ID={raw_value!r}; using robot 1.")
-        return 1
-    if robot_id not in {1, 2}:
-        print(f"[conveyor_env_cfg] Unsupported ISAACLAB_LOCAL_ROBOT_ID={raw_value!r}; using robot 1.")
-        robot_id = 1
-    return robot_id
-
-
-LOCAL_ROBOT_ID = _local_robot_id()
-PEER_ROBOT_ID = 3 - LOCAL_ROBOT_ID
-LOCAL_ROBOT_GLOBAL_NAME = f"robot_{LOCAL_ROBOT_ID}"
+# 身份解析走 sync_identity 单一真源（env 文件在文件头已加载过，这里不再重复加载）。
+LOCAL_ROBOT_ID = resolve_local_robot_id(verbose_tag="[conveyor_env_cfg]", load_env=False)
+# viewer 模式（ID=0）：本机不发布任何状态，把 robot_1/robot_2 与物体全部作为镜像应用。
+# 本机 "robot" 资产退化为停在场外的 ghost（无碰撞/无重力/合并执行器），只为满足
+# SONIC EnvCfg 的 action/observation 挂载，不参与画面构图。
+VIEWER_MODE = LOCAL_ROBOT_ID == 0
+# viewer 的上游固定是权威端 ID=1（连它的 PUB 端口）；对等模式保持 3-ID 互指。
+PEER_ROBOT_ID = 1 if VIEWER_MODE else 3 - LOCAL_ROBOT_ID
+LOCAL_ROBOT_GLOBAL_NAME = "viewer" if VIEWER_MODE else f"robot_{LOCAL_ROBOT_ID}"
 PEER_ROBOT_GLOBAL_NAME = f"robot_{PEER_ROBOT_ID}"
 
 # 场景物体的物理权威固定在 ID=1（流水线驱动也只在这端跑）。
@@ -215,7 +148,11 @@ _PORT_BASE = _env_int("ISAACLAB_SCENE_SYNC_PORT_BASE", 15555)
 _MY_PORT = _PORT_BASE + LOCAL_ROBOT_ID - 1
 _PEER_PORT = _PORT_BASE + PEER_ROBOT_ID - 1
 SCENE_SYNC_PEER_IP = _env_str("ISAACLAB_SCENE_SYNC_PEER_IP", "127.0.0.1")
-SCENE_SYNC_BIND_ENDPOINT = _env_str("ISAACLAB_SCENE_SYNC_BIND_ENDPOINT", f"tcp://0.0.0.0:{_MY_PORT}")
+# viewer 只收不发：bind 置空让同步 term 的发布方向干净失能（PUB 扇出在权威端，
+# 任意多个 viewer 都 SUB 同一个 host:15555，host 无需感知 viewer 的存在）。
+SCENE_SYNC_BIND_ENDPOINT = (
+    "" if VIEWER_MODE else _env_str("ISAACLAB_SCENE_SYNC_BIND_ENDPOINT", f"tcp://0.0.0.0:{_MY_PORT}")
+)
 SCENE_SYNC_CONNECT_ENDPOINT = _env_str(
     "ISAACLAB_SCENE_SYNC_CONNECT_ENDPOINT", f"tcp://{SCENE_SYNC_PEER_IP}:{_PEER_PORT}"
 )
@@ -247,18 +184,29 @@ SCENE_SYNC_MAINLOOP = _env_bool("ISAACLAB_SCENE_SYNC_MAINLOOP", True)
 
 
 def _scene_state_sync_cfg() -> ZmqSceneStateSyncActionCfg:
-    """对等场景同步：各发布本机机器人；物体只有权威端发布、镜像端应用。"""
+    """对等场景同步：各发布本机机器人；物体只有权威端发布、镜像端应用。
+
+    viewer 模式（ID=0）：发布方向整体关闭，apply 挂 robot_1/robot_2 两个镜像体。
+    在权威端只发 robot_1 的过渡期，robot_2 缺席由接收侧容缺跳过（见
+    ``_parse_robot_states``），等 host 侧双机器人落地后自动补齐。
+    """
 
     if not SCENE_SYNC_ENABLED:
         return ZmqSceneStateSyncActionCfg(asset_name="robot")
+    if VIEWER_MODE:
+        publish_robots = {}
+        apply_robots = {"robot_1": "peer_robot", "robot_2": "peer_robot_2"}
+    else:
+        publish_robots = {LOCAL_ROBOT_GLOBAL_NAME: "robot"}
+        apply_robots = {PEER_ROBOT_GLOBAL_NAME: "peer_robot"}
     return ZmqSceneStateSyncActionCfg(
         asset_name="robot",
         bind_endpoint=SCENE_SYNC_BIND_ENDPOINT,
         connect_endpoint=SCENE_SYNC_CONNECT_ENDPOINT,
         topic=_env_str("ISAACLAB_SCENE_SYNC_TOPIC", "scene_state"),
         local_sender_name=LOCAL_ROBOT_GLOBAL_NAME,
-        publish_robots={LOCAL_ROBOT_GLOBAL_NAME: "robot"},
-        apply_robots={PEER_ROBOT_GLOBAL_NAME: "peer_robot"},
+        publish_robots=publish_robots,
+        apply_robots=apply_robots,
         publish_object_names=SYNC_OBJECT_NAMES if OBJECT_AUTHORITY else (),
         apply_object_names=() if OBJECT_AUTHORITY else SYNC_OBJECT_NAMES,
         external_pump=SCENE_SYNC_MAINLOOP,
@@ -343,10 +291,18 @@ LOCAL_ROBOT_POS = (
     (ROBOT_1_X, ROBOT_WORKSTATION_Y, 0.76) if LOCAL_ROBOT_ID == 1 else (ROBOT_2_X, ROBOT_WORKSTATION_Y, 0.76)
 )
 LOCAL_ROBOT_ROT = _ROBOT_1_ROT if LOCAL_ROBOT_ID == 1 else _ROBOT_2_ROT
+if VIEWER_MODE:
+    # ghost 本机机器人停到工作区外（warehouse 在 (-5,14) 一带）。它无碰撞、无重力、
+    # 由 hold action source 钉在默认站姿，只为满足 EnvCfg 挂载，不该出现在镜头里。
+    LOCAL_ROBOT_POS = (0.0, -30.0, 0.76)
+    LOCAL_ROBOT_ROT = (1.0, 0.0, 0.0, 0.0)
 PEER_ROBOT_POS = (
     (ROBOT_1_X, ROBOT_WORKSTATION_Y, 0.76) if PEER_ROBOT_ID == 1 else (ROBOT_2_X, ROBOT_WORKSTATION_Y, 0.76)
 )
 PEER_ROBOT_ROT = _ROBOT_1_ROT if PEER_ROBOT_ID == 1 else _ROBOT_2_ROT
+# viewer 的第二镜像体：robot_2 的工位。对等模式不用（保持 None，场景里不生成）。
+PEER2_ROBOT_POS = (ROBOT_2_X, ROBOT_WORKSTATION_Y, 0.76)
+PEER2_ROBOT_ROT = _ROBOT_2_ROT
 
 # ==================================================================
 # 流水线驱动参数（语义与源分支一致；镜像端强制关驱动，本地驱动会和同步打架，
@@ -367,10 +323,13 @@ def _log_scene_layout() -> None:
     """启动就把身份、布局与驱动的实际生效值打出来，省得靠现象猜配置。"""
 
     tag = "[conveyor_env_cfg]"
-    print(
-        f"{tag} 本机身份: {LOCAL_ROBOT_GLOBAL_NAME}"
-        f"（物体权威={'是' if OBJECT_AUTHORITY else '否'}，物体镜像={'是' if MIRROR_OBJECTS else '否'}）"
-    )
+    if VIEWER_MODE:
+        print(f"{tag} 本机身份: viewer（纯镜像观看端，只收不发；apply=robot_1+robot_2+物体）")
+    else:
+        print(
+            f"{tag} 本机身份: {LOCAL_ROBOT_GLOBAL_NAME}"
+            f"（物体权威={'是' if OBJECT_AUTHORITY else '否'}，物体镜像={'是' if MIRROR_OBJECTS else '否'}）"
+        )
     if SCENE_SYNC_ENABLED:
         print(
             f"{tag} 场景同步: bind={SCENE_SYNC_BIND_ENDPOINT} connect={SCENE_SYNC_CONNECT_ENDPOINT}"
@@ -513,6 +472,18 @@ def _make_cart2_tote_spawn_cfg(object_name: str) -> UsdFileCfg:
 
 
 def _make_local_robot_cfg() -> ArticulationCfg:
+    if VIEWER_MODE:
+        # viewer 的 ghost：复用无碰撞镜像体（无重力/合并执行器/solver 1/1），
+        # prim 名保持 Robot、资产名保持 robot，SONIC 的 action/observation 挂载不变。
+        cfg = _make_peer_robot_cfg()
+        cfg.prim_path = "{ENV_REGEX_NS}/Robot"
+        cfg.init_state.pos = LOCAL_ROBOT_POS
+        cfg.init_state.rot = LOCAL_ROBOT_ROT
+        # SONIC 底座场景的 foot_contact 传感器挂在 Robot/.*_ankle_roll_link 上，
+        # 没有 contact reporter API 会在 gym.make 时 RuntimeError。ghost 无碰撞体，
+        # 打开后传感器恒零，只为满足初始化。
+        cfg.spawn.activate_contact_sensors = True
+        return cfg
     cfg = make_sonic_robot_cfg()
     cfg.init_state.pos = LOCAL_ROBOT_POS
     cfg.init_state.rot = LOCAL_ROBOT_ROT
@@ -605,6 +576,15 @@ def _make_peer_robot_cfg() -> ArticulationCfg:
         )
         cfg.spawn.rigid_props = sim_utils.RigidBodyPropertiesCfg(**_PEER_RIGID_PROPS)
         cfg.spawn.collision_props = sim_utils.CollisionPropertiesCfg(collision_enabled=False)
+    return cfg
+
+
+def _make_second_peer_robot_cfg() -> ArticulationCfg:
+    """viewer 专用：robot_2 的镜像体（与 peer_robot 同一份无碰撞产物）。"""
+    cfg = _make_peer_robot_cfg()
+    cfg.prim_path = "{ENV_REGEX_NS}/PeerRobot2"
+    cfg.init_state.pos = PEER2_ROBOT_POS
+    cfg.init_state.rot = PEER2_ROBOT_ROT
     return cfg
 
 
@@ -718,10 +698,14 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
     cube_3 = _make_conveyor_cube_cfg("cube_3", "Cube3", (0.41625, 0.04810, SONIC_CUBE_INITIAL_Z), (0.76, 0.56, 0.28))
 
     # 本机 G1：SONIC 底座同款（DDS 驱动、名字仍是 robot/prim Robot），只挪到工位。
+    # viewer 模式下退化为场外 ghost（见 _make_local_robot_cfg）。
     robot: ArticulationCfg = _make_local_robot_cfg()
 
-    # 对端 G1 镜像体：由 scene_state 帧驱动。
+    # 对端 G1 镜像体：由 scene_state 帧驱动。viewer 模式下它镜像 robot_1。
     peer_robot: ArticulationCfg = _make_peer_robot_cfg()
+
+    # viewer 专用第二镜像体（robot_2）。对等模式为 None，场景里不生成。
+    peer_robot_2: ArticulationCfg | None = _make_second_peer_robot_cfg() if VIEWER_MODE else None
 
     # 方向光制造明暗面，避免 DomeLight 均匀照明导致的"塑料感"。
     sun = AssetBaseCfg(
@@ -834,6 +818,12 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
                     ),
                 )
         # fail-fast 放在任务被实际选中时（import 期不能抛，会连坐其他任务的注册）：
+        # viewer 不开同步就是一屋子静止 ghost，没有任何意义，直接拒绝启动。
+        if VIEWER_MODE and not SCENE_SYNC_ENABLED:
+            raise RuntimeError(
+                "viewer 模式（ISAACLAB_LOCAL_ROBOT_ID=0）必须开场景同步："
+                "需要 ISAACLAB_SCENE_SYNC=1 且已安装 pyzmq"
+            )
         # 回退的 URDF 直转 peer 带碰撞体，会被地面弹出后无重力恒速上飘。
         if not _PEER_ROBOT_USD.exists():
             raise RuntimeError(

@@ -180,6 +180,7 @@ class ZmqSceneStateSyncAction(ActionTerm):
         self._expected_reset_id: str | None = None
         self._expected_reset_set_time = 0.0
         self._received_first_frame = False
+        self._missing_robot_warned: set[str] = set()
         self._subscriber_start_time = time.monotonic()
         self._last_receive_time: float | None = None
         self._last_stale_warning_time = 0.0
@@ -465,7 +466,19 @@ class ZmqSceneStateSyncAction(ActionTerm):
     ) -> dict[str, tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         parsed = {}
         for name in self._apply_robots:
-            state = payload[name]
+            # 容缺：apply 清单允许超集（viewer 声明 robot_1+robot_2，而权威端在
+            # 双机器人落地前只发 robot_1）。缺席的机器人跳过、保持当前姿态；
+            # 若整帧拒收，会把帧里已有的其他实体一起拖死。
+            state = payload.get(name)
+            if state is None:
+                if name not in self._missing_robot_warned:
+                    self._missing_robot_warned.add(name)
+                    logger.warning(
+                        "[ZMQ Scene Sync] Peer frames carry no state for %r yet; "
+                        "its mirror holds the spawn pose until the peer publishes it",
+                        name,
+                    )
+                continue
             root_state = self._payload_tensor(state, "root_state", 13)
             joint_pos = self._payload_tensor(state, "joint_pos", self._joint_count)
             joint_vel = self._payload_tensor(state, "joint_vel", self._joint_count)

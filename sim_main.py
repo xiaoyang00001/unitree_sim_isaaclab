@@ -71,8 +71,8 @@ from isaaclab.app import AppLauncher
 # add command line arguments
 parser = argparse.ArgumentParser(description="Unitree Simulation")
 parser.add_argument("--task", type=str, default="Isaac-PickPlace-G129-Head-Waist-Fix", help="task name")
-parser.add_argument("--action_source", type=str, default="dds", 
-                   choices=["dds", "file", "trajectory", "policy", "replay", "dds_wholebody", "sonic_dds"],
+parser.add_argument("--action_source", type=str, default="dds",
+                   choices=["dds", "file", "trajectory", "policy", "replay", "dds_wholebody", "sonic_dds", "hold"],
                    help="Action source")
 
 
@@ -506,6 +506,28 @@ sonic_dex3_task_names = {
 }
 is_sonic_task = args_cli.task in sonic_task_names
 
+# 纯镜像 viewer（工作包 A）：ISAACLAB_LOCAL_ROBOT_ID=0 表示本机只收不发地复刻
+# 权威端场景。没有 deploy ⇒ 不能挂 sonic_dds（锁步 ack 永远等不到，主循环会被
+# 250ms 超时压到 4Hz），改用 hold 动作源；倒地监控与锁步 seeding 一并关闭。
+# 只对 conveyor 任务生效：其余 SONIC 任务没有场景同步概念，残留的环境变量
+# 不该改写它们的行为。
+is_scene_sync_viewer = False
+if args_cli.task == "Isaac-G1-29DoF-Sonic-Conveyor":
+    # 身份解析必须与 conveyor_env_cfg 同源（含 scene_sync.env 的 setdefault 注入
+    # 与 int() 解析）——双源判定会在「ID 写在 env 文件」或 "00" 写法下裂脑。
+    # 不能 import tasks 包取（会在 AppLauncher 之前拖进 isaaclab），按文件路径加载。
+    import importlib.util as _sync_ilu
+
+    _sync_spec = _sync_ilu.spec_from_file_location(
+        "_conveyor_sync_identity",
+        os.path.join(project_root, "tasks", "g1_tasks", "g1_29dof_sonic_conveyor", "sync_identity.py"),
+    )
+    _sync_identity = _sync_ilu.module_from_spec(_sync_spec)
+    _sync_spec.loader.exec_module(_sync_identity)
+    is_scene_sync_viewer = _sync_identity.resolve_local_robot_id(verbose_tag="[sync_identity]") == 0
+if is_scene_sync_viewer:
+    print("[viewer] Pure-mirror viewer mode (ISAACLAB_LOCAL_ROBOT_ID=0)")
+
 if args_cli.teleop_device == "motion_controllers":
     if args_cli.task not in sonic_dex3_task_names:
         parser.error(
@@ -536,10 +558,11 @@ if args_cli.task in sonic_dex3_task_names:
 if args_cli.auto_reset_on_fall is None:
     # The new behavior is enabled by default only for dedicated SONIC bridge
     # tasks. All existing non-SONIC tasks retain their old behavior.
-    args_cli.auto_reset_on_fall = is_sonic_task
+    # viewer 的 ghost 无重力也无 deploy，倒地监控没有意义；复位只跟权威端事件。
+    args_cli.auto_reset_on_fall = is_sonic_task and not is_scene_sync_viewer
 
 if args_cli.sonic_sync_with_lowstate is None:
-    args_cli.sonic_sync_with_lowstate = is_sonic_task
+    args_cli.sonic_sync_with_lowstate = is_sonic_task and not is_scene_sync_viewer
 if args_cli.sim_state_export_hz is None and is_sonic_task:
     args_cli.sim_state_export_hz = 5.0
 
@@ -594,7 +617,11 @@ for option_name in (
         parser.error(f"--{option_name} must be non-negative")
 
 if args_cli.dds_domain is None:
-    raw_dds_domain = os.environ.get("UNITREE_DDS_DOMAIN", "1").strip()
+    raw_dds_domain = os.environ.get("UNITREE_DDS_DOMAIN", "").strip()
+    if not raw_dds_domain:
+        # viewer 默认避开权威端的 domain 1：同机联调时 ghost 的 rt/lowstate 绝不能
+        # 混进 host↔deploy 的锁步链路（deploy 会同时收到两路 lowstate）。
+        raw_dds_domain = "9" if is_scene_sync_viewer else "1"
     try:
         args_cli.dds_domain = int(raw_dds_domain)
     except ValueError:
@@ -615,6 +642,15 @@ else:
         parser.error("--dds-interface must be a network interface name or 'auto'")
 
 args_cli.dds_interface = dds_interface_arg
+# viewer 的 domain 隔离只有默认值兜底；显式 UNITREE_DDS_DOMAIN=1（照抄标准 SONIC
+# 前缀）会击穿它——ghost 的 rt/lowstate 带着合法锁步魔数混进同机 host↔deploy 的
+# domain-1/lo 信道，deploy 按错误 sample_seq 回 ack，host 闭环失速。大声提醒。
+if is_scene_sync_viewer and args_cli.dds_domain == 1 and (args_cli.dds_interface or "") == "lo":
+    print("!" * 72)
+    print("!! [viewer] DDS domain=1 + interface=lo 与同机 host<->deploy 锁步链路同信道！")
+    print("!! [viewer] ghost 的 rt/lowstate 会与 host 样本交错，deploy 的 ack 会答错序。")
+    print("!! [viewer] 同机联调请去掉显式的 UNITREE_DDS_DOMAIN=1（viewer 默认 domain=9）。")
+    print("!" * 72)
 os.environ["UNITREE_DDS_DOMAIN"] = str(args_cli.dds_domain)
 if args_cli.dds_interface:
     os.environ["UNITREE_DDS_INTERFACE"] = args_cli.dds_interface
@@ -1163,6 +1199,9 @@ def main():
                 if args_cli.task == "Isaac-G1-29DoF-Sonic-Conveyor":
                     # 对端镜像 G1 也上涂装，避免双机时看到通体白模误判机型
                     apply_g1_sonic_visual_materials("/World/envs/env_0/PeerRobot")
+                    if is_scene_sync_viewer:
+                        # viewer 有第二个镜像体（robot_2 工位）
+                        apply_g1_sonic_visual_materials("/World/envs/env_0/PeerRobot2")
             except Exception as e:
                 # Appearance must never prevent the DDS/physics validation from
                 # starting.  A missing material asset is therefore reported but
@@ -1496,11 +1535,12 @@ def main():
                 dds_manager.enable_immediate_publish("g129")
             except Exception as e:
                 print(f"[sim] failed to enable immediate lowstate publish: {e}")
-        if is_sonic_task:
+        if is_sonic_task and not is_scene_sync_viewer:
             # The first env.reset happens before the DDS object is registered,
             # so its observation cannot seed rt/lowstate. Lock-step control
             # needs one real initial PhysX sample before it can request the
             # first matching LowCmd; publish that sample explicitly here.
+            # viewer 没有锁步要 seed，跳过（它的 lowstate 本来就不该被谁消费）。
             try:
                 from tasks.common_observations.g1_29dof_state import (
                     get_robot_boy_joint_states,
@@ -1546,7 +1586,10 @@ def main():
     print(f"\ncreate action provider: {args_cli.action_source}...")
     try:
         print(f"args_cli.task: {args_cli.task}")
-        if is_sonic_task and args_cli.action_source == "dds":
+        if is_scene_sync_viewer and args_cli.action_source in ("dds", "sonic_dds"):
+            print("[viewer] Selecting the hold action source (no deploy, no DDS lock-step)")
+            args_cli.action_source = "hold"
+        elif is_sonic_task and args_cli.action_source == "dds":
             print("[sonic_dds] Selecting the dedicated 29-DoF SONIC action source for this task")
             args_cli.action_source = "sonic_dds"
         elif not args_cli.replay_data and ("Wholebody" in args_cli.task or args_cli.enable_wholebody_dds):

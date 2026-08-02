@@ -16,6 +16,10 @@ def create_action_provider(env, args):
         from action_provider.action_provider_replay import FileActionProviderReplay
 
         return FileActionProviderReplay(env=env, args_cli=args)
+    if args.action_source == "hold":
+        from action_provider.action_provider_hold import HoldActionProvider
+
+        return HoldActionProvider(env=env, args_cli=args)
 
     print(f"unknown action source: {args.action_source}")
     return None
