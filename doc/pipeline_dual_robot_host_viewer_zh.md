@@ -143,8 +143,13 @@ G1_LOCAL_ROBOT_ID=2 bash deploy.sh --disable-crc-check --input-type keyboard isa
 
 ## 7. 遗留与下一步
 
-- ⛔ **reset 打坏 planner**（§5 第 6 条）：GR00T C++ 侧修复待做——reset epoch 跳变后
-  planner 轨迹到 policy 的衔接断开（Replanning 有、cmd 无）；修复前按运维约束绕行；
+- 🎯 **Pico VR 控制接入**（正路，keyboard 只是调试工具）：目标形态=两操作者各戴
+  Pico、各控一台机器人。走 SONIC 既有 VR 链（Pico manager → ZMQ:5556 →
+  deploy `--input-type zmq_manager`，全身控制流），双机器人=两套 manager 分别喂
+  deploy#1/#2（`G1_LOCAL_ROBOT_ID=2` 已默认 5567 独立端口）。VR 链不经过键盘
+  planner ⇒ §5.6 的退化 bug 不在此路径上（但 VR 链的 reset 行为需单独验证）；
+- ⛔ **keyboard planner 退化态**（§5.6，降级为调试工具限制）：修复方向已定位
+  （IDLE→WALK 轨迹续接重置），因正路是 VR 控制、不优先修；调试期按运维约束绕行；
 - AR 视角锚定的头显实测（代码已落地挂 PeerRobot/PeerRobot2，pxr 验证过 USD 层级；
   头显侧确认视角位置/pelvis yaw 跟随/B 键 recenter 待做）；
 - win1 部署（照 §6 增量指引）与**多 viewer 并发**实测（传输层天然扇出，未实测）；
