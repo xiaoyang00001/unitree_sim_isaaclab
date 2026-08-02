@@ -164,6 +164,24 @@ provider 在 `action_provider/create_action_provider.py` 里按需惰性导入�
 - ⚠️ SONIC 行走 policy 不感知桌子。桌子是 kinematic 的且就在正前方 0.55 m，跑行走类动作会撞上去——
   这是场景约束，不是 bug。需要纯行走验证时用 `Training-Sonic`。
 
+### 流水线双机器人 host/viewer（conveyor 任务的三种身份）
+
+**权威文档 `doc/pipeline_dual_robot_host_viewer_zh.md`，动这套前必读**（启动手册/键盘序列/
+帧率账本/五个实测坑全在里面）。身份由 `sync_identity.py` **单一真源**解析（sim_main 与
+env cfg 共用，进程环境变量优先于 `configs/scene_sync.env`——别在任何一侧重新实现判定）：
+
+- `ISAACLAB_LOCAL_ROBOT_ID=1/2`：对等端（既有双机模式，机器人互为镜像）；
+- `ISAACLAB_LOCAL_ROBOT_ID=0`：**viewer 纯镜像**——只收不发、双镜像体、本机 robot 退化为
+  场外 ghost、自动切 `hold` 动作源（不挂锁步，50Hz 满帧）、DDS 默认落 domain 9；
+- `ID=1` + `ISAACLAB_HOST_BOTH_ROBOTS=1`：**host 双机器人**——robot_1+robot_2 双全动力学，
+  各一套 deploy（第二套 `G1_LOCAL_ROBOT_ID=2 ./deploy.sh isaac` 自动走 `rt/r2/*` 话题 +
+  `g129_r2`/`_r2` shm），动作源自动切 `sonic_dds_host`（258 维、双 ack AND 锁步）。
+
+⚠️ 三条高频坑：host 的两套 deploy **必须并行启动**（串行等 Init Done 会在双 ack 门下自锁）；
+测前 `pgrep -fa g1_deploy_onnx_ref` 必须为 0（残留实例 kHz 级轰 ack）；host 建议
+`UNITREE_SKIP_LOWSTATE_CRC=1` + `UNITREE_LOWCMD_CRC_SAMPLE_INTERVAL=50` + 两套 deploy
+`--disable-crc-check`（**Linux 的 unitree CRC 也是纯 Python**，双通道 1000 包/秒下占 35% GIL）。
+
 ### OpenXR：只接管视角，不接管机器人
 
 `--teleop_device motion_controllers`（仅上表前三个任务可用；会自动置 `--xr`；与 `--no_render` 互斥）。

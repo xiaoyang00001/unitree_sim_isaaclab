@@ -1,0 +1,103 @@
+# 流水线双机器人 host + viewer 架构（工作包 A/B 实录）
+
+> 里程碑（2026-08-02）：**一台 Ubuntu 同进程跑 robot_1+robot_2 双全动力学 SONIC 机器人，
+> 各由一套 GR00T deploy 独立控制（键盘可分别驱动行走），win2 上的纯镜像 viewer 实时同步
+> 全场景**——"1 host + N viewer"目标架构首次实景运行。
+> 配套 GR00T 仓库提交：话题前缀参数化 + deploy.sh 环境优先修复（分支 feat/isaac-state-sync）。
+
+## 1. 三种身份模式
+
+conveyor 任务（`Isaac-G1-29DoF-Sonic-Conveyor`）现在有三种身份，全部由
+`sync_identity.py` **单一真源**解析（sim_main 与 conveyor_env_cfg 共用同一份实现，
+进程环境变量永远优先于 `configs/scene_sync.env`）：
+
+| 身份 | 环境变量 | 场景 | ZMQ 方向 |
+|---|---|---|---|
+| 对等端 | `ISAACLAB_LOCAL_ROBOT_ID=1/2` | 本机全动力学 robot + 对端镜像体 | 双向（机器人互发；物体/复位 ID=1 权威） |
+| viewer | `ISAACLAB_LOCAL_ROBOT_ID=0` | 双镜像体 + 场外 ghost + kinematic 物体 | 只收不发（SUB host:15555） |
+| **host** | `ID=1` + `ISAACLAB_HOST_BOTH_ROBOTS=1` | **robot_1+robot_2 双全动力学**，无镜像体 | 只发不收（robot_1+robot_2+物体） |
+
+host 的第二机器人通过**第二套 DDS 通道**驱动：话题 `rt/r2/lowcmd|lowstate|secondary_imu`
+与 `rt/r2/dex3/*`、DDS 注册名 `g129_r2`/`dex3_r2`、共享内存 `isaac_robot_state_r2` 等。
+⚠️ **shm 名必须隔离**——SharedMemoryManager 对同名段是静默 attach 共享，漏改后缀的
+症状是两台机器人互相执行对方命令且无任何报错。
+
+## 2. 启动手册（Ubuntu host + 双 deploy + win 侧 viewer）
+
+```bash
+# ① host sim（GUI 验证形态；无画面跑法去掉 --hide_ui 换 --no_render，省 ~10ms/帧）
+GR00T_WBC_ROOT=/home/nolo/GR00T-WholeBodyControl \
+UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo \
+ISAACLAB_LOCAL_ROBOT_ID=1 ISAACLAB_HOST_BOTH_ROBOTS=1 \
+UNITREE_SKIP_LOWSTATE_CRC=1 UNITREE_LOWCMD_CRC_SAMPLE_INTERVAL=50 \
+python sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor --robot_type g129 \
+  --action_source sonic_dds --device cpu --hide_ui --stats_interval 10
+
+# ② 两套 deploy —— ⚠️ 必须并行启动（错峰 ~20s 即可），不能串行等 Init Done：
+#    双 ack AND 门下 deploy#1 的 Init 要看到新鲜物理样本，而物理推进又在等
+#    deploy#2 的 ack——串行启动会自锁在 4Hz。
+cd $GR00T_WBC_ROOT/gear_sonic_deploy
+bash deploy.sh --disable-crc-check --input-type keyboard isaac                      # 终端A
+G1_LOCAL_ROBOT_ID=2 bash deploy.sh --disable-crc-check --input-type keyboard isaac  # 终端B
+
+# ③ win 侧 viewer（win2 桌面双击，参数见 run_pipeline_viewer.bat）：
+#    ISAACLAB_LOCAL_ROBOT_ID=0 + ISAACLAB_SCENE_SYNC_PEER_IP=<Ubuntu IP>
+```
+
+- 测前清残余：`pgrep -fa g1_deploy_onnx_ref` 必须为 0——残留实例会以 kHz 级频率
+  轰 ack，链路数据完全不可信（本轮实测 12 个残留 = 2kHz lowcmd）。
+- 首次双实例并发冷启动会争写 planner 的 `.trt` 缓存，先单跑一次预热。
+
+## 3. 键盘控制（两台各自独立）
+
+每台机器人的 deploy 都是完整键盘协议，激活序列：**`]`（开始控制）→ 回车（开 planner）→
+`2`（选行走模式）→ 移动键**。移动是脉冲语义（一发走一段自动停回 IDLE）。
+
+| 键 | 动作 | 键 | 动作 |
+|---|---|---|---|
+| `w`/`s` | 前进/后退 | `a`/`d` | 左移/右移 |
+| `j`/`l` | 左转/右转 | `9`/`0` | 减速/加速 |
+| `1`-`8` | 动作模式集 | `` ` `` | 急停 |
+
+实测（2026-08-02）：robot_1/robot_2 分别后退 ~12m/~10m，SONIC 自平衡全程稳定，
+win2 viewer 同步无丢帧；robot_1 的 180° yaw 出生朝向下行走正常（此前"需 Phase 1
+实测"的悬案就此关闭）。
+
+## 4. 帧率账本（host 双机器人，i9/20 核 Linux）
+
+| 阶段 | 主循环 | 关键数字 |
+|---|---|---|
+| 贯通初始（全 CRC） | 25-26 Hz | E 20-42ms 波动，A 有 20ms 尖峰 |
+| + LowState 发布免 CRC | 26-29 Hz | A 尖峰消失 |
+| + lowcmd 接收 1/50 抽样 | 31-33 Hz | E 收敛 ~19ms |
+| + renice -10 | **34-36 Hz** | headless 形态 |
+| GUI（--hide_ui） | 24-26 Hz | R≈10ms 渲染成本 |
+
+归因（py-spy 150Hz）：瓶颈是 **GIL 单线程天花板**（20 核只用 1.2 核，sim 101.5%）。
+- ⚠️ **Linux 上 unitree CRC 也是纯 Python**（旧账本"C 库 ~0.01ms"不成立）——双通道
+  1000 包/秒下发布 CRC 20.5% + 接收校验 14.5%，两刀 CRC 是最大收益；
+- ⭐ **执行器逐子步记账仅 5.6%**——win2 上 39% 的头号嫌疑在 Linux 不成立，
+  主机器人执行器合并这条红线刀**不需要动**；
+- 剩余：native PhysX ~40%（双 43DoF 固有）、cyclonedds 反序列化 ~10%
+  （500Hz lowcmd 九成是重发包，深水区）、观测/metrics 小项 ~5%。
+
+锁步语义下 35Hz = 0.7× 慢放（不丢帧不失真）；viewer 侧渲染恒 50fps。
+
+## 5. 已知坑（每条都实测踩过）
+
+1. **身份双源裂脑**：sim_main 与 env cfg 曾各自解析身份——已收敛进 `sync_identity.py`，
+   新增身份判定一律走它，别在任何一侧重新实现。
+2. **deploy.sh 的 env 文件强覆盖**（GR00T 侧已修）：`config/g1_udp_network.env` 里的
+   `G1_LOCAL_ROBOT_ID=1` 曾无条件覆盖命令行身份，第二实例静默变第一实例。
+3. **双 deploy 串行启动自锁**、**残留 deploy 污染**（见 §2）。
+4. deploy C++ 的话题常量是 namespace 级 static、**先于 main() 初始化**——
+   `SONIC_DDS_TOPIC_PREFIX` 只能走环境变量，改成 CLI 参数会静默失效。
+5. 观测函数缓存必须按 asset 键控——共用 buffer 是 aliasing 覆写、共用 sample_seq
+   会让双锁步 tick 串台（ack 永不匹配），都是排查代价极高的静默错误。
+
+## 6. 遗留与下一步
+
+- host 50Hz：cyclonedds 反序列化去重（重发包先比 raw bytes 再解？需下探 SDK 层）、
+  观测/metrics 小项打包、native 部分无大油水；
+- 工作包 C：win1/win2 双 viewer + AR（XR 锚定需从场外 ghost 改挂镜像体——已知待办）；
+- 复位链路在 host 模式的整场景语义已接线（双通道 epoch+grace），多轮压测待做。
