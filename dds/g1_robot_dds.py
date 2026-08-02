@@ -60,7 +60,17 @@ class G1RobotDDS(DDSObject):
         # (每步 2.5s,Init Done 要 6 分钟)。降为抽样校验(每 50 包验 1 次)后
         # 负载 ~1%,持续性损坏仍能在 0.1s 内被发现。Linux 的 CRC 是 C 库
         # (~0.01ms),保持逐包全验不变。
-        self._crc_sample_interval = 1 if getattr(self.crc, "platform", "") == "Linux" else 50
+        # Linux 历史默认逐包全验（"C 库 ~0.01ms"）——但 host 双机器人下两套 deploy
+        # 各 500Hz lowcmd = 1000 包/秒，py-spy 实测校验占 14.5% GIL（2026-08-02），
+        # "很快"的假设不成立。UNITREE_LOWCMD_CRC_SAMPLE_INTERVAL 可显式覆盖
+        # （host 建议 50，与 Windows 同款抽样：持续性损坏仍能在 0.1s 内被发现）。
+        _default_crc_interval = 1 if getattr(self.crc, "platform", "") == "Linux" else 50
+        try:
+            self._crc_sample_interval = max(
+                1, int(os.environ.get("UNITREE_LOWCMD_CRC_SAMPLE_INTERVAL", _default_crc_interval))
+            )
+        except ValueError:
+            self._crc_sample_interval = _default_crc_interval
         self._crc_sample_counter = 0
         # 见 dds_publisher() 里的说明:跳过 LowState 的 CRC 计算需要对端配合
         # (deploy --disable-crc-check),所以只能显式开启,不做平台自动推断。
