@@ -101,12 +101,20 @@ G1_LOCAL_ROBOT_ID=2 bash deploy.sh --disable-crc-check --input-type keyboard isa
    `SONIC_DDS_TOPIC_PREFIX` 只能走环境变量，改成 CLI 参数会静默失效。
 5. 观测函数缓存必须按 asset 键控——共用 buffer 是 aliasing 覆写、共用 sample_seq
    会让双锁步 tick 串台（ack 永不匹配），都是排查代价极高的静默错误。
-6. ⛔ **Isaac 整场景复位会打坏 deploy 的 planner 执行**（2026-08-02 实锤）：reset 后
-   CONTROL 自动恢复、键盘 Replanning WALK 照常打印，但 lowcmd 里 `cmd_max_abs_dq≡0`
-   ——planner 轨迹不再进入 policy 输出；`t`/`r`/回车重开 planner 全都救不回，
-   **唯一恢复路径是重启 deploy（按测量纪律=全链路重启）**。属 GR00T C++ 侧 reset
-   epoch 后的 planner→policy 衔接 bug（待修，见 §7）。运维约束：**做行走演示期间
-   不要发整场景 reset**；需要机器人归位优先用 `w` 走回来。
+6. ⛔ **deploy planner 的"退化态"**（2026-08-02 实锤 + 双 agent 日志/源码对照定因）：
+   WALK→IDLE 之后（整场景 reset 是最强诱因，但**不限于 reset**）再次下发 WALK 时，
+   planner 从残留内部状态 replanning——判别指纹是 **Planner Model 推理耗时从健康的
+   93-182ms 掉到 36-79ms（约 1/3）**，生成的轨迹退化为站立或原地踉跄（tilt 冲 7.7°
+   无位移）。`t`/`r`/回车重开 planner 均救不回（重开会新增"Reset init reference"
+   绑定行，但 Model 耗时不回升——残留在更深的轨迹续接状态里）。
+   **唯一已验证恢复路径 = 重启 deploy（按测量纪律 = 全链路重启）**。
+   GR00T 侧修法方向：IDLE→WALK 转换时重置 planner 的 motion buffer/heading 续接
+   （gen_frame_/current_frame_ 逻辑，见 localmotion_kplanner 与 CurrentFrameAdvancement）。
+   运维约束：行走演示期间不要发整场景 reset；归位优先用 `w` 走回。
+   ⚠️ **判据勘误**：`cmd_max_abs_dq≡0` 不能当"没发运动目标"的证据——本 deploy 的
+   lowcmd 无条件 tau_ff=0/dq_target=0（纯位置目标+kp/kd 是设计）。正确判据：
+   host 侧 `root_speed_max`（行走 ≈1.2m/s vs 退化 ≤0.008）与 `pd_target_max`
+   （行走 1.33-1.50rad vs 站立 ≈0.39），deploy 侧 Planner Model 耗时（>90ms 健康）。
 
 ## 6. 新机器部署 viewer（如 win1）——相对通用 Windows 部署的增量
 
