@@ -509,6 +509,9 @@ def _make_local_robot_cfg() -> ArticulationCfg:
         # 没有 contact reporter API 会在 gym.make 时 RuntimeError。ghost 无碰撞体，
         # 打开后传感器恒零，只为满足初始化。
         cfg.spawn.activate_contact_sensors = True
+        # ghost 完全不可见：viewer 画面（尤其 AR 自由视角）里不该出现第三台机器人
+        # （2026-08-02 用户在 AR 里看到 3 台实测反馈）。物理照常模拟，仅隐藏视觉。
+        cfg.spawn.visible = False
         return cfg
     cfg = make_sonic_robot_cfg()
     cfg.init_state.pos = LOCAL_ROBOT_POS
@@ -967,20 +970,33 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
             raise RuntimeError(
                 f"缺少无碰撞镜像机器人产物 {_PEER_ROBOT_USD}\n先运行: python tools/build_peer_robot_usd.py"
             )
+        # XR 锚定重定向。⚠️ 只改 self.xr 不够——teleop_devices 构建时把 xr_cfg
+        # **拷贝**了一份（2026-08-02 实测：cfg 打印挂 PeerRobot、teleop 设备实际仍用
+        # Robot 路径，AR 视角锚到场外 ghost 上）。必须把 self.xr 与每个 teleop 设备
+        # 持有的 xr_cfg 一起改。
+        def _apply_xr_anchor(prim_name: str, tag: str) -> None:
+            anchor = f"/World/envs/env_0/{prim_name}/torso_link/head_link"
+            rotation = f"/World/envs/env_0/{prim_name}/pelvis"
+            targets = [self.xr]
+            for _dev_cfg in getattr(self.teleop_devices, "devices", {}).values():
+                _dev_xr = getattr(_dev_cfg, "xr_cfg", None)
+                if _dev_xr is not None and _dev_xr is not self.xr:
+                    targets.append(_dev_xr)
+            for _xr in targets:
+                _xr.anchor_prim_path = anchor
+                _xr.anchor_rotation_prim_path = rotation
+            print(f"[conveyor_env_cfg] XR 锚定 -> {prim_name}（{tag}，含 {len(targets)} 份 xr_cfg）")
+
         # host 模式可选：XR 锚定切到 robot_2（默认锚 robot_1，即父类写的 Robot prim 路径）。
         if HOST_MODE and _env_str("ISAACLAB_XR_ANCHOR_ROBOT_ID", "1") == "2":
-            self.xr.anchor_prim_path = "/World/envs/env_0/Robot2/torso_link/head_link"
-            self.xr.anchor_rotation_prim_path = "/World/envs/env_0/Robot2/pelvis"
-            print("[conveyor_env_cfg] XR 锚定切换到 robot_2 (Robot2)")
-        # viewer 模式（工作包 C）：本机 Robot 是场外 ghost（(0,-30) 停车位），父类默认锚
-        # 会把 AR 视角带到空地上。改挂镜像体：ISAACLAB_XR_ANCHOR_ROBOT_ID=1 → PeerRobot
+            _apply_xr_anchor("Robot2", "host")
+        # viewer 模式（工作包 C）：本机 Robot 是场外 ghost（不可见），父类默认锚会把
+        # AR 视角带到空地上。改挂镜像体：ISAACLAB_XR_ANCHOR_ROBOT_ID=1 → PeerRobot
         # （robot_1 镜像，默认），=2 → PeerRobot2（robot_2 镜像）。镜像 USD 与本体同一
         # URDF 转换，torso_link/head_link 与 pelvis 的层级一致。
         if VIEWER_MODE:
             _anchor_prim = "PeerRobot2" if _env_str("ISAACLAB_XR_ANCHOR_ROBOT_ID", "1") == "2" else "PeerRobot"
-            self.xr.anchor_prim_path = f"/World/envs/env_0/{_anchor_prim}/torso_link/head_link"
-            self.xr.anchor_rotation_prim_path = f"/World/envs/env_0/{_anchor_prim}/pelvis"
-            print(f"[conveyor_env_cfg] viewer XR 锚定挂镜像体 {_anchor_prim}")
+            _apply_xr_anchor(_anchor_prim, "viewer")
         if MIRROR_OBJECTS:
             # 基座注册的 reset_scene_to_default 会向 kinematic 镜像物体写速度，
             # CPU pipeline 下每次复位刷 ~14 条 PhysX 错误、累计 1000 条掐停仿真。
