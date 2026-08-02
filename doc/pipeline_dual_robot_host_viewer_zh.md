@@ -204,11 +204,11 @@ G1_LOCAL_ROBOT_ID=2 bash deploy.sh --disable-crc-check --input-type keyboard isa
 
 ## 7. 遗留与下一步
 
-- 🎯 **Pico VR 控制接入**（正路，keyboard 只是调试工具）：目标形态=两操作者各戴
-  Pico、各控一台机器人。走 SONIC 既有 VR 链（Pico manager → ZMQ:5556 →
-  deploy `--input-type zmq_manager`，全身控制流），双机器人=两套 manager 分别喂
-  deploy#1/#2（`G1_LOCAL_ROBOT_ID=2` 已默认 5567 独立端口）。VR 链不经过键盘
-  planner ⇒ §5.6 的退化 bug 不在此路径上（但 VR 链的 reset 行为需单独验证）；
+- 🎯 **Pico VR 控制接入**（正路，keyboard 只是调试工具）：进行中，见 §8。
+  ⚠️ 早先"VR 链不经过键盘 planner ⇒ §5.6 退化 bug 不在此路径"的说法**只对
+  POSE（全身流）子模式成立**：PLANNER 子模式（摇杆行走）走的是与 keyboard 完全
+  相同的 kplanner 线程与 movement_state_buffer，bug 同样在环，且 planner 话题
+  1s 超时自动回 IDLE 会频繁制造 IDLE→WALK 转换（正是退化触发指纹）；
 - ⛔ **keyboard planner 退化态**（§5.6，降级为调试工具限制）：修复方向已定位
   （IDLE→WALK 轨迹续接重置），因正路是 VR 控制、不优先修；调试期按运维约束绕行；
 - AR 视角锚定的头显实测（代码已落地挂 PeerRobot/PeerRobot2，pxr 验证过 USD 层级；
@@ -218,3 +218,42 @@ G1_LOCAL_ROBOT_ID=2 bash deploy.sh --disable-crc-check --input-type keyboard isa
   观测/metrics 小项打包、native 部分无大油水；当前 headless 34-36Hz / GUI 24-26Hz；
 - AR viewer 实测 50Hz 满帧（A 0.0/E 6.9/R 10.6）——物理留 host、画面全推 viewer 的
   架构红利已被数字证实。
+
+## 8. Pico VR 控制接入（工作包 Pico-①：单 Pico → deploy#1，⏳头显侧待实测）
+
+拓扑（PC 侧已跑通到"等头显数据"，`tools/pipeline_pico_bringup.sh` 一键拉起）：
+
+```
+Pico 4 Ultra: GameLink(com.Nolo.CloudVR)
+  └─ 全身追踪+手柄按键/摇杆 JSON → UDP 192.168.50.68:63901
+       （XrLinkConfig.json 的 wholeBodyTracking 节点，已指向本机、sendControllers=true）
+pico_manager_thread_server.py --manager --no_auto_pose --port 5556
+  （GR00T 仓库 .venv_teleop，XROBO_TRANSPORT=udp，不需要 XRoboToolkit PC Service）
+  └─ ZMQ PUB :5556，三话题 pose / command / planner（同端口靠前缀区分）
+deploy#1 --input-type zmq_manager（其余不变，isaac profile）
+  └─ DDS rt/* 锁步 ↔ host sim（Isaac 侧零改动——输入侧换血不动 deploy↔Isaac 段）
+```
+
+盘点结论（改双机 VR 前必读）：
+
+- **输入端口不随 robot id 分流**：`G1_LOCAL_ROBOT_ID=2` 只改输出侧（5567/g1_2_debug/
+  rt/r2），ZMQ 输入恒默认 localhost:5556，且 command/planner 话题名硬编码——
+  双实例必须 `--zmq-port` 显式分开（如 #2 用 5566），或两 manager 分居两机用 `--zmq-host`。
+- **manager 状态机**（`--no_auto_pose` 下）：OFF --A+B+X+Y--> PLANNER（摇杆行走：
+  左摇杆方向/右摇杆转向，A+B 升档 X+Y 降档）；A+X 切 POSE（全身跟随，进入瞬间的
+  身体姿态=校准零位）；左摇杆按下切 VR_3PT；再按 A+B+X+Y=急停（manager 退出）。
+  command 有 1Hz keepalive，slow-joiner/deploy 重启都能追上。
+  ⚠️ 默认 auto_pose 会在头显数据一到就直接进 POSE 全身跟随——bring-up 一律 `--no_auto_pose`。
+- **发车语义变化**：channel#1 不再靠 stdin `']'`，而是 manager 进任意控制模式时发
+  command(start=True) → deploy 置 0xa1 → sim 日志 `[sonic_dds] CONTROL marker received`。
+  未发车期间 deploy 照常回 ack，锁步/物理不受影响（站姿保持）。
+- **feedback 通道现状为断**：manager 的 FeedbackReader 订 5557/`g1_debug`，而 deploy#1
+  实际输出是 UDP 且话题 `g1_1_debug`（ZMQ 前缀匹配也对不上）⇒ PLANNER_FROZEN 抓不到
+  上身目标、VR_3PT 重校准回退零位（有 WARNING）。step① 的 PLANNER/POSE 不依赖它；
+  要接通得给 deploy#1 加 `--output-type zmq --zmq-out-topic g1_debug`（待验）。
+- **reset 已知风险**（step③ 要单独验的）：Isaac epoch reset 只清 deploy 的 policy
+  历史/heading 并断 ack，**不通知输入接口、不清 planner_state/manager 缓冲**——
+  PLANNER 子模式下与 keyboard 同风险（§5.6），POSE 流子模式 reset 后续流错位是否被
+  lag-rebase 吸收未实测。
+- 验收判据：manager 日志 `entering ... mode` + sim 侧 channel#1 `CONTROL marker
+  received` + 摇杆推动时 robot_1 行走且 viewer 端同步。
