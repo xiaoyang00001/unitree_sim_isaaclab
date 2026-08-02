@@ -95,7 +95,32 @@ win2 viewer 同步无丢帧；robot_1 的 180° yaw 出生朝向下行走正常�
 5. 观测函数缓存必须按 asset 键控——共用 buffer 是 aliasing 覆写、共用 sample_seq
    会让双锁步 tick 串台（ack 永不匹配），都是排查代价极高的静默错误。
 
-## 6. 遗留与下一步
+## 6. 新机器部署 viewer（如 win1）——相对通用 Windows 部署的增量
+
+基础环境先按 `doc/windows_deployment_zh.md`（及知识库《新Windows机器从零部署任务书》）
+走通用部署：conda `env_isaaclab`(py3.11) + isaacsim 5.1.0 + IsaacLab fork(`0703` 分支) +
+**cyclonedds 自编 0.10.x**（千万别 11.x）+ Windows 长路径。在此之上：
+
+**viewer 可以豁免的**（比对等/host 端轻很多）：
+- ❌ GR00T deploy 二进制与模型（viewer 无锁步、不跑推理）——但 ⚠️ `groot_assets` 子集
+  （win2 上 137M）**仍然必需**：`import tasks` 在模块级合成 SONIC URDF，与跑哪个任务无关；
+- ❌ 防火墙入站规则（viewer 只有**出站** SUB 连 host:15555，无入站需求）；
+- ❌ deploy 侧的一切（`--disable-crc-check` 等都是 host 侧的事）。
+
+**viewer 必需的**：
+- 工程 checkout `feat/pipeline-host-viewer`（或 tag `pipeline-dual-robot-walking-v1`），
+  镜像机器人 USD 已随 git 入库（`scene_assets/peer_robot/`，约 85MB，无需构建）；
+- `pyzmq`（env_isaaclab 内 pip 装）；
+- 环境变量：`PIPELINE_HOST_IP=<Ubuntu IP>`（bat 里可覆盖，win2 默认已探测）；
+- **AR 额外**：`isaacsim-extscache-{kit,kit-sdk,physics}` 三包（装前先开长路径，
+  半装残渣会让 h5py DLL 崩掉普通仿真）+ SteamVR（NOLO Link 或 ALVR 拉起）。
+
+**启动与判据**：桌面双击 `run_pipeline_viewer.bat`（AR 用 `run_pipeline_viewer_ar.bat`，
+不能 ssh 起）。判通看日志四行：`Pure-mirror viewer mode`、`本机身份: viewer`、
+（AR）`viewer XR 锚定挂镜像体 PeerRobot`、启动后无持续 `Stream stale`。
+多台 viewer 无需 host 感知——PUB 天然扇出，第 N 台只管 SUB 上来。
+
+## 7. 遗留与下一步
 
 - host 50Hz：cyclonedds 反序列化去重（重发包先比 raw bytes 再解？需下探 SDK 层）、
   观测/metrics 小项打包、native 部分无大油水；
