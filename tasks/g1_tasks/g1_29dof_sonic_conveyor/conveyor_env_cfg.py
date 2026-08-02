@@ -972,6 +972,15 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
             self.xr.anchor_prim_path = "/World/envs/env_0/Robot2/torso_link/head_link"
             self.xr.anchor_rotation_prim_path = "/World/envs/env_0/Robot2/pelvis"
             print("[conveyor_env_cfg] XR 锚定切换到 robot_2 (Robot2)")
+        # viewer 模式（工作包 C）：本机 Robot 是场外 ghost（(0,-30) 停车位），父类默认锚
+        # 会把 AR 视角带到空地上。改挂镜像体：ISAACLAB_XR_ANCHOR_ROBOT_ID=1 → PeerRobot
+        # （robot_1 镜像，默认），=2 → PeerRobot2（robot_2 镜像）。镜像 USD 与本体同一
+        # URDF 转换，torso_link/head_link 与 pelvis 的层级一致。
+        if VIEWER_MODE:
+            _anchor_prim = "PeerRobot2" if _env_str("ISAACLAB_XR_ANCHOR_ROBOT_ID", "1") == "2" else "PeerRobot"
+            self.xr.anchor_prim_path = f"/World/envs/env_0/{_anchor_prim}/torso_link/head_link"
+            self.xr.anchor_rotation_prim_path = f"/World/envs/env_0/{_anchor_prim}/pelvis"
+            print(f"[conveyor_env_cfg] viewer XR 锚定挂镜像体 {_anchor_prim}")
         if MIRROR_OBJECTS:
             # 基座注册的 reset_scene_to_default 会向 kinematic 镜像物体写速度，
             # CPU pipeline 下每次复位刷 ~14 条 PhysX 错误、累计 1000 条掐停仿真。
