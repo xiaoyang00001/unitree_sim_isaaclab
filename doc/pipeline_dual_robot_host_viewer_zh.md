@@ -59,9 +59,16 @@ G1_LOCAL_ROBOT_ID=2 bash deploy.sh --disable-crc-check --input-type keyboard isa
 | `j`/`l` | 左转/右转 | `9`/`0` | 减速/加速 |
 | `1`-`8` | 动作模式集 | `` ` `` | 急停 |
 
-实测（2026-08-02）：robot_1/robot_2 分别后退 ~12m/~10m，SONIC 自平衡全程稳定，
-win2 viewer 同步无丢帧；robot_1 的 180° yaw 出生朝向下行走正常（此前"需 Phase 1
-实测"的悬案就此关闭）。
+实测（2026-08-02，多轮）：robot_1/robot_2 单发脉冲行程可达 10-16m，SONIC 自平衡
+全程稳定，win2 viewer/AR 同步无丢帧；robot_1 的 180° yaw 出生朝向下行走正常（此前
+"需 Phase 1 实测"的悬案就此关闭）。
+
+操作要领（实测标定）：
+- **起步有 ~10s 的慢加速斜坡**（前几秒 <0.01m/s 的挪动是动量爬升，不是没响应——
+  别在这个窗口重复排障或猛按键）；随后进入 ~0.25m/s 巡航直到脉冲行程走完自动停；
+- planner 激活（回车→`2`）在 deploy 进程存续期内保持，不需要每次移动前重按；
+  `host_bringup` 类编排脚本可在发车后直接预激活两台（发 `\n` 与 `2` 进键管道）；
+- 键盘走管道文件时：`printf 's' >> <keyfile>`，单字符即时生效无需换行。
 
 ## 4. 帧率账本（host 双机器人，i9/20 核 Linux）
 
@@ -94,6 +101,12 @@ win2 viewer 同步无丢帧；robot_1 的 180° yaw 出生朝向下行走正常�
    `SONIC_DDS_TOPIC_PREFIX` 只能走环境变量，改成 CLI 参数会静默失效。
 5. 观测函数缓存必须按 asset 键控——共用 buffer 是 aliasing 覆写、共用 sample_seq
    会让双锁步 tick 串台（ack 永不匹配），都是排查代价极高的静默错误。
+6. ⛔ **Isaac 整场景复位会打坏 deploy 的 planner 执行**（2026-08-02 实锤）：reset 后
+   CONTROL 自动恢复、键盘 Replanning WALK 照常打印，但 lowcmd 里 `cmd_max_abs_dq≡0`
+   ——planner 轨迹不再进入 policy 输出；`t`/`r`/回车重开 planner 全都救不回，
+   **唯一恢复路径是重启 deploy（按测量纪律=全链路重启）**。属 GR00T C++ 侧 reset
+   epoch 后的 planner→policy 衔接 bug（待修，见 §7）。运维约束：**做行走演示期间
+   不要发整场景 reset**；需要机器人归位优先用 `w` 走回来。
 
 ## 6. 新机器部署 viewer（如 win1）——相对通用 Windows 部署的增量
 
@@ -122,7 +135,12 @@ win2 viewer 同步无丢帧；robot_1 的 180° yaw 出生朝向下行走正常�
 
 ## 7. 遗留与下一步
 
+- ⛔ **reset 打坏 planner**（§5 第 6 条）：GR00T C++ 侧修复待做——reset epoch 跳变后
+  planner 轨迹到 policy 的衔接断开（Replanning 有、cmd 无）；修复前按运维约束绕行；
+- AR 视角锚定的头显实测（代码已落地挂 PeerRobot/PeerRobot2，pxr 验证过 USD 层级；
+  头显侧确认视角位置/pelvis yaw 跟随/B 键 recenter 待做）；
+- win1 部署（照 §6 增量指引）与**多 viewer 并发**实测（传输层天然扇出，未实测）；
 - host 50Hz：cyclonedds 反序列化去重（重发包先比 raw bytes 再解？需下探 SDK 层）、
-  观测/metrics 小项打包、native 部分无大油水；
-- 工作包 C：win1/win2 双 viewer + AR（XR 锚定需从场外 ghost 改挂镜像体——已知待办）；
-- 复位链路在 host 模式的整场景语义已接线（双通道 epoch+grace），多轮压测待做。
+  观测/metrics 小项打包、native 部分无大油水；当前 headless 34-36Hz / GUI 24-26Hz；
+- AR viewer 实测 50Hz 满帧（A 0.0/E 6.9/R 10.6）——物理留 host、画面全推 viewer 的
+  架构红利已被数字证实。
