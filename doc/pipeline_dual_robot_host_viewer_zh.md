@@ -22,6 +22,66 @@ host 的第二机器人通过**第二套 DDS 通道**驱动：话题 `rt/r2/lowc
 ⚠️ **shm 名必须隔离**——SharedMemoryManager 对同名段是静默 attach 共享，漏改后缀的
 症状是两台机器人互相执行对方命令且无任何报错。
 
+### 1.1 viewer 的 ghost 机器人——是什么、为什么、边界在哪
+
+**ghost 只存在于 viewer 模式**（Ubuntu host 与对等模式里没有它）。它是 viewer 场景中
+名为 `robot` 的**隐形占位机器人**，对画面与同步语义零贡献——存在的唯一理由是：
+SONIC 任务的整套 Env 机器硬挂在名为 `robot` 的资产上，删掉它要重做一套
+"无机器人 EnvCfg"（actions/observations/terminations 全家裁剪 + sim_main 分支），
+而留一个退化占位体只花约百行身份层代码。这是工作包 A 的取舍决定。
+
+```mermaid
+flowchart LR
+  subgraph MACH["SONIC Env 机器（全部挂在名为 robot 的资产上）"]
+    AM["action_manager<br/>三个 term · 129 维"]
+    OBS["观测函数<br/>（=DDS lowstate 发布载体）"]
+    FC["foot_contact 传感器<br/>（挂 Robot prim 路径）"]
+  end
+  subgraph VS["viewer 场景"]
+    GHOST["ghost『robot』<br/>隐形 · 无碰撞 · 无重力 · 场外"]
+    PR["PeerRobot<br/>robot_1 镜像"]
+    PR2["PeerRobot2<br/>robot_2 镜像"]
+    OBJ["10 件物体 kinematic"]
+  end
+  HOLD["hold 动作源<br/>常量默认站姿"] --> AM
+  AM --> GHOST
+  GHOST --> OBS
+  OBS --> VOID["DDS domain 9<br/>（空谷，无人消费）"]
+  FC -.->|"恒零读数"| GHOST
+  HOSTF["host 的 scene_state 帧"] ==> PR
+  HOSTF ==> PR2
+  HOSTF ==> OBJ
+  XRA["XR 锚定"] --> PR
+  classDef ghost fill:#F3F5F4,stroke:#9AA8AE,stroke-dasharray:4 3
+  classDef live fill:#EDF3F1,stroke:#0E7C7B
+  class GHOST,VOID ghost
+  class PR,PR2,OBJ,HOSTF,XRA live
+```
+
+读图要点：**左半是 ghost 的全部职责**（给 action_manager 一个 129 维落点、给观测/DDS
+发布链一个数据源、给 foot_contact 一个初始化对象——全是"喂机器"，输出进空谷）；
+**右半才是 viewer 的真实语义**（镜像体吃 host 帧、XR 锚定挂镜像体）。两半互不相连。
+
+ghost 的退化配置（`_make_local_robot_cfg` 的 VIEWER_MODE 分支）：
+- 复用无碰撞镜像 USD（无重力/零阻尼/执行器合并单组/solver 1/1，物理开销 ~1ms 级）；
+- `activate_contact_sensors=True`（否则 foot_contact 在 gym.make 时 RuntimeError——踩过）；
+- `spawn.visible=False`（否则 AR 自由视角能看到第三台机器人——踩过）；
+- 停场外 `(0,-30)`，hold 动作源钉在默认站姿（无锁步，主循环满频的关键）。
+
+三种身份下 `robot` 资产的真身对照：
+
+| 身份 | `robot` 是什么 | 场景机器人总数 |
+|---|---|---|
+| host（Ubuntu） | **robot_1 真身**（全动力学，deploy#1 控制） | 2 台真身 |
+| viewer（win 侧） | **ghost**（隐形占位） | ghost + 2 镜像体 |
+| 对等模式（基线） | 本机真身 | 真身 + 1 镜像体 |
+
+⚠️ 与 ghost 相关的两个已修坑（§5.1 之外的补充）：XR 锚定默认指向 `Robot` prim
+（即 ghost）且 **teleop 设备持有 xr_cfg 的拷贝**——重定向必须把 self.xr 与每个
+teleop 设备的 xr_cfg 一起改，只改一处会出现"日志说挂了镜像体、头显却锚在 ghost"
+的割裂现象。将来若做 viewer 专用 EnvCfg（无 robot 版），ghost 可整体消除
+（半天级重构，当前 50Hz 满帧无紧迫性）。
+
 ## 2. 启动手册（Ubuntu host + 双 deploy + win 侧 viewer）
 
 ```bash
