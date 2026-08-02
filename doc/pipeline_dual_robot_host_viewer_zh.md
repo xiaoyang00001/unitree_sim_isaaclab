@@ -196,8 +196,9 @@ G1_LOCAL_ROBOT_ID=2 bash deploy.sh --disable-crc-check --input-type keyboard isa
 - **AR 额外**：`isaacsim-extscache-{kit,kit-sdk,physics}` 三包（装前先开长路径，
   半装残渣会让 h5py DLL 崩掉普通仿真）+ SteamVR（NOLO Link 或 ALVR 拉起）。
 
-**启动与判据**：桌面双击 `run_pipeline_viewer.bat`（AR 用 `run_pipeline_viewer_ar.bat`，
-不能 ssh 起）。判通看日志四行：`Pure-mirror viewer mode`、`本机身份: viewer`、
+**启动与判据**：桌面双击 `run_pipeline_viewer.bat`（无 AR）。AR 按操作者分脚本：
+操作者 #1 的机器双击 `run_pipeline_viewer_ar.bat`（视角跟 robot_1），操作者 #2 的机器
+双击 `run_pipeline_viewer_ar_robot2.bat`（视角跟 robot_2）——都不能 ssh 起。判通看日志四行：`Pure-mirror viewer mode`、`本机身份: viewer`、
 （AR）`viewer XR 锚定挂镜像体 PeerRobot`、启动后无持续 `Stream stale`。
 多台 viewer 无需 host 感知——PUB 天然扇出，第 N 台只管 SUB 上来。
 
