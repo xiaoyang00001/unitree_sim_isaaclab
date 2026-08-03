@@ -163,6 +163,12 @@ run_pipeline_viewer_ar_robot2.bat  # AR，视角跟 robot_2（操作者#2）
    （只切 PhysX 后端、不关渲染），别为排查这个去掉它——GPU 要留给两套 TensorRT deploy。
 8. **`No module named 'isaaclab_physx'` → SIGSEGV**：IsaacLab 没切到 fork 07241
    分支（§2 那步漏了）。切分支即修，**别补装 isaaclab_physx**。
+9. **AR 视角跟不上机器人/晃动、B 键 recenter 无效**：viewer 机的 IsaacLab fork
+   `devices/openxr` 三件套（openxr_device / xr_anchor_utils / xr_cfg）是旧版——
+   缺 pelvis 旋转锚分离与 recenter 绑定（sim 日志打印 rotation_anchor= 只是 cfg
+   属性回显，**不证明 fork 在用**）。与 Linux 07241 同步三件套即修；B 键在
+   Windows XRLink 驱动链上**不回传按键**（结构性），用启动自动对正 + GUI 窗口
+   **F9** 兜底；抖动旋钮 `ISAACLAB_XR_ANCHOR_POS_SMOOTHING`（默认 0.15s）。
 
 ## 6. 深入阅读
 
