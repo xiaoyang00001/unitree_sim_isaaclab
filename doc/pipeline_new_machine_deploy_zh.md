@@ -35,8 +35,16 @@
 git clone -b feat/pipeline-pico-vr-control https://github.com/xiaoyang00001/unitree_sim_isaaclab
 cd unitree_sim_isaaclab
 bash auto_setup_env.sh 5.1 env_isaaclab
-#   ⚠️ 脚本克隆的是官方 IsaacLab；为与已验证环境一致，把它换成上表 fork 的 07241 分支
-#   再 ./isaaclab.sh --install（官方版未在本流水线验证过）
+#   ⚠️ 必做：脚本克隆的是官方 IsaacLab，必须切到 fork 的 07241 分支——官方版未在本
+#   流水线验证过，且缺 fork 上的 SONIC 修复（如 G1 43-DoF USD 查找顺序）。
+#   editable 安装指向源码目录，切分支即生效，通常无需重跑 --install：
+cd <IsaacLab目录>
+git remote add xiaoyang https://github.com/xiaoyang00001/IsaacLab
+git fetch xiaoyang 07241 && git checkout -b 07241 xiaoyang/07241
+#   漏做的指纹：sim 启动 ~4.7s 报 No module named 'isaaclab_physx'（isaaclab_tasks
+#   扩展加载失败 → app ready 后 SIGSEGV）。07241 里没有这个包也没有这行 import——
+#   见到它 = IsaacLab 停在官方/更新版本上。别按报错去补装 isaaclab_physx（那是把
+#   未验证的版本修得能跑），切分支才是正解。
 bash fetch_assets.sh          # HuggingFace 资产（assets/ 可放外部盘做符号链接）
 
 # ③ GR00T deploy
@@ -153,6 +161,8 @@ run_pipeline_viewer_ar_robot2.bat  # AR，视角跟 robot_2（操作者#2）
    `GLFW initialization failed`×3 → RTX `carbOnPluginStartup` SIGSEGV）。修法=
    本地桌面终端跑，或 `PIPELINE_HEADLESS=1`。**`--device cpu` 与此无关**
    （只切 PhysX 后端、不关渲染），别为排查这个去掉它——GPU 要留给两套 TensorRT deploy。
+8. **`No module named 'isaaclab_physx'` → SIGSEGV**：IsaacLab 没切到 fork 07241
+   分支（§2 那步漏了）。切分支即修，**别补装 isaaclab_physx**。
 
 ## 6. 深入阅读
 
