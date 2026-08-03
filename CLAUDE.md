@@ -184,9 +184,11 @@ env cfg 共用，进程环境变量优先于 `configs/scene_sync.env`——别�
 
 Pico VR 控制接入（分支 `feat/pipeline-pico-vr-control`，正路；keyboard 只是调试）：
 `tools/pipeline_pico_bringup.sh` 一键拉起（deploy#1 换 `--input-type zmq_manager`，Isaac 段
-零改动）。部署/操作/判读见 `doc/pipeline_pico_vr_deployment_zh.md`，架构盘点见权威文档 §8。
-⚠️ manager 必带 `--no_auto_pose`（默认数据一到就进全身跟随）；"VR 链绕过 planner 退化 bug"
-只对 POSE 子模式成立，摇杆行走的 PLANNER 子模式 bug 同样在环。
+零改动）。**POSE 全身跟随已实测跟动**（2026-08-03，tag `pipeline-pico-pose-v1`；摇杆行走/
+急停待补测）。部署/操作/判读见 `doc/pipeline_pico_vr_deployment_zh.md`，架构盘点见权威文档 §8。
+⚠️ GR00T 必须 ≥`6783bb8`（14f8bf1 同步误删的 666 个 gear_sonic 文件已全量恢复，旧检出跑
+POSE 必崩）；manager 必带 `--no_auto_pose`（默认数据一到就进全身跟随）；"VR 链绕过 planner
+退化 bug"只对 POSE 子模式成立，摇杆行走的 PLANNER 子模式 bug 同样在环。
 
 ### OpenXR：只接管视角，不接管机器人
 

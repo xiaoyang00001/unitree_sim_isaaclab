@@ -204,7 +204,8 @@ G1_LOCAL_ROBOT_ID=2 bash deploy.sh --disable-crc-check --input-type keyboard isa
 
 ## 7. 遗留与下一步
 
-- 🎯 **Pico VR 控制接入**（正路，keyboard 只是调试工具）：进行中，见 §8。
+- 🎯 **Pico VR 控制接入**（正路，keyboard 只是调试工具）：POSE 全身跟随已实测通过
+  （2026-08-03，tag `pipeline-pico-pose-v1`），见 §8。
   ⚠️ 早先"VR 链不经过键盘 planner ⇒ §5.6 退化 bug 不在此路径"的说法**只对
   POSE（全身流）子模式成立**：PLANNER 子模式（摇杆行走）走的是与 keyboard 完全
   相同的 kplanner 线程与 movement_state_buffer，bug 同样在环，且 planner 话题
@@ -219,12 +220,17 @@ G1_LOCAL_ROBOT_ID=2 bash deploy.sh --disable-crc-check --input-type keyboard isa
 - AR viewer 实测 50Hz 满帧（A 0.0/E 6.9/R 10.6）——物理留 host、画面全推 viewer 的
   架构红利已被数字证实。
 
-## 8. Pico VR 控制接入（工作包 Pico-①：单 Pico → deploy#1，⏳头显侧待实测）
+## 8. Pico VR 控制接入（工作包 Pico-①：单 Pico → deploy#1，✅POSE 全身跟随已实测）
 
 > 从零部署的施工顺序/操作手册/判读表在 `doc/pipeline_pico_vr_deployment_zh.md`，
 > 本节只放架构盘点结论与设计取舍。
 
-拓扑（PC 侧已跑通到"等头显数据"，`tools/pipeline_pico_bringup.sh` 一键拉起）：
+状态（2026-08-03，tag `pipeline-pico-pose-v1`）：头显实测**发车 + POSE 全身跟随
+跟动已通**（操作者动、robot_1 跟着动）；摇杆行走（PLANNER）与急停语义⏳待补测。
+前置：GR00T 必须 ≥ `6783bb8`——分支同步提交 14f8bf1 误删的 666 个 gear_sonic
+文件（teleop 模块/SMPL 数据/G1 资产）已全量恢复，旧检出跑 POSE 必崩。
+
+拓扑（`tools/pipeline_pico_bringup.sh` 一键拉起）：
 
 ```
 Pico 4 Ultra: GameLink(com.Nolo.CloudVR)

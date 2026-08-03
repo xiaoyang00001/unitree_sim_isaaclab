@@ -2,8 +2,8 @@
 
 > 本文是**从零把 Pico VR 控制链部署到位**的施工顺序 + 操作手册 + 判读手册。
 > 架构盘点结论与设计取舍见权威文档 `doc/pipeline_dual_robot_host_viewer_zh.md` §8，
-> 两份互补不重复。状态（2026-08-02）：PC 侧全链已跑通到"等头显数据"，
-> 头显实测（发车/行走/急停）⏳待做。
+> 两份互补不重复。状态（2026-08-03，tag `pipeline-pico-pose-v1`）：头显实测
+> **发车 + POSE 全身跟随已通**（操作者动、机器人跟动）；摇杆行走/急停⏳待补测。
 
 ## 0. 链路一图流
 
@@ -30,6 +30,7 @@ PC Service**（.deb 留在 GR00T 仓库根，sdk 模式才用）。
 | 项 | 要求 | 本机现状 |
 |---|---|---|
 | GR00T 仓库 | `/home/nolo/GR00T-WholeBodyControl`，deploy isaac profile 可用 | ✅ |
+| GR00T 版本 | `feat/isaac-state-sync` **≥ `6783bb8`**（14f8bf1 误删的 666 个 gear_sonic 文件已全量恢复；旧检出 manager 收数据/进 POSE 必崩） | ✅ |
 | `.venv_teleop` | Python 3.10，由 `install_scripts/install_pico.sh` 创建（uv）；`import xrobotoolkit_sdk, zmq, msgpack` 通过 | ✅ 实测通过 |
 | 防火墙 | 入站 UDP 63901 放行（头显→本机） | ✅ ufw 不活动 |
 | Pico 侧 app | GameLink（`com.Nolo.CloudVR`）已装 | ✅ |
@@ -101,7 +102,9 @@ manager 侧对应日志：`[Manager] Buttons: A=1 B=1 ...`（每次按键变化�
 | 按 A+B+X+Y 无反应 | 看 `[Manager] Buttons:` 哪个键恒 0——手柄休眠先动一下摇杆唤醒；四键要真同帧按下 |
 | sim 一直 `STARTUP HOLD`（channel#1） | 正常态=还没发车；发车后仍 HOLD 才是问题（查 manager 是否进了模式、deploy#1 是否连上 5556） |
 | 未发车时担心锁步 | 不用：deploy Init 后 ack 照常回，`physics_steps` 照涨、`sync_waits` 不涨（已实测） |
-| PLANNER 里行走退化成原地踉跄 | §5.6 同款 planner 退化态——**PLANNER 子模式 bug 在环**（见下），重启 deploy 全链恢复 |
+| manager 收到首帧数据即崩 `ModuleNotFoundError`（robot_model/teleop） | GR00T 检出太旧：14f8bf1 同步删了源文件——`git pull` 到 ≥`6783bb8` |
+| 进 POSE 崩 `FileNotFoundError: .../human_joints_info.pkl` | 同上，数据文件也在被删清单里——`git pull` 到 ≥`6783bb8` |
+| PLANNER 里行走退化成原地踉跄 | §5.6 同款 planner 退化态——**PLANNER 子模式 bug 在环**（见下），重启 deploy 全链恢复。⚠️ manager 中途崩掉/退出也会经 planner 1s 超时触发这条路径 |
 | FROZEN/VR_3PT 进入时 WARNING 回退零位 | 已知：feedback 通道现状为断（见下），step① 不依赖 |
 
 已知限制（详见权威文档 §8）：
