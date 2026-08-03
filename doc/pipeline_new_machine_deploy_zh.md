@@ -76,6 +76,16 @@ bash tools/pipeline_pico_bringup.sh
 拉起 sim + deploy#1(zmq_manager) + deploy#2(keyboard) + pico_manager 全套。
 **无头显也能跑**（channel#1 停在等发车属正常，不影响物理与锁步）。
 
+⚠️ 三个易错点（新机首跑都踩过）：
+
+1. **三个变量必须与命令同一行**（如上，行尾 `\` 续行）或先 `export`——分行裸赋值
+   不会传给子进程，脚本会静默拿默认值（`/home/nolo/...` 的老机器路径）跑偏；
+2. **变量别指串**：`PIPELINE_SIM_DIR`=仿真工程目录，`GR00T_WBC_ROOT`=GR00T 目录，
+   `PIPELINE_SIM_PY`=conda 环境的 python；
+3. **GUI 形态需要活动的 X 桌面会话**（脚本默认 `--hide_ui`+DISPLAY）。纯 ssh /
+   无显示器的机器加 `PIPELINE_HEADLESS=1` 前缀（切 `--no_render`，host 本地无画面，
+   物理/锁步/viewer 不受影响）。脚本已内置 X 预检，拿不到会直接报错并给修法。
+
 ### 4.2 手动分步（排查用，四个终端；等价于一键脚本）
 
 ```bash
@@ -139,6 +149,10 @@ run_pipeline_viewer_ar_robot2.bat  # AR，视角跟 robot_2（操作者#2）
 5. pico_manager **必带 `--no_auto_pose`**（否则头显数据一到机器人立刻全身跟随）
    和 `PYTHONUNBUFFERED=1`（否则日志恒空）——bringup 脚本已内置，手动起别丢；
 6. 行走演示期间**别发整场景 reset**——deploy planner 会进退化态，唯一恢复=重启 deploy。
+7. **ssh 会话直接跑 GUI 形态 → sim 启动 ~5s 段错误**：kit 拿不到 X（日志指纹
+   `GLFW initialization failed`×3 → RTX `carbOnPluginStartup` SIGSEGV）。修法=
+   本地桌面终端跑，或 `PIPELINE_HEADLESS=1`。**`--device cpu` 与此无关**
+   （只切 PhysX 后端、不关渲染），别为排查这个去掉它——GPU 要留给两套 TensorRT deploy。
 
 ## 6. 深入阅读
 

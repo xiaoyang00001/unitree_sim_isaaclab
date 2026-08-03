@@ -52,6 +52,10 @@ adb shell cat /sdcard/Android/data/com.Nolo.CloudVR/files/XrLinkConfig.json
 
 ```bash
 bash tools/pipeline_pico_bringup.sh
+# 换机器时路径变量与命令同一行传入（分行裸赋值传不进去）：
+#   PIPELINE_SIM_DIR=<仿真工程> GR00T_WBC_ROOT=<GR00T> PIPELINE_SIM_PY=<python> bash tools/...
+# 纯 ssh/无桌面会话加 PIPELINE_HEADLESS=1（否则 kit 拿不到 X 会在 RTX 插件初始化段错误，
+# 脚本有预检直接报错）；GUI 形态 DISPLAY 透传，PIPELINE_DISPLAY 可强制。
 ```
 
 脚本做的事（手动分步照此复刻）：硬清残余 → host sim（HOST_MODE，CRC 两刀）→

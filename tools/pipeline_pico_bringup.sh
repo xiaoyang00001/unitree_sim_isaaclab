@@ -31,6 +31,23 @@ MGR_PY="$GR00T_ROOT/.venv_teleop/bin/python"
 PEER_IP="${ISAACLAB_SCENE_SYNC_PEER_IP:-192.168.50.127}"
 mkdir -p "$LOG_DIR"
 
+# 渲染形态：默认 GUI（--hide_ui）——需要一个能用的 X 会话，DISPLAY 优先取调用方
+# 环境、否则 :0（PIPELINE_DISPLAY 可强制指定）。无桌面/纯 ssh 的机器用
+# PIPELINE_HEADLESS=1 切 --no_render（headless experience，不碰窗口子系统；host
+# 本地无画面，物理/锁步/viewer 均不受影响）。不预检硬跑的下场：kit 起到 ~5s 在
+# RTX 插件初始化段错误（日志指纹 = "GLFW initialization failed" ×3 → SIGSEGV）。
+# ⚠️ --device cpu 只切 PhysX 后端、不关渲染，与这个崩溃无关，别为此去掉它。
+RENDER_ARG="--hide_ui"
+DISPLAY_TARGET="${PIPELINE_DISPLAY:-${DISPLAY:-:0}}"
+if [ "${PIPELINE_HEADLESS:-0}" = "1" ]; then
+  RENDER_ARG="--no_render"
+elif command -v xset >/dev/null 2>&1 && ! timeout 3 xset -display "$DISPLAY_TARGET" q >/dev/null 2>&1; then
+  echo "ERROR: X display $DISPLAY_TARGET 不可用（ssh 无桌面会话 / 显示号不对）。"
+  echo "  修法A: 在机器本地桌面终端跑，或 PIPELINE_DISPLAY=<实际显示> 指过去"
+  echo "  修法B: PIPELINE_HEADLESS=1 bash $0   # 无本地画面，其余功能不受影响"
+  exit 1
+fi
+
 wait_for() {  # wait_for <pattern> <file> <timeout_s> <label>
   local waited=0
   until grep -q "$1" "$2" 2>/dev/null; do
@@ -57,13 +74,13 @@ echo "residual deploys: $(pgrep -c -f 'g1_deploy_onnx_re[f]' 2>/dev/null || echo
 
 echo "== start host sim (dual robot) =="
 cd "$SIM_DIR" || exit 1
-env DISPLAY=:0 GR00T_WBC_ROOT="$GR00T_ROOT" \
+env DISPLAY="$DISPLAY_TARGET" GR00T_WBC_ROOT="$GR00T_ROOT" \
     UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo \
     ISAACLAB_LOCAL_ROBOT_ID=1 ISAACLAB_HOST_BOTH_ROBOTS=1 \
     ISAACLAB_SCENE_SYNC_PEER_IP="$PEER_IP" \
     UNITREE_SKIP_LOWSTATE_CRC=1 UNITREE_LOWCMD_CRC_SAMPLE_INTERVAL=50 \
     "$PY" sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor --robot_type g129 \
-    --action_source sonic_dds --device cpu --hide_ui --stats_interval 10 \
+    --action_source sonic_dds --device cpu $RENDER_ARG --stats_interval 10 \
     > "$LOG_DIR/host_dual.log" 2>&1 &
 
 # 双 ack AND 门：两个 deploy 必须并行启动（.trt 缓存只读共享，build 用 20s 错峰）。
