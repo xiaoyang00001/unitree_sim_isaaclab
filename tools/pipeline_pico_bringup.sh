@@ -41,7 +41,11 @@ RENDER_ARG="--hide_ui"
 DISPLAY_TARGET="${PIPELINE_DISPLAY:-${DISPLAY:-:0}}"
 if [ "${PIPELINE_HEADLESS:-0}" = "1" ]; then
   RENDER_ARG="--no_render"
-elif command -v xset >/dev/null 2>&1 && ! timeout 3 xset -display "$DISPLAY_TARGET" q >/dev/null 2>&1; then
+elif ! command -v xset >/dev/null 2>&1; then
+  echo "WARN: 没有 xset（x11-xserver-utils），无法预检 X 可用性。"
+  echo "      若 sim 10s 内段错误且日志有 'GLFW initialization failed'，"
+  echo "      用 PIPELINE_HEADLESS=1 重跑或装 xset 后再试。"
+elif ! timeout 3 xset -display "$DISPLAY_TARGET" q >/dev/null 2>&1; then
   echo "ERROR: X display $DISPLAY_TARGET 不可用（ssh 无桌面会话 / 显示号不对）。"
   echo "  修法A: 在机器本地桌面终端跑，或 PIPELINE_DISPLAY=<实际显示> 指过去"
   echo "  修法B: PIPELINE_HEADLESS=1 bash $0   # 无本地画面，其余功能不受影响"
@@ -82,6 +86,23 @@ env DISPLAY="$DISPLAY_TARGET" GR00T_WBC_ROOT="$GR00T_ROOT" \
     "$PY" sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor --robot_type g129 \
     --action_source sonic_dds --device cpu $RENDER_ARG --stats_interval 10 \
     > "$LOG_DIR/host_dual.log" 2>&1 &
+SIM_PID=$!
+
+# 早崩检测：kit 渲染/驱动层的崩溃集中在启动头几秒——与其让 bash 甩一行段错误,
+# 不如当场把日志指纹和判读打出来。
+sleep 10
+if ! kill -0 "$SIM_PID" 2>/dev/null; then
+  echo "ERROR: sim 启动 10s 内就退出了（多为渲染/驱动层崩溃）。host_dual.log 尾部："
+  echo "----------------------------------------------------------------------"
+  tail -20 "$LOG_DIR/host_dual.log"
+  echo "----------------------------------------------------------------------"
+  echo "判读："
+  echo "  · 有 'GLFW initialization failed' → 拿不到 X：本地桌面跑 / PIPELINE_HEADLESS=1"
+  echo "  · 无 GLFW 报错、栈在 librtx/carb → 驱动/Vulkan 层："
+  echo "      vulkaninfo --summary | grep -i device   # 掉成 llvmpipe = 用户态驱动错配"
+  echo "      nvidia-smi --query-gpu=name,driver_version --format=csv"
+  exit 1
+fi
 
 # 双 ack AND 门：两个 deploy 必须并行启动（.trt 缓存只读共享，build 用 20s 错峰）。
 echo "== start deploy#1 (rt/*, input=zmq_manager) =="
