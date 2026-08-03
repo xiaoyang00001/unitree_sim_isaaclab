@@ -1484,6 +1484,33 @@ def main():
             return
         print("========= create OpenXR teleop device success =========")
 
+        # 键盘兜底 recenter：Windows XRLink 驱动链不向 OpenXR 回传手柄按键
+        # （B 键 handler 实测从未触发），在 GUI 窗口按 F9 走同一路视角 yaw 对正。
+        try:
+            import carb.input as _carb_input
+            import omni.appwindow as _omni_appwindow
+
+            _kb_iface = _carb_input.acquire_input_interface()
+            _kb = _omni_appwindow.get_default_app_window().get_keyboard()
+
+            def _on_kb_recenter(event, *_a):
+                if (
+                    event.type == _carb_input.KeyboardEventType.KEY_PRESS
+                    and event.input == _carb_input.KeyboardInput.F9
+                ):
+                    _sync = getattr(teleop_interface, "_anchor_sync", None)
+                    if _sync is not None:
+                        _ok = _sync.recenter_yaw_to_anchor_prim()
+                        print(f"[xr] F9 keyboard recenter -> {'ok' if _ok else 'failed'}")
+                    else:
+                        print("[xr] F9 recenter: no anchor synchronizer on device")
+                return True
+
+            teleop_interface._kb_recenter_sub = _kb_iface.subscribe_to_keyboard_events(_kb, _on_kb_recenter)
+            print("[xr] Keyboard fallback: F9 = recenter view yaw (works when controller buttons are not forwarded)")
+        except Exception as e:
+            print(f"[xr] keyboard recenter fallback unavailable: {e}")
+
         # XR anchor 同步归因探针(XR_ANCHOR_PROBE=timing|nowrite|fabric|noop,
         # 默认 off)。用于拆解 OpenXRDevice 的每帧 anchor 同步成本与 XR 帧闸门
         # 阻塞,详见 tools/xr_anchor_probe.py 模块 docstring。

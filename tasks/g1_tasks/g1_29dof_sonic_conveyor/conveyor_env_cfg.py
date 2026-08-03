@@ -974,7 +974,7 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
         # **拷贝**了一份（2026-08-02 实测：cfg 打印挂 PeerRobot、teleop 设备实际仍用
         # Robot 路径，AR 视角锚到场外 ghost 上）。必须把 self.xr 与每个 teleop 设备
         # 持有的 xr_cfg 一起改。
-        def _apply_xr_anchor(prim_name: str, tag: str) -> None:
+        def _apply_xr_anchor(prim_name: str, tag: str, extra: dict | None = None) -> None:
             anchor = f"/World/envs/env_0/{prim_name}/torso_link/head_link"
             rotation = f"/World/envs/env_0/{prim_name}/pelvis"
             targets = [self.xr]
@@ -985,6 +985,8 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
             for _xr in targets:
                 _xr.anchor_prim_path = anchor
                 _xr.anchor_rotation_prim_path = rotation
+                for _k, _v in (extra or {}).items():
+                    setattr(_xr, _k, _v)
             print(f"[conveyor_env_cfg] XR 锚定 -> {prim_name}（{tag}，含 {len(targets)} 份 xr_cfg）")
 
         # host 模式可选：XR 锚定切到 robot_2（默认锚 robot_1，即父类写的 Robot prim 路径）。
@@ -996,7 +998,21 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
         # URDF 转换，torso_link/head_link 与 pelvis 的层级一致。
         if VIEWER_MODE:
             _anchor_prim = "PeerRobot2" if _env_str("ISAACLAB_XR_ANCHOR_ROBOT_ID", "1") == "2" else "PeerRobot"
-            _apply_xr_anchor(_anchor_prim, "viewer")
+            # 镜像体是被同步帧离散传送的（非连续物理），锚定位置裸写会以应用频率抖动
+            # ——viewer 打开位置平滑（本体动力学路径保持 0=裸写不受影响）。旋转平滑
+            # 沿用默认 1.0s（win-fps-native 时代的手感；fork 已改用实测帧时算 alpha，
+            # 低帧率下不再变相加倍）。B 键在 XRLink Windows 驱动链上不回传（实测
+            # handler 从未触发），启动时自动 recenter 一次作为替代。
+            _apply_xr_anchor(
+                _anchor_prim,
+                "viewer",
+                extra={
+                    "anchor_position_smoothing_time": float(
+                        os.environ.get("ISAACLAB_XR_ANCHOR_POS_SMOOTHING", "0.15")
+                    ),
+                    "recenter_yaw_on_start": True,
+                },
+            )
         if MIRROR_OBJECTS:
             # 基座注册的 reset_scene_to_default 会向 kinematic 镜像物体写速度，
             # CPU pipeline 下每次复位刷 ~14 条 PhysX 错误、累计 1000 条掐停仿真。
