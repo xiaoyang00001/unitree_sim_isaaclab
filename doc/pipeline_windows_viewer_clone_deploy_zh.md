@@ -56,6 +56,7 @@ Viewer 不运行 GR00T 推理，也不参与 Host 的 DDS 锁步控制。它只�
 | CycloneDDS Python | `0.10.5` |
 | h5py | `3.16.0` |
 | Git for Windows | `2.33.0.windows.2` |
+| Visual Studio Code | `1.113.0`，x64 User Setup |
 | SteamVR | App `250820`，build ID `14523237` |
 | XRLink | `3.0.1` |
 
@@ -351,11 +352,16 @@ ssh pipeline-win-source \
 本次目标机排除缓存后的有效环境统计是 167,392 个文件、17,915,218,763 字节。
 它不应与包含缓存的参考机总字节数机械相等，应以核心包导入和实跑结果为准。
 
-### 6.4 Git、SteamVR、XRLink 和驱动
+### 6.4 Git、VS Code、SteamVR、XRLink 和驱动
 
-优先使用可信的原始安装程序。如果现场必须与参考机离线精确复刻，可采用下述方式：
+Git 和 VS Code 必须使用官方安装包正式安装，不能把 `Program Files` 或
+`AppData\Local\Programs` 下的程序目录直接复制过去。仅复制程序目录虽然可能让绝对
+路径下的 EXE 暂时可运行，但不会正确写入卸载注册信息、安装任务和 PATH，后续终端会
+出现“文件存在但找不到命令”的状态。
 
-- Git：复制参考机 `C:\Program Files\Git`，然后把 `cmd` 目录加入目标机系统 `PATH`；
+- Git：安装与参考机一致的 `Git-2.33.0.2-64-bit.exe`；
+- VS Code：安装与参考机一致的 `VSCodeUserSetup-x64-1.113.0.exe`，目标用户为
+  `Administrator`；
 - SteamVR：复制参考机 `C:\Program Files\Steam`。复制程序目录不会复制或绕过账号
   登录，目标机仍需由操作者正常登录；
 - XRLink：优先使用原始 MSI。只有原始安装包已丢失时，才从参考机 Installer 缓存
@@ -363,35 +369,78 @@ ssh pipeline-win-source \
 - NVIDIA 驱动：优先使用 NVIDIA 官方离线安装包。需要锁定参考机 DriverStore 中的
   同版驱动时，复制完整驱动包目录后使用 `pnputil` 安装。
 
+Git 2.33.0(2) 官方发布页给出的 x64 安装包 SHA-256 是：
+
+```text
+https://github.com/git-for-windows/git/releases/download/v2.33.0.windows.2/Git-2.33.0.2-64-bit.exe
+A5704733C219E9A0C96BFEB0FEBEF62BC2518BDD4E358BC9519DBC5E63A3B5FE
+```
+
+VS Code x64 User Setup 的官方版本下载入口是：
+
+```text
+https://update.code.visualstudio.com/1.113.0/win32-x64-user/stable
+```
+
+如果目标机访问 GitHub 很慢，可在可信控制端下载官方安装包，校验后再通过局域网传到
+`D:\Isaac\installers`。目标机安装前必须再次检查 Git 哈希和两份 Authenticode
+签名：
+
+```powershell
+$gitInstaller = 'D:\Isaac\installers\Git-2.33.0.2-64-bit.exe'
+$codeInstaller = 'D:\Isaac\installers\VSCodeUserSetup-x64-1.113.0.exe'
+
+Get-FileHash $gitInstaller -Algorithm SHA256
+Get-AuthenticodeSignature $gitInstaller |
+    Format-List Status, SignerCertificate
+Get-AuthenticodeSignature $codeInstaller |
+    Format-List Status, SignerCertificate
+```
+
+Git 哈希必须与上面的官方值完全一致，两份签名状态都必须为 `Valid`，VS Code 的签名
+主体必须是 Microsoft。目标机管理员 PowerShell 静默安装：
+
+```powershell
+$gitArgs = '/VERYSILENT /NORESTART /NOCANCEL /SP- ' +
+    '/CLOSEAPPLICATIONS /RESTARTAPPLICATIONS ' +
+    '/DIR="C:\Program Files\Git" ' +
+    '/LOG="D:\Isaac\installers\git-install.log"'
+Start-Process $gitInstaller -ArgumentList $gitArgs -Wait
+
+$codeArgs = '/VERYSILENT /NORESTART /CURRENTUSER ' +
+    '/MERGETASKS="!runcode,addcontextmenufiles,addcontextmenufolders,' +
+    'associatewithfiles,addtopath" ' +
+    '/LOG="D:\Isaac\installers\vscode-install.log"'
+Start-Process $codeInstaller -ArgumentList $codeArgs -Wait
+```
+
+正式安装后验证版本、PATH 和卸载注册信息：
+
+```powershell
+& 'C:\Program Files\Git\cmd\git.exe' --version
+& "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd" --version
+
+Get-ItemProperty `
+    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*', `
+    'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' `
+    -ErrorAction SilentlyContinue |
+    Where-Object DisplayName -Match '^(Git|Microsoft Visual Studio Code)'
+```
+
+Git 应注册为 `2.33.0.2`，VS Code 应注册为 `1.113.0`。安装器会分别把
+`C:\Program Files\Git\cmd` 写入 Machine PATH，把 VS Code 的 `bin` 写入 User
+PATH；旧终端仍可能保留安装前环境，需要重新登录桌面或重启终端父进程。
+
 复制 Steam 前先在参考机退出 Steam、SteamVR 和 XRLink，避免运行中的日志、数据库或
 运行时文件被锁定。
 
-复制 Git 和 Steam 的管道示例：
+复制 Steam 的管道示例：
 
 ```bash
-ssh pipeline-win-source \
-  'tar -C "C:\Program Files" -cf - Git' \
-| ssh pipeline-win-target \
-  'tar -C "C:\Program Files" -xf -'
-
 ssh pipeline-win-source \
   'tar -C "C:\Program Files" -cf - Steam' \
 | ssh pipeline-win-target \
   'tar -C "C:\Program Files" -xf -'
-```
-
-目标机管理员 PowerShell 把 Git 加入系统 `PATH`：
-
-```powershell
-$gitCmd = 'C:\Program Files\Git\cmd'
-$machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
-if (($machinePath -split ';') -notcontains $gitCmd) {
-    [Environment]::SetEnvironmentVariable(
-        'Path',
-        ($machinePath.TrimEnd(';') + ';' + $gitCmd),
-        'Machine'
-    )
-}
 ```
 
 本次 581.80 驱动包来自参考机：
@@ -792,6 +841,13 @@ OpenXR ActiveRuntime。普通 Viewer 的无头成功不覆盖图形会话和头�
 前置 `DIRECT` 规则并重载内核。DNS、网页 HTTPS 和 SteamVR 下载正常不能排除这个
 问题，因为内容 CDN 正常不代表认证 API 与 CM WebSocket 的代理链路稳定。
 
+### 11.10 Git 文件存在但终端找不到命令
+
+若 `C:\Program Files\Git\cmd\git.exe` 存在，但“应用和功能”中没有 Git，说明只复制了
+程序目录，没有完成正式安装。不要用手工 PATH 或系统目录 shim 掩盖，应重新运行官方
+Git 安装包，使卸载注册信息和 PATH 由安装器写入。安装完成后用绝对路径验证版本，再
+重新登录 Windows 或刷新终端父进程。
+
 ## 12. 最终验收清单
 
 部署交付前逐项确认：
@@ -800,6 +856,7 @@ OpenXR ActiveRuntime。普通 Viewer 的无头成功不覆盖图形会话和头�
 - [ ] Windows 长路径为 `1`，电源计划为高性能；
 - [ ] `nvidia-smi` 显示 RTX 5080 和驱动 `581.80`；
 - [ ] 两个 Git 工程分支和提交与基线一致；
+- [ ] Git 和 VS Code 均有正式卸载注册信息，`git` 与 `code` CLI 版本正确；
 - [ ] 工程工作树只有已记录的目标机脚本修改和参考机已有文件；
 - [ ] assets 和 GR00T data 的文件数、字节数与参考机一致；
 - [ ] 工程 `assets` 是指向统一资源目录的 Junction；
@@ -821,6 +878,8 @@ OpenXR ActiveRuntime。普通 Viewer 的无头成功不覆盖图形会话和头�
 - 参考主机名：`DESKTOP-1MNMLD2`；
 - Host / 参考 Viewer / 目标 Viewer：`192.168.1.131 / .130 / .129`；
 - NVIDIA 驱动由 `576.88` 更新并验证为 `581.80`；
+- Git for Windows `2.33.0.2` 与 VS Code User `1.113.0` 已使用官方安装包正式安装，
+  两者签名、PATH、卸载注册信息和 CLI 均已验证；
 - 场景资源与 GR00T data 的文件数、字节数与参考机一致；
 - `D:\Isaac\unitree_sim_isaaclab\assets` 已联接到统一资源目录；
 - 普通 Viewer 无 Host 初始化测试通过；
