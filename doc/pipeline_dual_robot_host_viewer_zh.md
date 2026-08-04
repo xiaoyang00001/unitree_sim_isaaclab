@@ -229,9 +229,8 @@ G1_LOCAL_ROBOT_ID=2 bash deploy.sh --disable-crc-check --input-type keyboard isa
 跟动已通**（操作者动、robot_1 跟着动）；摇杆行走（PLANNER）与急停语义⏳待补测。
 前置：GR00T 必须 ≥ `6783bb8`——分支同步提交 14f8bf1 误删的 666 个 gear_sonic
 文件（teleop 模块/SMPL 数据/G1 资产）已全量恢复，旧检出跑 POSE 必崩。
-双 Pico 编排已增加 `PIPELINE_DUAL_PICO=1`（63901/63902 → 5556/5566），截至
-2026-08-04 仅完成静态/隔离桩测与 manager#2 无头显 UDP 冒烟；头显#2 配置、双人发车/
-联动/急停尚未实测，施工与验收以 Pico 任务书 §5 为准。
+双 Pico 编排 `PIPELINE_DUAL_PICO=1`（63901/63902 → 5556/5566）：
+**✅2026-08-04 双操作者各控一台实机验证通过**，细节以 Pico 任务书 §5 为准。
 
 拓扑（`tools/pipeline_pico_bringup.sh` 一键拉起）：
 

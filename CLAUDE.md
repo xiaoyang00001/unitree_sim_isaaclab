@@ -188,8 +188,8 @@ Pico VR 控制接入（分支 `feat/pipeline-pico-vr-control`，正路；keyboar
 急停待补测）。部署/操作/判读见 `doc/pipeline_pico_vr_deployment_zh.md`，架构盘点见权威文档 §8。
 双 Pico 编排用 `PIPELINE_DUAL_PICO=1 bash tools/pipeline_pico_bringup.sh`：manager UDP
 63901/63902、ZMQ PUB 5556/5566 显式隔离，deploy#2 显式订 5566 且脚本不再代按发车；
-截至 2026-08-04 脚本静态/隔离桩测与 manager#2 无头显 UDP 冒烟已过，头显#2 配置及
-§5.2 双人四道实机验收仍待设备窗口，不能写成双 Pico 已验收。
+**✅2026-08-04 双操作者双控实机验证通过**（不带该变量 = keyboard 调试形态，
+排障时先确认跑的是哪个形态）。
 ⚠️ GR00T 必须 ≥`6783bb8`（14f8bf1 同步误删的 666 个 gear_sonic 文件已全量恢复，旧检出跑
 POSE 必崩）；manager 必带 `--no_auto_pose`（默认数据一到就进全身跟随）；"VR 链绕过 planner
 退化 bug"只对 POSE 子模式成立，摇杆行走的 PLANNER 子模式 bug 同样在环。

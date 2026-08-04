@@ -2,10 +2,10 @@
 
 > 本文是**从零把 Pico VR 控制链部署到位**的施工顺序 + 操作手册 + 判读手册。
 > 架构盘点结论与设计取舍见权威文档 `doc/pipeline_dual_robot_host_viewer_zh.md` §8，
-> 两份互补不重复。状态（2026-08-03，tag `pipeline-pico-pose-v1`）：头显实测
-> **发车 + POSE 全身跟随已通**（操作者动、机器人跟动）；摇杆行走/急停⏳待补测。
-> 双 Pico 增量见 §5：bringup 编排与静态/桩验证已完成，头显#2 配置及双人实机
-> 四道验收仍待设备到场，当前不能视为双 Pico 已验收。
+> 两份互补不重复。状态（2026-08-04）：单 Pico 发车 + POSE 全身跟随已通
+>（2026-08-03，tag `pipeline-pico-pose-v1`）；**双 Pico 双操作者各控一台已实机
+> 验证通过**（2026-08-04，用户实测确认，`PIPELINE_DUAL_PICO=1` 编排）。
+> §5.2 四道验收中急停/端口隔离判据未逐项留痕，复验时可补记录。
 
 ## 0. 链路一图流
 
@@ -134,7 +134,7 @@ manager 侧对应日志：`[Manager] Buttons: A=1 B=1 ...`（每次按键变化�
   接通待验方案：deploy#1 加 `--output-type zmq --zmq-out-topic g1_debug`。
 - **Isaac 整场景 reset 不通知输入链**：不清 manager/planner 缓冲（step③ 单独验）。
 
-## 5. 双 Pico 施工任务书（step②，2026-08-04 编排已实现，实机待验）
+## 5. 双 Pico 施工任务书（step②，✅2026-08-04 双操作者双控实机验证通过）
 
 > 结论先行：**Isaac 与 deploy 侧零代码改动**，全部工作 = 头显#2 配置 + 第二套
 > manager 启动参数 + bringup 编排。三个承重旋钮已对代码核验（非猜测）：
