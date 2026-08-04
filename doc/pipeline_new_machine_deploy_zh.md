@@ -172,10 +172,9 @@ AR 视角语义（2026-08-04 定稿）：**位置**跟机器人头（平滑 0.15
 9. **AR 视角跟不上机器人/晃动、B 键 recenter 无效**：viewer 机的 IsaacLab fork
    `devices/openxr` 三件套（openxr_device / xr_anchor_utils / xr_cfg）是旧版——
    缺 pelvis 旋转锚分离与 recenter 绑定（sim 日志打印 rotation_anchor= 只是 cfg
-   属性回显，**不证明 fork 在用**）。与 Linux 07241 同步三件套即修；B 键事件在
-   Windows XRLink 链上能否到达⏳待验（"不回传"曾被误判——零触发是因为旧代码根本
-   没绑定），判读=松开 B 看日志 `XR: Recentered yaw`；不通就用启动自动对正 +
-   GUI 窗口 **F9** 兜底；抖动旋钮 `ISAACLAB_XR_ANCHOR_POS_SMOOTHING`（默认 0.15s）。
+   属性回显，**不证明 fork 在用**）。与 Linux 07241 同步三件套即修；B 键回传
+   **已实测可达**（2026-08-04 松开 B 对正生效；此前"不回传"是误判——零触发只因
+   旧代码没绑定），另有启动自动对正 + GUI 窗口 **F9** 双兜底；抖动旋钮 `ISAACLAB_XR_ANCHOR_POS_SMOOTHING`（默认 0.15s）。
 
 ## 6. 深入阅读
 
