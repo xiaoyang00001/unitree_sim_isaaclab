@@ -999,20 +999,22 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
         if VIEWER_MODE:
             _anchor_prim = "PeerRobot2" if _env_str("ISAACLAB_XR_ANCHOR_ROBOT_ID", "1") == "2" else "PeerRobot"
             # 镜像体是被同步帧离散传送的（非连续物理），锚定位置裸写会以应用频率抖动
-            # ——viewer 打开位置平滑（本体动力学路径保持 0=裸写不受影响）。旋转平滑
-            # 沿用默认 1.0s（win-fps-native 时代的手感；fork 已改用实测帧时算 alpha，
-            # 低帧率下不再变相加倍）。B 键在 XRLink Windows 驱动链上不回传（实测
-            # handler 从未触发），启动时自动 recenter 一次作为替代。
-            _apply_xr_anchor(
-                _anchor_prim,
-                "viewer",
-                extra={
-                    "anchor_position_smoothing_time": float(
-                        os.environ.get("ISAACLAB_XR_ANCHOR_POS_SMOOTHING", "0.15")
-                    ),
-                    "recenter_yaw_on_start": True,
-                },
-            )
+            # ——viewer 打开位置平滑（本体动力学路径保持 0=裸写不受影响）。
+            # 旋转：默认 FIXED——视角旋转只听操作者自己的头，不跟机器人转身
+            # （SONIC 转身会被动旋转视角，操作者实测头晕）。朝向与机器人错位时
+            # 按 B/F9 recenter 把机器人 pelvis 朝向重新对到正前方；启动时自动
+            # 对正一次。ISAACLAB_XR_ANCHOR_ROT_FOLLOW=1 恢复 yaw 跟随（旧手感）。
+            from isaaclab.devices.openxr import XrAnchorRotationMode as _RotMode
+
+            _extra = {
+                "anchor_position_smoothing_time": float(
+                    os.environ.get("ISAACLAB_XR_ANCHOR_POS_SMOOTHING", "0.15")
+                ),
+                "recenter_yaw_on_start": True,
+            }
+            if os.environ.get("ISAACLAB_XR_ANCHOR_ROT_FOLLOW", "0") != "1":
+                _extra["anchor_rotation_mode"] = _RotMode.FIXED
+            _apply_xr_anchor(_anchor_prim, "viewer", extra=_extra)
         if MIRROR_OBJECTS:
             # 基座注册的 reset_scene_to_default 会向 kinematic 镜像物体写速度，
             # CPU pipeline 下每次复位刷 ~14 条 PhysX 错误、累计 1000 条掐停仿真。

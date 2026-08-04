@@ -147,6 +147,12 @@ run_pipeline_viewer_ar.bat         # AR，视角跟 robot_1（操作者#1）
 run_pipeline_viewer_ar_robot2.bat  # AR，视角跟 robot_2（操作者#2）
 ```
 
+AR 视角语义（2026-08-04 定稿）：**位置**跟机器人头（平滑 0.15s，
+`ISAACLAB_XR_ANCHOR_POS_SMOOTHING` 可调）；**旋转**只听操作者自己的头，
+不跟机器人转身（跟转实测头晕）——与机器人朝向错位时按 **右手柄 B（松开触发）
+或 win 键盘 F9** 对正，启动时自动对正一次。`ISAACLAB_XR_ANCHOR_ROT_FOLLOW=1`
+恢复 yaw 跟随模式。
+
 ## 5. 高频坑（每条都踩过，逐条核对）
 
 1. **两套 deploy 必须并行启动**（错峰 ~20s）——串行等 Init Done 会在双 ack 门下自锁 4Hz；
