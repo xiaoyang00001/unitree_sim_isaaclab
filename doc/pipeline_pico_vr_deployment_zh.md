@@ -4,6 +4,8 @@
 > 架构盘点结论与设计取舍见权威文档 `doc/pipeline_dual_robot_host_viewer_zh.md` §8，
 > 两份互补不重复。状态（2026-08-03，tag `pipeline-pico-pose-v1`）：头显实测
 > **发车 + POSE 全身跟随已通**（操作者动、机器人跟动）；摇杆行走/急停⏳待补测。
+> 双 Pico 增量见 §5：bringup 编排与静态/桩验证已完成，头显#2 配置及双人实机
+> 四道验收仍待设备到场，当前不能视为双 Pico 已验收。
 
 ## 0. 链路一图流
 
@@ -17,7 +19,8 @@
        └─ ZMQ PUB :5556（pose/command/planner 三话题同端口，前缀区分）
      deploy#1 --input-type zmq_manager（其余同 keyboard 版 isaac profile）
        └─ DDS rt/* 锁步 ↔ host sim（Isaac 段零改动）
-     deploy#2 --input-type keyboard（robot_2 调试通道，不变）
+     deploy#2 --input-type keyboard（默认）
+       └─ 双 Pico模式改为 zmq_manager :5566 ← Pico#2 UDP :63902
      win 侧 AR viewer（观看链，与控制链完全并行独立）
 ```
 
@@ -32,9 +35,9 @@ PC Service**（.deb 留在 GR00T 仓库根，sdk 模式才用）。
 | GR00T 仓库 | `/home/nolo/GR00T-WholeBodyControl`，deploy isaac profile 可用 | ✅ |
 | GR00T 版本 | `feat/isaac-state-sync` **≥ `6783bb8`**（14f8bf1 误删的 666 个 gear_sonic 文件已全量恢复；旧检出 manager 收数据/进 POSE 必崩） | ✅ |
 | `.venv_teleop` | Python 3.10，由 `install_scripts/install_pico.sh` 创建（uv）；`import xrobotoolkit_sdk, zmq, msgpack` 通过 | ✅ 实测通过 |
-| 防火墙 | 入站 UDP 63901 放行（头显→本机） | ✅ ufw 不活动 |
-| Pico 侧 app | GameLink（`com.Nolo.CloudVR`）已装 | ✅ |
-| Pico 侧配置 | `XrLinkConfig.json` 的 `wholeBodyTracking`：`serverHost`=Ubuntu IP、`serverPort`=63901、`sendControllers`=true | ✅ 已指向 192.168.50.68 |
+| 防火墙 | 入站 UDP 63901 放行；双 Pico 还要放行 63902（头显→本机） | ✅ ufw 不活动 |
+| Pico 侧 app | GameLink（`com.Nolo.CloudVR`）；双 Pico 的 #2 装同一 APK | #1 ✅；#2 ⏳待设备 |
+| Pico 侧配置 | `XrLinkConfig.json` 的 `wholeBodyTracking`：`serverHost`=Ubuntu IP、#1 `serverPort`=63901、#2=63902、`sendControllers`=true | #1 ✅ 已指向 192.168.50.68；#2 ⏳待回读 |
 | sim 侧 | 本工程 host 模式可跑（见权威文档 §2） | ✅ |
 
 - ⚠️ `.venv_teleop` **没装** sim 依赖（tyro/mujoco/onnxruntime），跑不了
@@ -42,9 +45,17 @@ PC Service**（.deb 留在 GR00T 仓库根，sdk 模式才用）。
 - 头显配置改法（**免重打包**，app 读的是 files/ 下副本，改完重启 app 即生效）：
 
 ```bash
-adb connect 192.168.50.178:5555
-adb shell cat /sdcard/Android/data/com.Nolo.CloudVR/files/XrLinkConfig.json
-# 编辑 wholeBodyTracking.serverHost / serverPort 后推回，重启 GameLink app
+PICO_ADB=192.168.50.178:5555
+PICO_CONFIG=/sdcard/Android/data/com.Nolo.CloudVR/files/XrLinkConfig.json
+adb connect "$PICO_ADB"
+adb -s "$PICO_ADB" pull "$PICO_CONFIG" XrLinkConfig.before.json
+cp XrLinkConfig.before.json XrLinkConfig.edit.json
+# 用编辑器修改 XrLinkConfig.edit.json 的 wholeBodyTracking 后：
+adb -s "$PICO_ADB" push XrLinkConfig.edit.json "$PICO_CONFIG"
+adb -s "$PICO_ADB" shell am force-stop com.Nolo.CloudVR
+adb -s "$PICO_ADB" shell monkey -p com.Nolo.CloudVR \
+  -c android.intent.category.LAUNCHER 1
+adb -s "$PICO_ADB" shell cat "$PICO_CONFIG"  # 必须回读核对后才继续
 ```
 
 ## 2. 启动（Ubuntu 侧）
@@ -52,7 +63,12 @@ adb shell cat /sdcard/Android/data/com.Nolo.CloudVR/files/XrLinkConfig.json
 一键（推荐，日志落 `/tmp/pipeline_pico/`，`PIPELINE_LOG_DIR` 可覆盖）：
 
 ```bash
+# 默认：单 Pico 控 robot_1 + keyboard 控 robot_2
 bash tools/pipeline_pico_bringup.sh
+
+# 双 Pico：两套 manager 分别控制 robot_1/robot_2
+PIPELINE_DUAL_PICO=1 bash tools/pipeline_pico_bringup.sh
+
 # 换机器时路径变量与命令同一行传入（分行裸赋值传不进去）：
 #   PIPELINE_SIM_DIR=<仿真工程> GR00T_WBC_ROOT=<GR00T> PIPELINE_SIM_PY=<python> bash tools/...
 # 纯 ssh/无桌面会话加 PIPELINE_HEADLESS=1（否则 kit 拿不到 X 会在 RTX 插件初始化段错误，
@@ -60,13 +76,13 @@ bash tools/pipeline_pico_bringup.sh
 ```
 
 脚本做的事（手动分步照此复刻）：硬清残余 → host sim（HOST_MODE，CRC 两刀）→
-**双 deploy 并行**（#1 `--input-type zmq_manager`、#2 keyboard，错峰 20s）→
-manager（`XROBO_TRANSPORT=udp PYTHONUNBUFFERED=1 .venv_teleop/bin/python
-gear_sonic/scripts/pico_manager_thread_server.py --manager --no_auto_pose --port 5556`）→
-channel#2 发 `]` 发车+预激活 planner。
+**双 deploy 并行**（错峰 20s）→ manager UDP receiver 就绪 → 双 deploy Init →
+STARTUP HOLD。默认模式的 deploy#2 是 keyboard，脚本继续给 channel#2 发 `]` 并预激活
+planner；双 Pico 模式的 deploy#2 接 `zmq_manager:5566`，另起
+`pico_manager_r2.log`，两路都只等各自操作者 A+B+X+Y，脚本不代按。
 
-启动顺序不敏感的原因（改脚本前要懂）：manager 拿到**第一帧头显数据才 bind 5556**；
-deploy 的 SUB 是 connect 语义会一直重试；command 话题有 **1Hz keepalive** 兜
+启动顺序不敏感的原因（改脚本前要懂）：manager 拿到**第一帧头显数据才 bind 对应
+ZMQ PUB 5556/5566**；deploy 的 SUB 是 connect 语义会一直重试；command 话题有 **1Hz keepalive** 兜
 slow-joiner——所以 manager 晚起、deploy 重启都能自动接上。
 
 两条必须遵守：
@@ -79,7 +95,8 @@ slow-joiner——所以 manager 晚起、deploy 重启都能自动接上。
 ## 3. 操作手册（头显侧）
 
 1. 戴上头显、手柄唤醒，启动 GameLink；
-2. 看 Ubuntu 侧 `pico_manager.log`：不再刷 `waiting for body data...` = 数据到；
+2. 看 Ubuntu 侧对应日志（#1=`pico_manager.log`、#2=`pico_manager_r2.log`）：
+   不再刷 `waiting for body data...` = 该路数据到；
 3. **四键同按 A+B+X+Y** = 发车，进 **PLANNER**（摇杆行走）——
    同按瞬间的身体姿态被用作 VR 追踪校准零位，**站直了再按**；
 4. 摇杆：**左摇杆=行走方向，右摇杆=转向**；**A+B 升档**（SLOW_WALK→WALK→RUN），
@@ -117,7 +134,7 @@ manager 侧对应日志：`[Manager] Buttons: A=1 B=1 ...`（每次按键变化�
   接通待验方案：deploy#1 加 `--output-type zmq --zmq-out-topic g1_debug`。
 - **Isaac 整场景 reset 不通知输入链**：不清 manager/planner 缓冲（step③ 单独验）。
 
-## 5. 双 Pico 施工任务书（step②，2026-08-04 整理，未实施）
+## 5. 双 Pico 施工任务书（step②，2026-08-04 编排已实现，实机待验）
 
 > 结论先行：**Isaac 与 deploy 侧零代码改动**，全部工作 = 头显#2 配置 + 第二套
 > manager 启动参数 + bringup 编排。三个承重旋钮已对代码核验（非猜测）：
@@ -131,27 +148,71 @@ manager 侧对应日志：`[Manager] Buttons: A=1 B=1 ...`（每次按键变化�
 | 层 | 实例 #1（robot_1） | 实例 #2（robot_2） |
 |---|---|---|
 | 头显 JSON `wholeBodyTracking.serverPort` | 63901 | **63902** |
-| manager | `--port 5556`（UDP 收默认 63901） | `XROBO_UDP_PORT=63902` + `--port 5566` |
-| deploy | 默认（SUB localhost:5556） | `G1_LOCAL_ROBOT_ID=2` + **`--zmq-port 5566`** |
+| manager | `XROBO_UDP_PORT=63901` + `--port 5556` | `XROBO_UDP_PORT=63902` + `--port 5566` |
+| deploy | `--zmq-port 5556` | `G1_LOCAL_ROBOT_ID=2` + **`--zmq-port 5566`** |
 
 ⚠️ ZMQ 输入端口**不随 `G1_LOCAL_ROBOT_ID` 自动分流**（ID=2 只改输出侧 5567/rt/r2），
 `--zmq-port` 必须显式给；command/planner 话题名硬编码，靠话题区分双实例走不通。
+
+### 5.0 已批准实施计划与交付口径
+
+现场配置与实机验收严格按以下顺序，前一项不过不进入后一项；脚本可提前实现和静态
+验证，但不能据此跳过头显/链路 gate：
+
+1. 配置并回读头显#2 的 GameLink `wholeBodyTracking`，确认 host IP、UDP 63902、
+   `sendControllers=true`；改前保留原 JSON 备份；
+2. 手动启动 manager#2（UDP 63902 → ZMQ PUB 5566），只开头显#2 验证它与
+   manager#1（UDP 63901 → ZMQ PUB 5556）确实隔离；
+3. 手动将 deploy#2 切到 `G1_LOCAL_ROBOT_ID=2 + zmq_manager:5566`，从启动日志
+   核对输入端口及 `rt/r2/*` DDS 身份；
+4. 把已验证参数固化进 `tools/pipeline_pico_bringup.sh` 的
+   `PIPELINE_DUAL_PICO=1` 分支，默认未设置时完整保留单 Pico + channel#2 keyboard；
+5. 先做 `bash -n`、`git diff --check` 与双分支静态审查，再按 §5.2 四道门实机验收；
+6. 只按真实结果更新本节状态：脚本完成不等于实机验收完成，不提前标 ✅。
+
+当前进度：
+
+| 项 | 状态 | 证据/剩余工作 |
+|---|---|---|
+| bringup 双分支实现 | ✅ 静态完成 | `bash -n`、`git diff --check`、默认/双 Pico 隔离桩测通过 |
+| manager#2 无头显冒烟 | ✅ 完成 | 实际监听 UDP 63902 并进入 `waiting for body data...`；因无头显，尚未 bind ZMQ 5566 |
+| 头显#2 配置与回读 | ⏳ 待设备 | 当前 ADB 无在线 Pico，未改设备配置 |
+| manager/deploy 手动隔离 | ⏳ 待实机 | 不打断当前正在运行的单 Pico + keyboard 链 |
+| §5.2 四道验收 | ⏳ 待双人窗口 | 未发车、未做双人联动和急停 |
+
+代码改动边界：只改本工程 bringup 编排和配套文档；Isaac、manager、deploy 源码
+均不改。双 Pico 分支必须显式钉死 manager#1/#2 的 UDP 端口为 63901/63902，避免
+调用环境残留的 `XROBO_UDP_PORT` 污染；deploy#2 去掉长寿命键管道后，仍要给
+`deploy.sh` 的 `Proceed with deployment? [Y/n]` 一次性送入确认换行，否则后台启动
+会在 `read` 处退出。脚本仍保留双 deploy 并行 Init、两套 manager UDP receiver、
+STARTUP HOLD 就绪检查和 renice，但不等待头显首帧、不代替任何操作者发车。
+
+回滚口径：不设置 `PIPELINE_DUAL_PICO=1` 即回到现有单 Pico + keyboard#2；头显#2
+可用施工前备份恢复。完整 bringup 会清理既有 sim/deploy/manager 进程，实机联调只在
+两台头显与两位操作者到场的测试窗口执行。
 
 ### 5.1 施工步骤
 
 **A. 头显 #2 配置**（一次性）：
 1. 第二台 Pico 4 Ultra 装 GameLink（同一 apk 即可——追踪目标在 JSON 不在 dex）；
-   开无线 adb，记下 IP；
-2. 改 `/sdcard/Android/data/com.Nolo.CloudVR/files/XrLinkConfig.json`：
+   开无线 adb，记下 IP；需要安装时执行 `adb -s <Pico#2地址> install -r <GameLink.apk>`；
+2. 按 §1 命令先 `pull` 备份，再改
+   `/sdcard/Android/data/com.Nolo.CloudVR/files/XrLinkConfig.json`：
    `wholeBodyTracking` = `{serverHost: <host IP>, serverPort: 63902,
-   sendControllers: true}`（§1 有 adb 操作序列），重启 GameLink 生效；
-3. ⚠️ **端口配错的故障模式是静默混流不是报错**：两台头显都发 63901 时，
+   sendControllers: true}`，`push` 后 force-stop/重启 GameLink；
+3. 用 `adb shell cat` 回读并逐项核对 host、63902、`sendControllers=true`；
+4. ⚠️ **端口配错的故障模式是静默混流不是报错**：两台头显都发 63901 时，
    `xr_client` 只留"最新一帧"，两人身体数据交替覆盖、机器人抽搐。防呆判据见 5.3-①。
 
-**B. manager #2 启动**（手动第五终端）：
+**B. 两套 manager 隔离启动**（#2 是新增的第五终端）：
 
 ```bash
 cd <GR00T路径>
+# manager#1：双 Pico 联调时也显式钉死 63901
+XROBO_TRANSPORT=udp XROBO_UDP_PORT=63901 PYTHONUNBUFFERED=1 .venv_teleop/bin/python \
+  gear_sonic/scripts/pico_manager_thread_server.py --manager --no_auto_pose --port 5556
+
+# manager#2：另一个终端
 XROBO_TRANSPORT=udp XROBO_UDP_PORT=63902 PYTHONUNBUFFERED=1 .venv_teleop/bin/python \
   gear_sonic/scripts/pico_manager_thread_server.py --manager --no_auto_pose --port 5566
 ```
@@ -159,22 +220,41 @@ XROBO_TRANSPORT=udp XROBO_UDP_PORT=63902 PYTHONUNBUFFERED=1 .venv_teleop/bin/pyt
 **C. deploy#2 从 keyboard 切 zmq_manager**（§4.2 终端③ 改为）：
 
 ```bash
+cd <GR00T路径>/gear_sonic_deploy
 G1_LOCAL_ROBOT_ID=2 bash deploy.sh --disable-crc-check \
   --input-type zmq_manager --zmq-port 5566 isaac
 ```
 
 **D. bringup 脚本改造**（`tools/pipeline_pico_bringup.sh` 加 `PIPELINE_DUAL_PICO=1`）：
-- deploy#2 参数换成上面 C 的形式（去掉键管道 tail dk_r2）；
+- 只接受 `PIPELINE_DUAL_PICO=0/1`，默认 0 完整保留现有行为；
+- deploy#2 参数换成上面 C 的形式（去掉长寿命键管道 tail dk_r2，但给 deploy.sh
+  一次性确认换行）；
 - 追加 manager#2（B 的参数，日志 `pico_manager_r2.log`）；
+- 双 Pico 模式显式设置 manager#1 `XROBO_UDP_PORT=63901`、manager#2
+  `XROBO_UDP_PORT=63902`，不继承外部同名变量；
 - **去掉 channel#2 的 `]` 发车与 planner 预激活**（zmq_manager 下发车来自操作者
-  A+B+X+Y，脚本不能替按）；`wait_for CONTROL marker` 相应不再作为脚本内验收步。
+  A+B+X+Y，脚本不能替按）；`wait_for CONTROL marker` 相应不再作为脚本内验收步；
+- manager UDP receiver、renice 和双 deploy `Init Done` 检查两种模式都保留，结束提示
+  列出两份 manager 日志；UDP 就绪不等于头显数据/ZMQ PUB/实机控制已验收。
+
+实现后的双 Pico 一键命令：
+
+```bash
+PIPELINE_DUAL_PICO=1 bash tools/pipeline_pico_bringup.sh
+```
 
 ### 5.2 验收序列（先隔离后联动，别一步到位）
+
+联调时至少同时盯以下日志（`PIPELINE_LOG_DIR` 覆盖过时替换目录）：
+
+```bash
+tail -F /tmp/pipeline_pico/{pico_manager,pico_manager_r2,deploy_r1,deploy_r2,host_dual}.log
+```
 
 1. **单头显打 63902 通路**：只戴头显#2 → manager#2 日志停止刷 waiting、
    manager#1 仍在 waiting（= 端口隔离成立，无串流）；
 2. **头显#2 单独发车**：A+B+X+Y → robot_2 进控制（sim 日志 channel#2
-   `CONTROL marker received`）、robot_1 不动；
+   精确指纹 `[sonic_dds:r2] CONTROL marker received`）、robot_1 不动；
 3. **双头显同时**：两人各自发车、各控各机器人；重点盯 `sync_waits` 不涨、
    帧率账本 S 余量（多一个 manager 的 CPU 负载）；
 4. **急停语义**：任一人 A+B+X+Y 只停自己的 manager，另一路不受影响。
@@ -182,7 +262,9 @@ G1_LOCAL_ROBOT_ID=2 bash deploy.sh --disable-crc-check \
 ### 5.3 已知边界与风险（做前读）
 
 - ① **同端口双发送者静默混流**：`xr_client` 记录 `_latest_sender` 但不过滤。
-  验收时各 manager 只应看到一个来源 IP；出现机器人抽搐先查两台头显的 serverPort；
+  现有 manager 日志不打印 `_latest_sender`，标准 gate 以 §5.2-① 的 waiting 隔离为准；
+  需要核对包源时另开 `sudo tcpdump -ni <iface> 'udp dst port 63901 or udp dst port 63902'`，
+  确认两个头显源 IP 分别只打对应目标端口。出现机器人抽搐先查 serverPort；
 - ② **AR 观看第二路是独立工作包**：win2 一台机只能跑一个 XR 实例（12GB 显存上限），
   操作者#2 要 AR 得部署 win1 + `run_pipeline_viewer_ar_robot2.bat`；且 GameLink 的
   **视频串流目标 IP 在 dex 里硬编码**（与追踪目标独立），头显#2 要看 win1 画面需
@@ -196,7 +278,7 @@ G1_LOCAL_ROBOT_ID=2 bash deploy.sh --disable-crc-check \
 
 ## 6. 与 AR 观看链的关系（step④，开放问题）
 
-控制链（头显→Ubuntu:63901）与观看链（Ubuntu→win viewer→SteamVR AR→头显）
+控制链（头显→Ubuntu:63901/63902）与观看链（Ubuntu→win viewer→SteamVR AR→头显）
 互相独立。值得注意：GameLink 这个 app 的**视频串流目标与全身追踪目标本来就是
 两条独立配置**（前者在 dex 内硬编码、后者在 XrLinkConfig.json）——"同一台头显
 边看 AR 边发追踪控制"在配置层面可能天然成立，⏳未实测，属 step④ 验证范围。

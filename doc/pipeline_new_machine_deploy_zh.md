@@ -65,7 +65,7 @@ export GR00T_WBC_ROOT=/绝对路径/GR00T-WholeBodyControl   # 必设！缺了�
 | bringup 脚本路径 | 环境变量 `PIPELINE_SIM_DIR` / `GR00T_WBC_ROOT` / `PIPELINE_SIM_PY` | 新机实际路径（脚本内有默认值） |
 | viewer 连谁 | win 侧 `run_pipeline_viewer*.bat` 的 `PIPELINE_HOST_IP` 默认值（或设同名系统环境变量） | 新 host 的 IP |
 | Pico 追踪发给谁 | 头显 `/sdcard/Android/data/com.Nolo.CloudVR/files/XrLinkConfig.json` 的 `wholeBodyTracking.serverHost`（adb 改，重启 app 生效） | 新 host 的 IP |
-| 防火墙 | host 入站 | TCP 15555/15556（viewer）、UDP 63901（Pico） |
+| 防火墙 | host 入站 | TCP 15555/15556（viewer）、UDP 63901（Pico#1）；双 Pico 再放行 UDP 63902 |
 
 DDS 全程走 `lo` + domain 1（sim 与 deploy 同机），跨机不需要任何 DDS 配置；
 ⚠️ 同网段有真机时保持 domain/interface 隔离（工程 CLAUDE.md 开头的告警）。
@@ -79,9 +79,16 @@ cd <仿真工程>
 PIPELINE_SIM_DIR=$PWD GR00T_WBC_ROOT=<GR00T路径> \
 PIPELINE_SIM_PY=$(conda run -n env_isaaclab which python) \
 bash tools/pipeline_pico_bringup.sh
+
+# 双 Pico 控制（头显#2 必须已按 Pico 任务书配置为 UDP 63902）：
+PIPELINE_DUAL_PICO=1 PIPELINE_SIM_DIR=$PWD GR00T_WBC_ROOT=<GR00T路径> \
+PIPELINE_SIM_PY=$(conda run -n env_isaaclab which python) \
+bash tools/pipeline_pico_bringup.sh
 ```
 
-拉起 sim + deploy#1(zmq_manager) + deploy#2(keyboard) + pico_manager 全套。
+默认拉起 sim + deploy#1(zmq_manager) + deploy#2(keyboard) + pico_manager 全套；
+`PIPELINE_DUAL_PICO=1` 把 deploy#2 换成 zmq_manager 并追加 manager#2，端口矩阵与实机
+gate 见 `doc/pipeline_pico_vr_deployment_zh.md` §5。
 **无头显也能跑**（channel#1 停在等发车属正常，不影响物理与锁步）。
 
 ⚠️ 三个易错点（新机首跑都踩过）：
