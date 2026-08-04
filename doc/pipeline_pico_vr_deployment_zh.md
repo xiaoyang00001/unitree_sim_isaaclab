@@ -132,7 +132,12 @@ manager 侧对应日志：`[Manager] Buttons: A=1 B=1 ...`（每次按键变化�
 - **feedback 通道断**：manager 订 ZMQ 5557/`g1_debug`，deploy#1 实际输出 UDP 且
   话题 `g1_1_debug`——只影响 PLANNER_FROZEN 上身目标与 VR_3PT 重校准（回退零位）。
   接通待验方案：deploy#1 加 `--output-type zmq --zmq-out-topic g1_debug`。
-- **Isaac 整场景 reset 不通知输入链**：不清 manager/planner 缓冲（step③ 单独验）。
+- **Isaac 整场景 reset 不通知输入链**：不清 manager/planner 缓冲。
+  **step③ 首个实测数据点（2026-08-04，另机，用户实测）：倒地自动复位后可继续
+  操作**——机制假说：VR 链 manager 以 20Hz 连续发 planner 流，可能天然避开
+  keyboard 链退化的 WALK→IDLE→WALK 续接路径（待证）。要把它变成实锤还差两个
+  自查：①reset 后看 deploy 终端 `Planner Model` 耗时应 >90ms（36-79ms=退化态）；
+  ②POSE 子模式下的 reset 表现与手动 DDS reset（`rt/reset_pose/cmd`）未测。
 
 ## 5. 双 Pico 施工任务书（step②，✅2026-08-04 双操作者双控实机验证通过）
 
@@ -277,7 +282,8 @@ tail -F /tmp/pipeline_pico/{pico_manager,pico_manager_r2,deploy_r1,deploy_r2,hos
   将来接通时注意 manager#2 要 `--zmq_feedback_port 5567`；
 - ④ **planner 退化 bug 双路都在环**（PLANNER 子模式共用 kplanner 线程逻辑，
   每个 deploy 各自一份状态）：任一路行走退化 = 重启对应 deploy；
-- ⑤ **整场景 reset 不通知输入链**（step③ 未验）双路同样成立。
+- ⑤ **整场景 reset 不通知输入链**双路同样成立——step③ 首例实测（倒地复位后可
+  继续操作，另机）见 §4 已知限制条目，退化指纹自查与 POSE/手动 reset 细项未收口。
 
 ## 6. 与 AR 观看链的关系（step④，开放问题）
 
