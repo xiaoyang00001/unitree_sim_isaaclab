@@ -136,6 +136,9 @@ manager 侧对应日志：`[Manager] Buttons: A=1 B=1 ...`（每次按键变化�
 
 ## 5. 双 Pico 施工任务书（step②，✅2026-08-04 双操作者双控实机验证通过）
 
+> 🗺️ 可视化拓扑/施工图：`doc/pipeline_dual_pico_plan_zh.html`（自包含单文件，
+> 浏览器直接打开；与本节内容同源，双泳道端口一图流）。
+
 > 结论先行：**Isaac 与 deploy 侧零代码改动**，全部工作 = 头显#2 配置 + 第二套
 > manager 启动参数 + bringup 编排。三个承重旋钮已对代码核验（非猜测）：
 > `XROBO_UDP_PORT` 在 `decoupled_wbc/control/teleop/device/pico/xr_client.py`
