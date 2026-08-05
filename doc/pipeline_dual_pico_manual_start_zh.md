@@ -1,3 +1,8 @@
+# 双 Pico 双机器人手工启动
+
+> 整场景 reset 的入口、底层语义、安全恢复和风险统一见
+> [Isaac/SONIC 场景复位说明](scene_reset_zh.md)。
+
 当前机器信息我已核对：
 
 - Ubuntu host：`192.168.1.131`
@@ -112,6 +117,9 @@ env DISPLAY=:1 \
 
 如果需要把场景同步给远端 viewer，把 `127.0.0.1` 换成 viewer IP。纯 SSH 无桌面时，把 `--hide_ui` 换成 `--no_render`。
 
+`--hide_ui` 仍有本地 Kit 窗口：聚焦该窗口后按一次 **F12** 可执行整场景 reset。
+headless / `--no_render` 没有 F12 通路。
+
 ### 终端 2：deploy#1
 
 ```bash
@@ -165,13 +173,19 @@ cd /home/nolovr/GR00T-WholeBodyControl
 
 XROBO_TRANSPORT=udp \
 XROBO_UDP_PORT=63901 \
+UNITREE_DDS_DOMAIN=1 \
+UNITREE_DDS_INTERFACE=lo \
 PYTHONUNBUFFERED=1 \
 .venv_teleop/bin/python \
 gear_sonic/scripts/pico_manager_thread_server.py \
 --manager \
 --no_auto_pose \
+--enable_isaac_scene_reset \
 --port 5556
 ```
+
+manager#1 是唯一全局 reset 权威；上述 DDS domain/interface 和
+`--enable_isaac_scene_reset` 都不能省略。
 
 首先应看到：
 
@@ -199,6 +213,8 @@ gear_sonic/scripts/pico_manager_thread_server.py \
 --no_auto_pose \
 --port 5566
 ```
+
+manager#2 刻意不带 `--enable_isaac_scene_reset`，因此操作者#2 不能触发全局 reset。
 
 首先应看到：
 
@@ -236,7 +252,32 @@ ss -lunp | rg ':(63901|63902)\b'
 ss -ltnp | rg ':(5556|5566)\b'
 ```
 
-## 五、急停与退出
+## 五、整场景 reset
+
+- **Ubuntu F12**：聚焦本地 Isaac/Kit 窗口后按一次；headless、`--no_render`、
+  replay 和镜像 viewer 不支持。
+- **Pico#1 左 X**：只按 X 并保持 2 秒；A/B/Y 必须未按，左右摇杆四轴在
+  `±0.15` 内，GameLink 样本年龄不超过 `0.5s`。触发一次后必须明确松开 X 才能
+  再次触发。
+- **Pico#2**：没有全局 reset 权限。
+
+短按 X、`A+X`、`X+Y` 和 `A+B+X+Y` 不会误触发；摇杆未回中或 GameLink 断流会
+取消计时。两条入口最终都执行 `reset_all_self`，即两台机器人与动态场景物体一起回到
+默认状态，不是只扶起单台机器人。
+
+预期日志：
+
+```text
+[keyboard] F12 pressed: full scene reset queued
+[reset_input] Ubuntu keyboard F12: full scene reset
+[SceneReset] published full-scene reset: topic=rt/reset_pose/cmd category=2
+```
+
+不要同时使用 F12 和 Pico X；精简实现没有在 F12 与 DDS category 2 之间做跨来源冷却
+合并。reset 后若 PLANNER 原地踉跄或不位移，重启对应 deploy。详细原理和判据见本页开头
+链接的 reset 说明。
+
+## 六、急停与退出
 
 任一操作者再次按 `A+B+X+Y`，只应停止自己的机器人并退出自己的 manager，另一路继续工作。
 

@@ -6,6 +6,8 @@
 >（2026-08-03，tag `pipeline-pico-pose-v1`）；**双 Pico 双操作者各控一台已实机
 > 验证通过**（2026-08-04，用户实测确认，`PIPELINE_DUAL_PICO=1` 编排）。
 > §5.2 四道验收中急停/端口隔离判据未逐项留痕，复验时可补记录。
+> 自动倒地、Ubuntu F12 和 Pico 左 X 的统一 reset 说明见
+> [Isaac/SONIC 场景复位说明](scene_reset_zh.md)。
 
 ## 0. 链路一图流
 
