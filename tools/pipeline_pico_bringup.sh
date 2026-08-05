@@ -13,6 +13,9 @@
 #     63901/udp（双 Pico 时 #2 用 63902/udp），不需要 XRoboToolkit PC Service。
 #   - 双 Pico 的 manager ZMQ PUB 分别为 5556/5566，deploy#2 必须显式
 #     --zmq-port 5566；G1_LOCAL_ROBOT_ID=2 只分 DDS/输出侧，不分 ZMQ 输入。
+#   - 整场景复位权威固定在 manager#1：左手 X 单键、摇杆回中后持续 2s，
+#     manager#1 经 domain=1/lo 发 rt/reset_pose/cmd。manager#2 不创建复位 publisher，
+#     防止两个操作者同时触发全局 reset。Ubuntu Kit 窗口 F12 是同一入口的备用键。
 #   - 锁步注意：双 ack AND 门下 deploy#1/#2 仍必须并行启动（串行会自锁）；
 #     ack 在 Init 后即持续回，(操作者未发车时机器人保持默认站姿，物理照常推进)。
 #
@@ -24,7 +27,9 @@
 #   3. 按 A+B+X+Y（四键同按，瞬按）→ 进 PLANNER：左摇杆=行走方向、右摇杆=转向；
 #      A+B 升档(SLOW_WALK→WALK→RUN...)、X+Y 降档。
 #   4. A+X 切 POSE 全身跟随（校准帧=进入时刻的身体姿态）；左摇杆按下切 VR_3PT。
-#   5. 再按 A+B+X+Y = 急停（manager 退出，deploy 停控）。
+#   5. 整场景 reset：#1 左 X 单键长按 2s（摇杆回中）；或聚焦 Ubuntu Kit
+#      窗口按 F12。短按 X 无动作，A+X / X+Y / 四键组合不会触发 reset。
+#   6. 再按 A+B+X+Y = 急停（manager 退出，deploy 停控）。
 set -u
 LOG_DIR="${PIPELINE_LOG_DIR:-/tmp/pipeline_pico}"
 SIM_DIR="${PIPELINE_SIM_DIR:-/home/nolo/unitree_sim_isaaclab-pipeline}"
@@ -152,11 +157,12 @@ if [ "$DUAL_PICO" = "1" ]; then
   : > "$LOG_DIR/pico_manager_r2.log"
 fi
 if [ "$DUAL_PICO" = "1" ]; then
-  echo "== start pico manager#1 (udp :$PICO_R1_UDP_PORT, PUB :$PICO_R1_ZMQ_PORT) =="
+  echo "== start pico manager#1 (udp :$PICO_R1_UDP_PORT, PUB :$PICO_R1_ZMQ_PORT, scene-reset authority) =="
   # 双 Pico 模式显式钉死两个 UDP 端口，防调用环境残留 XROBO_UDP_PORT 污染隔离。
   ( cd "$GR00T_ROOT" && env XROBO_TRANSPORT=udp XROBO_UDP_PORT="$PICO_R1_UDP_PORT" \
-      PYTHONUNBUFFERED=1 "$MGR_PY" gear_sonic/scripts/pico_manager_thread_server.py \
-      --manager --no_auto_pose --port "$PICO_R1_ZMQ_PORT" \
+      UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo PYTHONUNBUFFERED=1 \
+      "$MGR_PY" gear_sonic/scripts/pico_manager_thread_server.py \
+      --manager --no_auto_pose --enable_isaac_scene_reset --port "$PICO_R1_ZMQ_PORT" \
       > "$LOG_DIR/pico_manager.log" 2>&1 ) &
 
   echo "== start pico manager#2 (udp :$PICO_R2_UDP_PORT, PUB :$PICO_R2_ZMQ_PORT) =="
@@ -165,11 +171,13 @@ if [ "$DUAL_PICO" = "1" ]; then
       --manager --no_auto_pose --port "$PICO_R2_ZMQ_PORT" \
       > "$LOG_DIR/pico_manager_r2.log" 2>&1 ) &
 else
-  echo "== start pico manager (udp transport, PUB :$PICO_R1_ZMQ_PORT) =="
+  echo "== start pico manager (udp transport, PUB :$PICO_R1_ZMQ_PORT, scene-reset authority) =="
   # 单 Pico 保留原行为：UDP 默认 63901，也允许调用方沿用 XROBO_UDP_PORT 覆盖。
-  ( cd "$GR00T_ROOT" && env XROBO_TRANSPORT=udp PYTHONUNBUFFERED=1 "$MGR_PY" \
+  ( cd "$GR00T_ROOT" && env XROBO_TRANSPORT=udp \
+      UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo PYTHONUNBUFFERED=1 "$MGR_PY" \
       gear_sonic/scripts/pico_manager_thread_server.py --manager --no_auto_pose \
-      --port "$PICO_R1_ZMQ_PORT" > "$LOG_DIR/pico_manager.log" 2>&1 ) &
+      --enable_isaac_scene_reset --port "$PICO_R1_ZMQ_PORT" \
+      > "$LOG_DIR/pico_manager.log" 2>&1 ) &
 fi
 
 # 不等头显首帧/ZMQ bind，但至少确认两个 UDP receiver 已成功启动；否则依赖缺失、
