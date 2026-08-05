@@ -1413,13 +1413,16 @@ def main():
         except Exception as e:
             print(f"[sim] failed to disable kit loop pacing: {e}")
 
-    # XR 手柄复位按键的请求位。carb 的按键回调是在 kit 消息泵的调用栈里跑的
-    # （env.step 内部的 render 期间），在那儿就地 env.reset 等于在渲染中途改物理
-    # 场景，所以回调只置位，真正的复位交主循环在处理 rt/reset_pose/cmd 的同一处做。
-    xr_reset_request = {"pending": False, "last_accept": 0.0}
+    # Kit/OpenXR 按键回调运行在消息泵调用栈内，不能直接修改物理场景；这里只
+    # 记录请求，真正的 reset 统一由仿真主循环执行。
+    scene_reset_request = {"pending": False, "source": "", "last_accept": 0.0}
+
+    def request_scene_reset(source: str) -> None:
+        scene_reset_request["pending"] = True
+        scene_reset_request["source"] = source
 
     def request_xr_reset() -> None:
-        xr_reset_request["pending"] = True
+        request_scene_reset("XR controller reset button")
 
     def bind_xr_reset_button(device, on_press) -> None:
         """把 --xr_reset_button 指定的手柄键绑成整场景复位。
@@ -1457,6 +1460,8 @@ def main():
                 )
         except Exception as exc:
             print(f"[xr] ⚠️ failed to bind reset button {device_path}/{button}: {exc}")
+
+    keyboard_scene_reset_subscription = None
 
     if args_cli.teleop_device != "none":
         print("========= create OpenXR teleop device =========")
@@ -1834,6 +1839,42 @@ def main():
     # The signal handler only flips this event. Resource teardown is centralized
     # in the finally block below, outside signal-handler context.
     setup_signal_handlers(shutdown_event)
+
+    # Ubuntu 权威端的本地 Kit 窗口提供 F12 整场景复位。回调只排队，避免在
+    # Kit 消息泵内执行 env.reset。F12 避开 F9 recenter、F10 screenshot 和
+    # F11 fullscreen。
+    if args_cli.no_render or getattr(args_cli, "headless", False):
+        print("[keyboard] F12 scene reset unavailable without a local Kit window")
+    elif args_cli.replay_data:
+        print("[keyboard] F12 scene reset unavailable during replay")
+    elif not sys.platform.startswith("linux") or is_scene_sync_viewer:
+        print("[keyboard] F12 scene reset disabled: only the Ubuntu host is authoritative")
+    else:
+        try:
+            import carb.input as _carb_input
+            import omni.appwindow as _omni_appwindow
+
+            _scene_reset_kb_iface = _carb_input.acquire_input_interface()
+            _scene_reset_kb = _omni_appwindow.get_default_app_window().get_keyboard()
+
+            def _on_kb_scene_reset(event, *_args):
+                if (
+                    event.type == _carb_input.KeyboardEventType.KEY_PRESS
+                    and event.input == _carb_input.KeyboardInput.F12
+                ):
+                    request_scene_reset("Ubuntu keyboard F12")
+                    print("[keyboard] F12 pressed: full scene reset queued")
+                return True
+
+            keyboard_scene_reset_subscription = (
+                _scene_reset_kb_iface.subscribe_to_keyboard_events(
+                    _scene_reset_kb,
+                    _on_kb_scene_reset,
+                )
+            )
+            print("[keyboard] Isaac/Kit window shortcut: F12 = full scene reset")
+        except Exception as exc:
+            print(f"[keyboard] F12 scene reset unavailable: {exc}")
         
     print(
         "[DDS Config] Runtime "
@@ -1949,17 +1990,18 @@ def main():
                             print(f"Failed to write reset pose command: {e}")
                             raise e
 
-                    # XR 手柄复位键：和上面的 DDS 复位命令同处消费。按键回调只置位，
+                    # Kit/XR 复位键：和上面的 DDS 复位命令同处消费。按键回调只置位，
                     # 复位在这里做——回调本身跑在 kit 消息泵的栈里，不是安全的复位时机。
-                    if xr_reset_request["pending"]:
-                        xr_reset_request["pending"] = False
-                        xr_reset_now = monotonic()
-                        if xr_reset_now - xr_reset_request["last_accept"] < args_cli.xr_reset_button_cooldown:
-                            print("[xr] reset button ignored (within cooldown)")
+                    if scene_reset_request["pending"]:
+                        scene_reset_request["pending"] = False
+                        reset_source = scene_reset_request["source"] or "interactive reset input"
+                        reset_now = monotonic()
+                        if reset_now - scene_reset_request["last_accept"] < args_cli.xr_reset_button_cooldown:
+                            print(f"[reset_input] {reset_source} ignored (within cooldown)")
                         else:
-                            xr_reset_request["last_accept"] = xr_reset_now
-                            print("[xr] reset button pressed: full scene reset")
-                            trigger_robot_reset("reset_all_self", "XR controller reset button")
+                            scene_reset_request["last_accept"] = reset_now
+                            print(f"[reset_input] {reset_source}: full scene reset")
+                            trigger_robot_reset("reset_all_self", reset_source)
                             reset_performed = True
 
                     # 方案 b：同步收发挂主循环——deploy 断连/锁步暂停时镜像仍活着
@@ -2122,6 +2164,15 @@ def main():
     finally:
         # clean up resources
         print("\nclean up resources...")
+        if keyboard_scene_reset_subscription is not None:
+            try:
+                _scene_reset_kb_iface.unsubscribe_to_keyboard_events(
+                    _scene_reset_kb,
+                    keyboard_scene_reset_subscription,
+                )
+            except Exception as exc:
+                print(f"[keyboard] failed to unsubscribe F12 scene reset: {exc}")
+            keyboard_scene_reset_subscription = None
         controller.cleanup()
         if not args_cli.replay_data:
             dds_manager.cleanup()
