@@ -64,7 +64,7 @@ export GR00T_WBC_ROOT=/绝对路径/GR00T-WholeBodyControl   # 必设！缺了�
 |---|---|---|
 | bringup 脚本路径 | 环境变量 `PIPELINE_SIM_DIR` / `GR00T_WBC_ROOT` / `PIPELINE_SIM_PY` | 新机实际路径（脚本内有默认值） |
 | viewer 连谁 | win 侧 `run_pipeline_viewer*.bat` 的 `PIPELINE_HOST_IP` 默认值（或设同名系统环境变量） | 新 host 的 IP |
-| Pico 追踪发给谁 | 头显 `/sdcard/Android/data/com.Nolo.CloudVR/files/XrLinkConfig.json` 的 `wholeBodyTracking.serverHost`（adb 改，重启 app 生效） | 新 host 的 IP |
+| Pico 追踪发给谁 | 机器人专用强刷版改 APK 内置 `assets/XrLinkConfig.json` 后重打包；旧版才直接改头显 files 副本。安装、签名切换与回读规则见 `doc/pipeline_pico_vr_deployment_zh.md` §1.1 | 新 host 的 IP |
 | 防火墙 | host 入站 | TCP 15555/15556（viewer）、UDP 63901（Pico#1）；双 Pico 再放行 UDP 63902 |
 
 DDS 全程走 `lo` + domain 1（sim 与 deploy 同机），跨机不需要任何 DDS 配置；

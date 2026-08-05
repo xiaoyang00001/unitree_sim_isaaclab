@@ -36,13 +36,51 @@ PC Service**（.deb 留在 GR00T 仓库根，sdk 模式才用）。
 | GR00T 版本 | `feat/isaac-state-sync` **≥ `6783bb8`**（14f8bf1 误删的 666 个 gear_sonic 文件已全量恢复；旧检出 manager 收数据/进 POSE 必崩） | ✅ |
 | `.venv_teleop` | Python 3.10，由 `install_scripts/install_pico.sh` 创建（uv）；`import xrobotoolkit_sdk, zmq, msgpack` 通过 | ✅ 实测通过 |
 | 防火墙 | 入站 UDP 63901 放行；双 Pico 还要放行 63902（头显→本机） | ✅ ufw 不活动 |
-| Pico 侧 app | GameLink（`com.Nolo.CloudVR`）；双 Pico 的 #2 装同一 APK | #1 ✅；#2 ⏳待设备 |
+| Pico 侧 app | GameLink（`com.Nolo.CloudVR`）；使用内置配置强刷包时，#1/#2 必须安装各自的机器人专用 APK | #1 ✅；#2 ⏳待设备 |
 | Pico 侧配置 | `XrLinkConfig.json` 的 `wholeBodyTracking`：`serverHost`=Ubuntu IP、#1 `serverPort`=63901、#2=63902、`sendControllers`=true | #1 ✅ 已指向 192.168.50.68；#2 ⏳待回读 |
 | sim 侧 | 本工程 host 模式可跑（见权威文档 §2） | ✅ |
 
 - ⚠️ `.venv_teleop` **没装** sim 依赖（tyro/mujoco/onnxruntime），跑不了
   `run_sim_loop`——只跑 manager 足够，别顺手往里装东西。
-- 头显配置改法（**免重打包**，app 读的是 files/ 下副本，改完重启 app 即生效）：
+
+### 1.1 GameLink APK 安装与配置刷新语义
+
+⚠️ 必须先判断 APK 类型，不能把“包内 asset”和“设备 files 副本”视为同一份配置：
+
+- 原版及旧重打包版仅在目标文件不存在时，把 APK 内的
+  `assets/XrLinkConfig.json` 复制到
+  `/sdcard/Android/data/com.Nolo.CloudVR/files/XrLinkConfig.json`。`adb install -r`
+  会保留 files 副本，所以换 APK 后仍可能继续使用旧 IP/端口；此类包要么先卸载再安装，
+  要么安装后手工覆盖 files 副本并回读。
+- 2026-08-04 起生成的机器人专用**强制刷新版**会在每次 native 启动前只删除旧
+  `XrLinkConfig.json`，随后由 GameLink 原生流程从当前 APK asset 重新生成。因此同一签名
+  的强刷版可用 `adb install -r` 在 robot#1/#2 之间切换，启动后会自动切到包内的
+  63901/63902；手工 `adb push` 的修改会在下次启动时被覆盖。
+- 原厂 APK 与本项目重签 APK 的证书不同，二者之间不能覆盖安装。首次换到重签包时，
+  先备份现场 JSON，再 `adb uninstall com.Nolo.CloudVR`；卸载会清除应用数据和授权。
+
+原厂/未知签名包换成机器人专用包的完整流程：
+
+```bash
+PICO_ADB=<Pico-IP>:5555
+PACKAGE=com.Nolo.CloudVR
+PICO_CONFIG=/sdcard/Android/data/$PACKAGE/files/XrLinkConfig.json
+adb connect "$PICO_ADB"
+adb -s "$PICO_ADB" pull "$PICO_CONFIG" XrLinkConfig.before.json || true
+adb -s "$PICO_ADB" uninstall "$PACKAGE"
+adb -s "$PICO_ADB" install <robot-specific-GameLink.apk>
+adb -s "$PICO_ADB" shell pm grant "$PACKAGE" android.permission.RECORD_AUDIO
+adb -s "$PICO_ADB" shell monkey -p "$PACKAGE" \
+  -c android.intent.category.LAUNCHER 1
+adb -s "$PICO_ADB" shell cat "$PICO_CONFIG"  # 必须核对 host 与 63901/63902
+```
+
+已安装同一套重签强刷版时，换机器人专用包可把 `uninstall` + `install` 两行替换为
+`adb -s "$PICO_ADB" install -r <robot-specific-GameLink.apk>`；仍须启动并回读，不能只凭
+APK 文件名判断生效。
+
+- 旧版/通用 GameLink 临时配置改法（**仅适用于不会在启动时强制刷新 JSON 的包**；
+  app 运行时读的是 files/ 下副本）：
 
 ```bash
 PICO_ADB=192.168.50.178:5555
@@ -57,6 +95,9 @@ adb -s "$PICO_ADB" shell monkey -p com.Nolo.CloudVR \
   -c android.intent.category.LAUNCHER 1
 adb -s "$PICO_ADB" shell cat "$PICO_CONFIG"  # 必须回读核对后才继续
 ```
+
+强制刷新版若要永久换 IP/端口，必须修改 APK 内置 asset 并重新打包；直接 push 到设备的
+JSON 只会保留到下一次启动。
 
 ## 2. 启动（Ubuntu 侧）
 
@@ -202,13 +243,15 @@ STARTUP HOLD 就绪检查和 renice，但不等待头显首帧、不代替任何
 ### 5.1 施工步骤
 
 **A. 头显 #2 配置**（一次性）：
-1. 第二台 Pico 4 Ultra 装 GameLink（同一 apk 即可——追踪目标在 JSON 不在 dex）；
-   开无线 adb，记下 IP；需要安装时执行 `adb -s <Pico#2地址> install -r <GameLink.apk>`；
-2. 按 §1 命令先 `pull` 备份，再改
-   `/sdcard/Android/data/com.Nolo.CloudVR/files/XrLinkConfig.json`：
+1. 第二台 Pico 4 Ultra 安装 robot#2 专用强制刷新版（内置
+   `wholeBodyTracking.serverPort=63902`），不能拿 robot#1 的 63901 包代替；原厂/未知
+   签名包按 §1.1 先卸载再安装，同一套重签强刷版之间才可 `install -r`；
+2. 启动 GameLink，让包内 `assets/XrLinkConfig.json` 强制刷新到 files 目录；若只能使用
+   旧版/通用包，则按 §1 命令先 `pull` 备份，再手工设置
    `wholeBodyTracking` = `{serverHost: <host IP>, serverPort: 63902,
-   sendControllers: true}`，`push` 后 force-stop/重启 GameLink；
-3. 用 `adb shell cat` 回读并逐项核对 host、63902、`sendControllers=true`；
+   sendControllers: true}` 后 force-stop/重启；
+3. 无论采用哪种包，都要用 `adb shell cat` 回读并逐项核对 host、63902、
+   `sendControllers=true`；
 4. ⚠️ **端口配错的故障模式是静默混流不是报错**：两台头显都发 63901 时，
    `xr_client` 只留"最新一帧"，两人身体数据交替覆盖、机器人抽搐。防呆判据见 5.3-①。
 

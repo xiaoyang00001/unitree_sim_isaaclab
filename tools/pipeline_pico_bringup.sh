@@ -17,8 +17,9 @@
 #     ack 在 Init 后即持续回，(操作者未发车时机器人保持默认站姿，物理照常推进)。
 #
 # 操作者手册（头显侧）：
-#   1. GameLink 目标 IP 指向本机（192.168.50.68），#1 端口 63901、#2 端口 63902 —— 改
-#      /sdcard/Android/data/<GameLink包名>/files/ 下 JSON 副本后重启 app 即可。
+#   1. GameLink 目标 IP 指向本机（192.168.50.68），#1 端口 63901、#2 端口 63902。
+#      机器人专用强刷版以 APK 内置 JSON 为真源并在每次启动时刷新 files 副本；旧版才
+#      手工修改 files/XrLinkConfig.json。安装/覆盖规则及强制回读步骤见部署文档 §1.1。
 #   2. 戴上头显、手柄唤醒，确认对应 pico_manager*.log 出现 body 数据（不再刷 waiting）。
 #   3. 按 A+B+X+Y（四键同按，瞬按）→ 进 PLANNER：左摇杆=行走方向、右摇杆=转向；
 #      A+B 升档(SLOW_WALK→WALK→RUN...)、X+Y 降档。
