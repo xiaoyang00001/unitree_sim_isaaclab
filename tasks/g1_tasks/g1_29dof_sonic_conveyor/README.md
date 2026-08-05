@@ -4,7 +4,9 @@ SONIC DDS 控制的 G1 + warehouse 流水线场景 + ZMQ 双机场景同步。
 
 场景与流水线驱动移植自 IsaacLab 分叉 `feat/conveyor-loop-totes-wip`
 （tip 17e71c0a0）的 `pick_place` 任务；机器人与 DDS/XR/观测链路沿用本工程
-`g1_29dof_dex3_sonic` 的 SONIC 底座。方案与勘查记录见该分叉仓库对话存档。
+`g1_29dof_dex3_sonic` 的 SONIC 底座。源仓库中“流水线两筐”和“推车两大筐”的分支、
+坐标及后续双布局开关关系见
+[IsaacLab 双机器人抓筐场景分支对照](../../../doc/isaaclab_scene_branch_map_zh.md)。
 
 ## 启动
 
