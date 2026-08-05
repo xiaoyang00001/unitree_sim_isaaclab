@@ -40,6 +40,23 @@ python sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor \
 
 例如：`ISAACLAB_TOTES_ON_CONVEYOR=0 python sim_main.py ...`。
 
+### 筐被搬上流水线后的运动
+
+两种布局共用同一套流水线驱动。`ISAACLAB_TOTES_ON_CONVEYOR=0` 时，机器人把推车上的
+原尺寸筐放到流水线有效带面并松手后，物体权威端会自动给筐施加沿 `-Y` 的
+`0.3 m/s` 目标速度；当前静止碰撞板 + 摩擦模型下，实测平均滑行速度约
+`0.25 m/s`。
+
+驱动只在筐底部位于带面高度 `z=0.772±0.15`，且筐原点进入
+`x=[-6.17,-5.07]`、`y=[10.19,18.22]` 时生效。筐被机器人举离带面、掉到地上或
+放到有效范围外时不会被强行拖动。推车布局默认送到出料段 `y=11.5` 后停止驱动，
+再由摩擦自然停住；流水线布局默认在机器人工位 `y=14.148` 停住。驱动只在物体权威端
+运行，129/130 Viewer 通过场景同步看到相同运动。
+
+可用 `ISAACLAB_CONVEYOR_SPEED` 和 `ISAACLAB_CONVEYOR_Y_STOP` 覆盖速度与停止点，
+或用 `ISAACLAB_CONVEYOR_ENABLED=0` 完全关闭驱动。原布局的“机器人搬筐 → 放上流水线
+→ 自动送走”完整作业闭环已有代码支持，但尚未完成实机全流程验收。
+
 ## 双机形态（对等/混合权威）
 
 | 项 | 权威 | 说明 |
@@ -52,6 +69,89 @@ python sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor \
 
 端口：ID=1 绑 `15555`、ID=2 绑 `15556`（base+id-1），双方互连对方端口。
 发布节流默认每 4 个物理步一帧（50 Hz）。
+
+## Dex3 夹爪控制数据流
+
+当前所谓“夹爪”实际是两只 Dex3 灵巧手，每只手有 7 个电机关节。控制输入来自 Pico
+左右控制器，不使用 Pico 手部骨骼追踪，也不经过 129/130 Viewer：Viewer 只显示 131
+通过 `scene_state` 同步过去的 43 关节机器人状态。
+
+### 双机器人链路
+
+```text
+Pico 左右控制器 trigger
+  ├─ robot_1: UDP :63901 → manager ZMQ PUB :5556 → deploy#1 → DDS rt/dex3/*
+  └─ robot_2: UDP :63902 → manager ZMQ PUB :5566 → deploy#2 → DDS rt/r2/dex3/*
+                                                               ↓
+                    Isaac Dex3DDS → SonicDDSActionProvider → Dex3 PhysX 执行器
+                                                               ↓
+                              HandState（实际 q/dq/tau）DDS 回传 deploy
+```
+
+两套 manager 均以 `--manager --no_auto_pose` 启动；两套 deploy 均使用
+`--input-type zmq_manager`。robot_1 的 `G1_LOCAL_ROBOT_ID=1`、DDS 前缀为 `rt`；
+robot_2 的 `G1_LOCAL_ROBOT_ID=2`、DDS 前缀为 `rt/r2`，命令、状态和共享内存完全隔离。
+
+| 项目 | robot_1 | robot_2 |
+|---|---|---|
+| Pico UDP | `63901` | `63902` |
+| manager → deploy ZMQ | `5556` | `5566` |
+| 左手命令 | `rt/dex3/left/cmd` | `rt/r2/dex3/left/cmd` |
+| 右手命令 | `rt/dex3/right/cmd` | `rt/r2/dex3/right/cmd` |
+| 左手状态 | `rt/dex3/left/state` | `rt/r2/dex3/left/state` |
+| 右手状态 | `rt/dex3/right/state` | `rt/r2/dex3/right/state` |
+
+### 手柄输入与模式
+
+manager 读取左右控制器的 `trigger` 和 `grip`，但当前 `generate_finger_data()` 实现只使用
+`trigger`，并在 `0.5` 处二值化：
+
+- `trigger <= 0.5`：对应手发送 7 维全零张开目标；
+- `trigger > 0.5`：直接发送完整 middle-close 目标，左手为
+  `[0, 0.7, 0.7, -1.0, -1.5, -1.0, -1.5]`，右手为镜像值；
+- `grip` 当前不参与夹爪目标计算；左 `grip+A/B` 用于数据采集/放弃，不是夹爪控制；
+- 因此当前是“左右 trigger 分别控制对应手的开/闭”，不是模拟量连续闭合，也不是手势追踪。
+
+| manager 模式 | 夹爪行为 |
+|---|---|
+| `POSE` | 约 50 Hz 读取 trigger、生成并发送左右手 7 维目标 |
+| `PLANNER_VR_3PT` | 约 20 Hz 读取 trigger、生成并发送左右手 7 维目标 |
+| `PLANNER_FROZEN_UPPER_BODY` | 发送进入模式时从反馈保存的左右手目标，不实时跟随 trigger |
+| 普通 `PLANNER` | 不发送 hand 字段；deploy 当前回退到 InputInterface 的预设闭合姿态 |
+| `OFF` / `POSE_PAUSE` | 不产生新的实时夹爪目标 |
+
+### deploy、DDS 与 PhysX
+
+manager 把左右手目标编码为 ZMQ `pose`/`planner` 消息中的
+`left_hand_joints: f32[7]` 和 `right_hand_joints: f32[7]`。deploy 解码后绕过身体策略，
+直接写入 `Dex3Hands` 命令缓存；500 Hz command writer 随 `LowCmd` 同频重发两手
+`HandCmd`。每个 HandCmd 的 7 个 motor slot 都包含 `mode/q/dq/tau/kp/kd`，当前目标
+主要使用 `q`，默认 `dq=0`、`tau=0`、`kp=1.5`、`kd=0.1`。
+
+`Dex3Hands` 根据 Isaac 回传的实际手指位置，把每次发布的目标差限制到 `±0.25 rad`，
+并应用最大闭合比例。Isaac 的 [`Dex3DDS`](../../../dds/dex3_dds.py) 订阅左右手命令，
+[`SonicDDSActionProvider`](../../../action_provider/action_provider_sonic_dds.py) 在每个
+50 Hz 环境步读取最新快照，按关节名映射到 43 关节 articulation：
+
+- `q/dq/tau` 进入 position、velocity、effort 三个 ActionTerm；
+- `kp/kd` 由 provider 直接写入 PhysX stiffness/damping；
+- 新目标在一个 20 ms 环境步内保持 4 个 5 ms PhysX 子步，驱动求解仍为 200 Hz；
+- 每步结束后，[`dex3_state.py`](../../common_observations/dex3_state.py) 按相同顺序采集
+  实际 `q/dq/applied_torque`，经 `HandState` DDS 回传 deploy，形成闭环。
+
+Isaac 会拒绝长度不是 7、NaN/Inf、负 `kp/kd`、错误 motor ID 或越界的命令。
+HandCmd 默认超时为 `0.20 s`；超时后保持最后安全的 `q/kp/kd`、清除 `dq/tau`，
+但不会暂停身体的 LowState/LowCmd 锁步控制。131 host 模式最终把两台机器人的
+`[q(43), dq(43), tau(43)]` 拼成 258 维动作，两个身体 LowCmd ack 都匹配后才推进环境。
+
+### 当前已知断点
+
+- `grip` 未接入夹爪目标，`trigger` 又被二值化，尚不支持按压深度连续控制闭合程度；
+- 普通 `PLANNER` 没有实时手字段，会落到预设闭合姿态，不能在该模式下用 trigger 控手；
+- manager 的 `FeedbackReader` 仍按 ZMQ `localhost:5557/g1_debug` 读取，而当前两套 deploy
+  配置为 UDP `g1_1_debug:5557` / `g1_2_debug:5567`。因此冻结姿态和 VR3PT 重校准拿不到
+  这路网络反馈；它不影响 `POSE`/`PLANNER_VR_3PT` 的 trigger → HandCmd 主路径，也不影响
+  Dex3 的 DDS HandState 平滑反馈闭环。
 
 ## 已知限制 / 待实测
 
