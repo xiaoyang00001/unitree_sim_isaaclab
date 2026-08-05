@@ -88,11 +88,17 @@ conda activate env_isaaclab
 ```powershell
 pip install isaacsim==5.1.0.0 --extra-index-url https://pypi.nvidia.com
 # torch 2.7.0+cu128 等依赖会随 isaacsim 一起装好
+
+# 必须钉死：h5py 3.16 自带 HDF5 2.0，与 Isaac Sim 5.1 的 HDF5 1.14.6 DLL 冲突
+pip install --no-deps --force-reinstall h5py==3.15.1
 ```
+
+若启动时报“无法定位程序输入点 `H5Tdecode` 于 `hdf5_cpp.dll`”，说明 h5py 被升级到了
+3.16；重新执行上面的降级命令即可。
 
 装完先验证能不能起独立的 Isaac Sim（不涉及本工程）：
 ```powershell
-python -c "import isaacsim; print('ok')"
+python -c "import isaacsim, h5py; print('Isaac Sim ok'); print(h5py.__version__, h5py.version.hdf5_version)"
 ```
 
 IsaacLab fork：

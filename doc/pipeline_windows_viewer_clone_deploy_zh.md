@@ -54,10 +54,11 @@ Viewer 不运行 GR00T 推理，也不参与 Host 的 DDS 锁步控制。它只�
 | Isaac Sim | `5.1.0.0` |
 | PyTorch | `2.7.0+cu128`，CUDA 可用 |
 | CycloneDDS Python | `0.10.5` |
-| h5py | `3.16.0` |
+| h5py / HDF5 | `3.15.1` / `1.14.6`（不可升级到 h5py 3.16） |
 | Git for Windows | `2.33.0.windows.2` |
 | Visual Studio Code | `1.113.0`，x64 User Setup |
 | SteamVR | App `250820`，build ID `14523237` |
+| DirectX 旧版运行库 | June 2010，`d3dx10_43.dll` `9.29.952.3111`，x64/x86 均已安装 |
 | XRLink | `3.0.1` |
 
 工程基线：
@@ -571,6 +572,12 @@ Set-ItemProperty `
 Get-ItemProperty 'HKLM:\SOFTWARE\Khronos\OpenXR\1' -Name ActiveRuntime
 ```
 
+SteamVR 还依赖 Windows 10/11 默认 DirectX 版本不包含的旧版 D3DX 并行组件。仅复制
+Steam/SteamVR 程序目录不会安装这些组件，新 Viewer 应从
+[Microsoft DirectX End-User Runtimes (June 2010)](https://www.microsoft.com/en-us/download/details.aspx?id=8109)
+安装一次。安装前后应验证微软数字签名，不要从第三方 DLL 网站下载，也不要手工向
+`System32` 或 `SysWOW64` 复制 DLL。完整安装和验证命令见 §11.11。
+
 ### 8.2 Steam 登录与 Clash 直连
 
 复制 Steam 程序目录不会迁移可复用的账号登录态，新机仍需在物理桌面重新登录。若
@@ -677,7 +684,7 @@ Test-NetConnection 192.168.1.131 -Port 15555
 & $python --version
 & $python -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0))"
 & $python -c "from importlib.metadata import version; import cyclonedds; print(version('cyclonedds'))"
-& $python -c "from importlib.metadata import version; import h5py; print(version('h5py'))"
+& $python -c "import h5py; print(h5py.__version__, h5py.version.hdf5_version)"
 & $python -c "from importlib.metadata import version; import isaacsim; print(version('isaacsim'))"
 & $python -c "from importlib.metadata import version; import zmq; print(version('pyzmq'))"
 & $python -m pip show isaaclab isaaclab_tasks isaaclab_mimic unitree-sdk2py
@@ -690,6 +697,8 @@ Test-NetConnection 192.168.1.131 -Port 15555
 - `torch.cuda.is_available()` 为 `True`；
 - GPU 名称为 RTX 5080；
 - CycloneDDS 可导入且版本为 `0.10.5`，不能误升级到不兼容的大版本；
+- h5py 为 `3.15.1`、HDF5 为 `1.14.6`；h5py 3.16 的 HDF5 2.0 会导致
+  `H5Tdecode` / `hdf5_cpp.dll` 入口点错误；
 - IsaacLab editable 包指向 `D:\Isaac\xiaoyangIsaacLab`；
 - `unitree-sdk2py` editable 包指向 `D:\Isaac\unitree_sdk2_python`。
 
@@ -848,6 +857,71 @@ OpenXR ActiveRuntime。普通 Viewer 的无头成功不覆盖图形会话和头�
 Git 安装包，使卸载注册信息和 PATH 由安装器写入。安装完成后用绝对路径验证版本，再
 重新登录 Windows 或刷新终端父进程。
 
+### 11.11 启动 Isaac Lab 时 `vrmonitor.exe` 报缺少 `d3dx10_43.dll`
+
+典型弹窗：
+
+```text
+vrmonitor.exe - 系统错误
+由于找不到 d3dx10_43.dll，无法继续执行代码。
+```
+
+这是 SteamVR 的 `vrmonitor.exe` 缺少旧版 DirectX D3DX10 运行库，不是 Isaac Lab
+Python 环境或当前 DirectX 大版本损坏。复制 SteamVR 程序目录时只复制了应用文件，
+没有安装它的系统级旧版 DirectX 前置依赖。
+
+先确认 64 位和 32 位组件是否缺失：
+
+```powershell
+Test-Path "$env:WINDIR\System32\d3dx10_43.dll"
+Test-Path "$env:WINDIR\SysWOW64\d3dx10_43.dll"
+```
+
+从微软官方地址下载安装包，验证签名后静默安装：
+
+```powershell
+$root = 'D:\Isaac\installers\directx_jun2010'
+$redist = Join-Path $root 'directx_Jun2010_redist.exe'
+$extract = Join-Path $root 'extracted'
+$url = 'https://download.microsoft.com/download/8/4/a/84a35bf1-dafe-4ae8-82af-ad2ae20b6b14/directx_Jun2010_redist.exe'
+
+New-Item -ItemType Directory -Force $root, $extract | Out-Null
+Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $redist
+
+Get-FileHash $redist -Algorithm SHA256
+Get-AuthenticodeSignature $redist |
+    Format-List Status, StatusMessage, SignerCertificate
+
+$unpack = Start-Process $redist -Wait -PassThru -ArgumentList @(
+    '/Q',
+    "/T:$extract"
+)
+$setup = Start-Process (Join-Path $extract 'DXSETUP.exe') `
+    -Wait -PassThru -ArgumentList '/silent'
+
+$unpack.ExitCode
+$setup.ExitCode
+```
+
+两个退出码都应为 `0`。然后检查文件版本和微软签名：
+
+```powershell
+$dlls = @(
+    "$env:WINDIR\System32\d3dx10_43.dll",
+    "$env:WINDIR\SysWOW64\d3dx10_43.dll"
+)
+
+Get-Item $dlls | Select-Object FullName, Length,
+    @{Name='Version'; Expression={$_.VersionInfo.FileVersion}}
+Get-AuthenticodeSignature $dlls |
+    Select-Object Path, Status, SignerCertificate
+```
+
+129 的实测结果是两个 DLL 版本均为 `9.29.952.3111`、签名状态均为 `Valid`；重新启动
+`vrmonitor.exe` 后，进程在 8 秒观察窗口内保持运行，应用日志中没有新增
+`vrmonitor`/`d3dx10_43` 错误。该修复不需要降级当前 DirectX，也不需要重装 Isaac
+Lab；若旧弹窗仍留在桌面，关闭后重新启动 SteamVR 和 Isaac Lab 即可。
+
 ## 12. 最终验收清单
 
 部署交付前逐项确认：
@@ -866,6 +940,7 @@ Git 安装包，使卸载注册信息和 PATH 由安装器写入。安装完成�
 - [ ] Host 能看到目标 Viewer 到 TCP `15555` 的 ESTABLISHED 连接；
 - [ ] `physics_steps` 持续增加，`sync_waits` 不增长，无 Traceback/FATAL；
 - [ ] Clash 开启时 Steam 登录认证与 CM 连接命中前置 `DIRECT` 规则；
+- [ ] DirectX June 2010 旧版运行库已安装，x64/x86 `d3dx10_43.dll` 均存在且签名有效；
 - [ ] SteamVR Runtime 已注册，XRLink 已安装；
 - [ ] AR 已在物理桌面完成头显、锚定和 recenter 验收；
 - [ ] 冒烟测试结束后无遗留 Python/Isaac 进程。
@@ -886,6 +961,9 @@ Git 安装包，使卸载注册信息和 PATH 由安装器写入。安装完成�
 - 连接 Host 的完整测试通过，同时确认 129 和 130 均连接到 `131:15555`；
 - Clash 已添加 Steam 认证 API 与 CM 的持久化直连规则；Steam CM 的 local address
   已从 `127.0.0.1:7897` 变为 `192.168.1.129`，并返回 `LogOnResponse: OK`；
+- 2026-08-05 修复 Isaac Lab 启动时 `vrmonitor.exe` 缺少 `d3dx10_43.dll` 的问题：
+  安装微软 DirectX June 2010 旧版运行库，解包和安装退出码均为 `0`，x64/x86 DLL
+  版本及微软签名验证通过，`vrmonitor.exe` 8 秒启动观察和 Windows 应用日志复查通过；
 - 测试进程和临时启动包装已清理；
 - 保留日志：
   - `D:\Isaac\pipeline_viewer_smoke.log`
