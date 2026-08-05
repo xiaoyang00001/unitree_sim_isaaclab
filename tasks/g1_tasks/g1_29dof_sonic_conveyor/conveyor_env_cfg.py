@@ -56,6 +56,7 @@ from tasks.g1_tasks.g1_29dof_dex3_sonic.g1_29dof_dex3_sonic_env_cfg import (
 )
 
 from . import conveyor_events
+from .scene_layout import resolve_scene_layout
 from .zmq_scene_sync import ZmqEnvResetSyncActionCfg, ZmqSceneStateSyncActionCfg
 
 _ASSETS_DIR = Path(__file__).resolve().parent / "scene_assets"
@@ -270,18 +271,19 @@ def _env_reset_sync_cfg() -> ZmqEnvResetSyncActionCfg:
 # conveyor_collider 碰撞板常驻不随开关回退；背景 USD 里烘入的桌子/料箱平移
 # 与镜像改动也不随开关回退（要回退得换 USD 文件）。
 # ==================================================================
-TOTES_ON_CONVEYOR = _env_bool("ISAACLAB_TOTES_ON_CONVEYOR", True)
+SCENE_LAYOUT = resolve_scene_layout(os.environ)
+TOTES_ON_CONVEYOR = SCENE_LAYOUT.totes_on_conveyor
 
-CART_GROUP_X = _env_float("ISAACLAB_CART_GROUP_X", -5.62)
-CART_GROUP_Y = _env_float("ISAACLAB_CART_GROUP_Y", 18.75)
-ROBOT_SIDE_OFFSET = _env_float("ISAACLAB_ROBOT_SIDE_OFFSET", 0.80)
+CART_GROUP_X = SCENE_LAYOUT.cart_group_x
+CART_GROUP_Y = SCENE_LAYOUT.cart_group_y
+ROBOT_SIDE_OFFSET = SCENE_LAYOUT.robot_side_offset
 
-ROBOT_WORKSTATION_Y = _env_float("ISAACLAB_ROBOT_WORKSTATION_Y", 14.148 if TOTES_ON_CONVEYOR else CART_GROUP_Y)
-ROBOT_1_X = _env_float("ISAACLAB_ROBOT_1_X", -4.75 if TOTES_ON_CONVEYOR else CART_GROUP_X + ROBOT_SIDE_OFFSET)
-ROBOT_2_X = _env_float("ISAACLAB_ROBOT_2_X", -6.7 if TOTES_ON_CONVEYOR else CART_GROUP_X - ROBOT_SIDE_OFFSET)
+ROBOT_WORKSTATION_Y = SCENE_LAYOUT.robot_workstation_y
+ROBOT_1_X = SCENE_LAYOUT.robot_1_x
+ROBOT_2_X = SCENE_LAYOUT.robot_2_x
 
 # 第二台拖车。流水线布局下是留在原工作位的空车；原布局下载着两筐顶到流水线入料端。
-PUSHCART_2_POS = [-5.4, 19.39363, 0.0] if TOTES_ON_CONVEYOR else [CART_GROUP_X, CART_GROUP_Y, 0.0]
+PUSHCART_2_POS = list(SCENE_LAYOUT.pushcart_2_pos)
 
 # 两塑料筐在流水线上的出生 y：贴着入料端排布，保持原来 0.6 m 的前后错位
 # （tote1 在前，沿 -Y 先到工位）。碰撞板 y 跨度 [10.19, 18.22]，筐在 y 方向半长
@@ -293,12 +295,12 @@ PUSHCART_2_POS = [-5.4, 19.39363, 0.0] if TOTES_ON_CONVEYOR else [CART_GROUP_X, 
 # 到工位 14.148 分别是 3.25 / 3.85 m；筐是被拖拽滑行不是被带动，实测速度约
 # 0.244 m/s（低于 velocity_y 的 0.3，见 README「已知限制 / 待实测」），所以约 13.3 / 15.8 s
 # 到位，各自越过 y_stop 约 11 mm 后被动摩擦停住（smoke 900 步实测 14.136 / 14.137）。
-TOTE_SPAWN_Y_LEAD = _env_float("ISAACLAB_TOTE_SPAWN_Y_LEAD", 17.4)
-TOTE_SPAWN_Y_TRAIL = _env_float("ISAACLAB_TOTE_SPAWN_Y_TRAIL", 18.0)
+TOTE_SPAWN_Y_LEAD = SCENE_LAYOUT.cart2_tote1_pos[1]
+TOTE_SPAWN_Y_TRAIL = SCENE_LAYOUT.cart2_tote2_pos[1]
 
 # 两塑料筐的初始摆放（几何推导见源分支 docs/场景布局开关-流水线与原布局切换.md）。
-CART2_TOTE1_POS = [-5.35, TOTE_SPAWN_Y_LEAD, 0.775] if TOTES_ON_CONVEYOR else [CART_GROUP_X, CART_GROUP_Y, 0.3794]
-CART2_TOTE2_POS = [-5.89, TOTE_SPAWN_Y_TRAIL, 0.775] if TOTES_ON_CONVEYOR else [CART_GROUP_X, CART_GROUP_Y, 0.6814]
+CART2_TOTE1_POS = list(SCENE_LAYOUT.cart2_tote1_pos)
+CART2_TOTE2_POS = list(SCENE_LAYOUT.cart2_tote2_pos)
 
 # 双机站位（面对面）：robot_1 在 +X 侧朝 -X（yaw 180°），robot_2 在 -X 侧朝 +X（identity）。
 # ⚠️ SONIC 底座任务刻意保持 identity 出生朝向（policy/world 约定）；ID=1 的 180° yaw
@@ -333,7 +335,7 @@ CONVEYOR_TOTE_NAMES = ("cart2_tote1", "cart2_tote2")
 CONVEYOR_SPEED = _env_float("ISAACLAB_CONVEYOR_SPEED", 0.3)
 CONVEYOR_Y_RECYCLE = _env_float("ISAACLAB_CONVEYOR_Y_RECYCLE", 10.6)
 CONVEYOR_Y_RESPAWN = _env_float("ISAACLAB_CONVEYOR_Y_RESPAWN", 18.0)
-CONVEYOR_Y_STOP = _env_float("ISAACLAB_CONVEYOR_Y_STOP", ROBOT_WORKSTATION_Y if TOTES_ON_CONVEYOR else 11.5)
+CONVEYOR_Y_STOP = SCENE_LAYOUT.conveyor_y_stop
 CONVEYOR_ENABLED = _env_bool("ISAACLAB_CONVEYOR_ENABLED", True) and not MIRROR_OBJECTS
 
 # 背景里的分拣料箱：bin_02 是动态刚体，开局下沉且会被机器人撞飞，锁成 kinematic。
@@ -366,7 +368,7 @@ def _log_scene_layout() -> None:
     if TOTES_ON_CONVEYOR:
         print(f"{tag} 场景布局: 流水线（两筐缩半在传送带上流动） [ISAACLAB_TOTES_ON_CONVEYOR=1]")
     else:
-        print(f"{tag} 场景布局: 原布局（两筐原尺寸叠在拖车上） [ISAACLAB_TOTES_ON_CONVEYOR=0]")
+        print(f"{tag} 场景布局: 推车（两筐原尺寸叠在推车上） [ISAACLAB_TOTES_ON_CONVEYOR=0]")
     print(
         f"{tag}   拖车/筐 x={PUSHCART_2_POS[0]:.3f} y={PUSHCART_2_POS[1]:.3f}"
         f" | robot_1 x={ROBOT_1_X:.3f} robot_2 x={ROBOT_2_X:.3f} y={ROBOT_WORKSTATION_Y:.3f}"
@@ -478,7 +480,7 @@ def _make_cart2_tote_spawn_cfg(object_name: str) -> UsdFileCfg:
 
     return UsdFileCfg(
         usd_path=str(_ASSETS_DIR / "props" / "tote_b04_physics.usda"),
-        scale=(0.005, 0.005, 0.005) if TOTES_ON_CONVEYOR else (0.01, 0.01, 0.01),
+        scale=SCENE_LAYOUT.tote_scale,
         mass_props=sim_utils.MassPropertiesCfg(mass=_env_float("ISAACLAB_GRASP_OBJECT_MASS", 0.45)),
         rigid_props=(
             sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True)

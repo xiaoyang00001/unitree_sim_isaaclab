@@ -29,6 +29,17 @@ python sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor \
 单机自测（不建 socket）：`ISAACLAB_SCENE_SYNC=0`。
 持久配置写 `configs/scene_sync.env`（进程环境变量永远优先）。
 
+## 场景布局切换
+
+同一任务通过 `ISAACLAB_TOTES_ON_CONVEYOR` 切换布局，修改后需重启仿真：
+
+| 值 | 布局 |
+|---|---|
+| `1`（默认） | 两个半尺寸塑料筐从流水线入料端流向工位；机器人分站流水线两侧 |
+| `0` | 两个原尺寸塑料筐叠放在入料口推车上；机器人面对面站在推车两侧 |
+
+例如：`ISAACLAB_TOTES_ON_CONVEYOR=0 python sim_main.py ...`。
+
 ## 双机形态（对等/混合权威）
 
 | 项 | 权威 | 说明 |
@@ -53,6 +64,7 @@ python sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor \
 - 镜像端仅限 `--device cpu`：GPU pipeline 下 tensor API 写位姿驱不动 kinematic 体，
   镜像物体会静默冻结（启动时有告警）。
 - 筐在带上被拖拽滑行（碰撞板静止 + μd=0.6），实测平均速度 ≈0.25 m/s 且会缓慢自转（源分支已知）。
+- 流水线布局的 robot_2 仍是偏展示的站位，离对应筐较远，实际可达性尚未完全收口。
 - 原布局（`ISAACLAB_TOTES_ON_CONVEYOR=0`）的作业闭环在源分支就未实跑过。
 
 ## scene_assets/ 资产来源
