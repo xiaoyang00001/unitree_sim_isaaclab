@@ -11,6 +11,10 @@ _ASSET_DIR = _REPO_ROOT / "tasks/g1_tasks/g1_29dof_sonic_conveyor/scene_assets"
 _MANIFEST_PATH = _ASSET_DIR / "conveyor_workcell_lite.manifest.json"
 _MANIFEST = json.loads(_MANIFEST_PATH.read_text(encoding="utf-8"))
 _LAYER_PATH = _ASSET_DIR / _MANIFEST["output_asset"]
+_ENV_CFG_PATH = (
+    _REPO_ROOT
+    / "tasks/g1_tasks/g1_29dof_sonic_conveyor/conveyor_env_cfg.py"
+)
 
 
 class ConveyorWorkcellLiteAssetTest(unittest.TestCase):
@@ -72,6 +76,12 @@ class ConveyorWorkcellLiteAssetTest(unittest.TestCase):
             "WorkTable",
         ):
             self.assertNotIn(name, layer)
+
+    def test_task_disables_inherited_dome_light(self) -> None:
+        source = _ENV_CFG_PATH.read_text(encoding="utf-8")
+        scene_class = source.split("class G129SonicConveyorSceneCfg", 1)[1]
+        scene_class = scene_class.split("class G129SonicConveyorEventCfg", 1)[0]
+        self.assertIn("\n    light = None\n", scene_class)
 
     def test_audit_contract_requires_material_composition_reduction(self) -> None:
         limits = _MANIFEST["audit_limits"]

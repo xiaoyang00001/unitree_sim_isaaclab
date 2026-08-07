@@ -851,6 +851,10 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
     # warehouse 背景 USD 自带地面，去掉底座的无限地平面避免 z-fighting。
     ground = None
 
+    # 不继承 SONIC 底座的 DomeLight；背景层也已剔除全部灯光，场景只保留
+    # 本配置下方的一盏 DistantLight，避免重复照明和额外 RTX 阴影开销。
+    light = None
+
     # 父场景的打包桌位于原点，与 (-5, 14) 的流水线工位无关。layout 策略直接不
     # 生成；legacy_props 做 A/B 时才用工厂函数恢复同一配置。
     packing_table: AssetBaseCfg | None = (
