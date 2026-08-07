@@ -1210,6 +1210,10 @@ def main():
                     if is_scene_sync_host:
                         # host 的第二台真身机器人
                         apply_g1_sonic_visual_materials("/World/envs/env_0/Robot2")
+                    elif os.environ.get("ISAACLAB_PEER_ROBOT_MODE", "articulation").strip().lower() == "visual_lod":
+                        # 分析几何 LOD 自带三份共享 PreviewSurface；它没有 URDF
+                        # converter 的 ``visuals`` 层级，不能走本体网格材质重绑器。
+                        print("[g1_materials] peer visual_lod 使用资产内置轻量材质")
                     else:
                         # 对端镜像 G1 也上涂装，避免双机时看到通体白模误判机型
                         apply_g1_sonic_visual_materials("/World/envs/env_0/PeerRobot")
