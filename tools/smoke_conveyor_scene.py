@@ -10,6 +10,10 @@
   # Phase 0 单机场景冒烟（不建 socket）：筐应从入料端 y=17.4/18.0 流到工位 y≈14.148 停住
   python tools/smoke_conveyor_scene.py --steps 800
 
+  # PhysX Surface Velocity 实验 A/B（固定由 ID=1 驱动，默认 50 mm 容差）
+  python tools/smoke_conveyor_scene.py --drive-mode surface_velocity --robot-id 1 --steps 800
+  # 路线验收的 30 mm 严格口径可另加：--stop-tolerance 0.03
+
   # Phase 2 双进程同步自测（127.0.0.1）：先起 ID=1，再起 ID=2
   python tools/smoke_conveyor_scene.py --robot-id 1 --sync 1 --steps 1200
   python tools/smoke_conveyor_scene.py --robot-id 2 --sync 1 --steps 1200
@@ -27,10 +31,34 @@ parser.add_argument("--sync", default="0", choices=["0", "1"], help="ISAACLAB_SC
 parser.add_argument("--robot-id", type=int, default=None, choices=[0, 1, 2], help="1/2=对等端, 0=纯镜像 viewer")
 parser.add_argument("--device", default="cpu")
 parser.add_argument("--report-every", type=int, default=100)
+parser.add_argument(
+    "--drive-mode",
+    default=os.environ.get("ISAACLAB_CONVEYOR_DRIVE_MODE", "legacy"),
+    choices=["legacy", "surface_velocity"],
+    help="流水线 A/B 后端；surface_velocity 固定只允许 ID=1 驱动",
+)
+parser.add_argument(
+    "--expect-stop-y",
+    type=float,
+    default=None,
+    help="覆盖当前任务配置的停止 Y 目标",
+)
+parser.add_argument(
+    "--stop-tolerance",
+    type=float,
+    default=0.05,
+    help="停止目标的绝对误差上限（m，默认 0.05）",
+)
+parser.add_argument(
+    "--skip-stop-check",
+    action="store_true",
+    help="跳过权威端停止精度断言（默认按任务配置自动检查）",
+)
 args = parser.parse_args()
 
 # 环境变量必须在 import tasks 之前定型（env cfg 在 import 时读取）。
 os.environ["ISAACLAB_SCENE_SYNC"] = args.sync
+os.environ["ISAACLAB_CONVEYOR_DRIVE_MODE"] = args.drive_mode
 if args.robot_id is not None:
     os.environ["ISAACLAB_LOCAL_ROBOT_ID"] = str(args.robot_id)
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -56,12 +84,21 @@ import tasks  # noqa: F401,E402  (触发 gym.register)
 import torch  # noqa: E402
 
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg  # noqa: E402
+from tasks.g1_tasks.g1_29dof_sonic_conveyor import conveyor_env_cfg  # noqa: E402
 
 
 def main() -> int:
     env_cfg = parse_env_cfg(args.task, device=args.device, num_envs=1)
     env = gym.make(args.task, cfg=env_cfg).unwrapped
     env.reset()
+
+    expected_stop_y = None
+    if not args.skip_stop_check:
+        expected_stop_y = (
+            args.expect_stop_y
+            if args.expect_stop_y is not None
+            else conveyor_env_cfg.CONVEYOR_Y_STOP
+        )
 
     robot = env.scene["robot"]
     default_q = robot.data.default_joint_pos.clone()
@@ -117,7 +154,15 @@ def main() -> int:
 
     sync_on = args.sync == "1"
     authority = os.environ.get("ISAACLAB_LOCAL_ROBOT_ID", "1") == "1"
-    if (not sync_on) or authority:
+    surface_non_authority_offline = (
+        not sync_on and args.drive_mode == "surface_velocity" and not authority
+    )
+    if surface_non_authority_offline:
+        # Surface Velocity 固定由 ID=1 物体权威端驱动；ID=2 即使关闭同步做
+        # 单机诊断也必须保持静止，防止以后恢复同步时出现双权威。
+        ok = all(abs(m) < 0.02 for m in moved.values())
+        print("[smoke] ID=2 Surface Velocity 权威门禁：预期本地料筐不动", flush=True)
+    elif (not sync_on) or authority:
         # 权威端判定：筐被驱动明显移动且没掉下带面。
         ok = all(m > 0.3 for m in moved.values()) and all(on_belt.values())
     else:
@@ -125,6 +170,22 @@ def main() -> int:
         ok = all(m > 0.1 for m in moved.values())
         if not ok:
             print("[smoke] 镜像端筐未动：对端 ID=1 未在跑？（单独跑镜像端时此结果为预期）", flush=True)
+
+    if (
+        expected_stop_y is not None
+        and ((not sync_on) or authority)
+        and not surface_non_authority_offline
+    ):
+        stop_errors = {
+            name: abs(end_y[name] - expected_stop_y) for name in watched
+        }
+        stop_ok = all(error <= args.stop_tolerance for error in stop_errors.values())
+        print(
+            f"[smoke] 停止目标 y={expected_stop_y:.3f} | 误差 {stop_errors} "
+            f"| 容差={args.stop_tolerance:.3f} | {'PASS' if stop_ok else 'FAIL'}",
+            flush=True,
+        )
+        ok = ok and stop_ok
     print(f"[smoke] RESULT: {'PASS' if ok else 'FAIL'}", flush=True)
 
     env.close()

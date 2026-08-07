@@ -35,32 +35,22 @@ python tools/build_conveyor_visual_only_usd.py --check
 - composed visual-only stage 中有效刚体和碰撞均为 0；
 - 仓库 adapter 下 `/Root/ConveyorBelt` 同样不存在有效刚体或碰撞。
 
-任务默认不启用该变体。A/B 时显式设置：
+默认 ``legacy`` 驱动不启用该变体。A/B 时显式设置：
 
 ```bash
 ISAACLAB_CONVEYOR_VISUAL_ONLY_ASSET=1 \
 python tools/smoke_conveyor_scene.py --steps 900
 ```
 
+``surface_velocity`` 驱动会强制选用该变体，即使环境中显式写了
+``ISAACLAB_CONVEYOR_VISUAL_ONLY_ASSET=0`` 也不会重新引入原生碰撞。
+
 ## 与第一优先级背景清理层组合
 
-本独立工作树基于提交 `9865bcf`，其中还没有第一优先级提交 `f46c157` 生成的
-`warehouse-simple6_v61_visual_only.usda`。因此当前 standalone adapter
-`warehouse-simple6_v61_conveyor_visual_only.usda` 暂时 subLayer 原始 v61。
-
-合并 `f46c157` 后，**不能把任务默认背景直接改成当前未重新生成的 standalone
-adapter**，否则会绕过第一优先级层并重新引入 10 个 `ConveyorBelt_Box` 和 5 个
-`KLT_Bin` 的根层物理。
-
-正确组合方式如下：
-
-1. 先把两个提交合入同一工作树；
-2. 重新运行 `python tools/build_conveyor_visual_only_usd.py`；
-3. 生成器检测到 `warehouse-simple6_v61_visual_only.usda` 后，会让 conveyor
-   adapter subLayer 该清理层，而不是原始 v61；
-4. 未设置环境变量时，`asset_variants.py` 仍选择第一优先级清理层；只有设置
-   `ISAACLAB_CONVEYOR_VISUAL_ONLY_ASSET=1` 时才选择组合后的 conveyor adapter；
-5. 再运行 `--check`、单元测试和动态 smoke。
+集成工作树已合入背景清理层，并重新运行了生成器。当前
+`warehouse-simple6_v61_conveyor_visual_only.usda` 已 subLayer
+`warehouse-simple6_v61_visual_only.usda`，不会绕过 10 个 `ConveyorBelt_Box`
+和 5 个 `KLT_Bin` 的背景物理清理。
 
 最终组成关系应为：
 
@@ -73,14 +63,13 @@ warehouse-simple6_v61_conveyor_visual_only.usda
        -> ConveyorBelt02.usd                      # 仅复用视觉内容
 ```
 
-集成验收至少确认：
+开发阶段的静态检查确认：
 
 - `/Root/ConveyorBelt` 子树有效刚体和碰撞均为 0；
 - 10 个 `ConveyorBelt_Box` 与 5 个 `KLT_Bin` 不再具有有效动态物理；
-- `ISAACLAB_CONVEYOR_VISUAL_ONLY_ASSET=0/1` 两种模式均能加载，且 `0` 可回退；
-- 两筐在 smoke 中保持在代理板上并到达目标 `y≈14.148`。
+- legacy 未开资产变体时可回退到原生 ConveyorBelt 物理；
+- legacy 开启资产变体时使用 clean background + visual-only ConveyorBelt；
+- Surface Velocity 总是使用上述 visual-only 组合，任务 proxy/侧导轨是唯一接触几何。
 
-当前独立分支的 900 步 smoke 已确认派生 payload 能加载、输送机子树没有物理解析
-告警，但一只筐只到 `y≈16.99`，另一只筐横向漂出窄代理板后掉落。这个动态问题不
-由视觉资产层单独解决，需要与根层障碍物清理、Surface Velocity 驱动和代理碰撞
-尺寸调整一起复验。
+动态 smoke、停止误差和机器人站位属于后续验收阶段，本文档不把静态组合
+检查当作功能验收结论。

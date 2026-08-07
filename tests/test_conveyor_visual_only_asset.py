@@ -58,6 +58,35 @@ class ConveyorVisualOnlyAssetTest(unittest.TestCase):
             expected_baseline,
         )
 
+    def test_explicit_baseline_is_preserved_until_visual_only_is_selected(self) -> None:
+        resolve = _VARIANT_MODULE.resolve_conveyor_background_usd
+        legacy = _ASSET_DIR / _VARIANT_MODULE.LEGACY_BACKGROUND_USD
+        adapter = _ASSET_DIR / _VARIANT_MODULE.VISUAL_ONLY_BACKGROUND_USD
+
+        self.assertEqual(resolve(_ASSET_DIR, {}, baseline_path=legacy), legacy)
+        self.assertEqual(
+            resolve(
+                _ASSET_DIR,
+                {_VARIANT_MODULE.CONVEYOR_VISUAL_ONLY_ENV: "1"},
+                baseline_path=legacy,
+            ),
+            adapter,
+        )
+
+    def test_surface_override_forces_visual_only_even_when_env_disables_it(self) -> None:
+        resolve = _VARIANT_MODULE.resolve_conveyor_background_usd
+        legacy = _ASSET_DIR / _VARIANT_MODULE.LEGACY_BACKGROUND_USD
+
+        self.assertEqual(
+            resolve(
+                _ASSET_DIR,
+                {_VARIANT_MODULE.CONVEYOR_VISUAL_ONLY_ENV: "0"},
+                baseline_path=legacy,
+                drive_mode="surface_velocity",
+            ).name,
+            _VARIANT_MODULE.VISUAL_ONLY_BACKGROUND_USD,
+        )
+
     def test_integrated_clean_background_rejects_stale_adapter(self) -> None:
         resolve = _VARIANT_MODULE.resolve_conveyor_background_usd
         with tempfile.TemporaryDirectory() as tmp:
