@@ -56,6 +56,7 @@ from tasks.g1_tasks.g1_29dof_dex3_sonic.g1_29dof_dex3_sonic_env_cfg import (
 )
 
 from . import conveyor_events
+from .asset_variants import resolve_conveyor_background_usd
 from .scene_layout import resolve_scene_layout
 from .zmq_scene_sync import ZmqEnvResetSyncActionCfg, ZmqSceneStateSyncActionCfg
 
@@ -649,7 +650,9 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
         prim_path="/World/envs/env_.*/Background",
         init_state=AssetBaseCfg.InitialStateCfg(pos=[-4.68, 14.39363, 0], rot=[0.7071, 0.0, 0.0, 0.7071]),
         spawn=UsdFileCfg(
-            usd_path=str(_ASSETS_DIR / "warehouse-simple6_v61.usd"),
+            # 默认保留原 v61；显式设置 ISAACLAB_CONVEYOR_VISUAL_ONLY_ASSET=1
+            # 才切到只替换 ConveyorBelt payload 的小型 adapter，便于 A/B 与回退。
+            usd_path=str(resolve_conveyor_background_usd(_ASSETS_DIR)),
         ),
     )
 

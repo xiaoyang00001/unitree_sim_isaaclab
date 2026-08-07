@@ -1,0 +1,15 @@
+#usda 1.0
+(
+    defaultPrim = "Root"
+    subLayers = [@./warehouse-simple6_v61.usd@]
+)
+
+over "Root"
+{
+    over "ConveyorBelt" (
+        delete payload = @./ConveyorBelt02.usd@
+        prepend payload = @./ConveyorBelt02_visual_only.usda@
+    )
+    {
+    }
+}

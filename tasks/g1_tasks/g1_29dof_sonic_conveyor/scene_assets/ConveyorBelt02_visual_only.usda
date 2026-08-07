@@ -1,0 +1,465 @@
+#usda 1.0
+(
+    defaultPrim = "Root"
+    metersPerUnit = 0.01
+    upAxis = "Z"
+)
+
+def Xform "Root" (
+    customData = {
+        string generatedBy = "tools/build_conveyor_visual_only_usd.py"
+        string sourceSha256 = "11c0c2f053f2c1c5afca4cd4148f5131ff498f51014665a1db3a314679031201"
+        int disabledCollisionCount = 56
+        int disabledRigidBodyCount = 6
+    }
+    prepend payload = @./ConveyorBelt02.usd@
+)
+{
+
+    over "ConveyorBelt_A08_06"
+    {
+        over "ConveyorBelt_A08_06"
+        {
+            over "Rollers"
+            {
+                bool physics:rigidBodyEnabled = false
+                bool physics:collisionEnabled = false
+            }
+            over "SM_ConveyorBelt_A08_02"
+            {
+                bool physics:collisionEnabled = false
+            }
+        }
+    }
+    over "ConveyorBelt_A08_07"
+    {
+        over "ConveyorBelt_A08_07"
+        {
+            over "Rollers"
+            {
+                bool physics:rigidBodyEnabled = false
+                bool physics:collisionEnabled = false
+            }
+            over "SM_ConveyorBelt_A08_02"
+            {
+                bool physics:collisionEnabled = false
+            }
+        }
+    }
+    over "ConveyorBelt_A08_08"
+    {
+        over "ConveyorBelt_A08_08"
+        {
+            over "Rollers"
+            {
+                bool physics:rigidBodyEnabled = false
+                bool physics:collisionEnabled = false
+            }
+            over "SM_ConveyorBelt_A08_02"
+            {
+                bool physics:collisionEnabled = false
+            }
+        }
+    }
+    over "blue_sorting_bin_01"
+    {
+        over "blue_sorting_bin_01"
+        {
+            over "Geometry"
+            {
+                over "sm_bin_20x25x05cm_a01_01"
+                {
+                    bool physics:rigidBodyEnabled = false
+
+                    over "sm_bin_a05_20x25x05cm_pr_v_nvd_a01_01"
+                    {
+                        bool physics:collisionEnabled = false
+                    }
+                }
+            }
+        }
+    }
+    over "blue_sorting_bin_02"
+    {
+        over "blue_sorting_bin_02"
+        {
+            over "Geometry"
+            {
+                over "sm_bin_20x25x05cm_a01_01"
+                {
+                    bool physics:rigidBodyEnabled = false
+
+                    over "sm_bin_a05_20x25x05cm_pr_v_nvd_a01_01"
+                    {
+                        bool physics:collisionEnabled = false
+                    }
+                }
+            }
+        }
+    }
+    over "blue_sorting_bin_03"
+    {
+        over "blue_sorting_bin_03"
+        {
+            over "Geometry"
+            {
+                over "sm_bin_20x25x05cm_a01_01"
+                {
+                    bool physics:rigidBodyEnabled = false
+
+                    over "sm_bin_a05_20x25x05cm_pr_v_nvd_a01_01"
+                    {
+                        bool physics:collisionEnabled = false
+                    }
+                }
+            }
+        }
+    }
+    over "warehouse_extras_01"
+    {
+        over "warehouse_extras_01"
+        {
+            over "Extras"
+            {
+                over "BoxSetA"
+                {
+                    over "SM_CardBoxA_01"
+                    {
+                        over "SM_CardBoxA_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxA_02"
+                    {
+                        over "SM_CardBoxA_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxA_04"
+                    {
+                        over "SM_CardBoxA_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxA_05"
+                    {
+                        over "SM_CardBoxA_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxA_06"
+                    {
+                        over "SM_CardBoxA_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxC_01"
+                    {
+                        over "SM_CardBoxC_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxC_03"
+                    {
+                        over "SM_CardBoxC_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxC_04"
+                    {
+                        over "SM_CardBoxC_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxC_05"
+                    {
+                        over "SM_CardBoxC_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxD_01"
+                    {
+                        over "SM_CardBoxD_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxD_02"
+                    {
+                        over "SM_CardBoxD_02"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxD_03"
+                    {
+                        over "SM_CardBoxD_03"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxD_04"
+                    {
+                        over "SM_CardBoxD_04"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxD_05"
+                    {
+                        over "SM_CardBoxD_05"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxD_06"
+                    {
+                        over "SM_CardBoxD_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxD_07"
+                    {
+                        over "SM_CardBoxD_05"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxD_08"
+                    {
+                        over "SM_CardBoxD_05"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                }
+                over "BoxSetA_01"
+                {
+                    over "SM_CardBoxA_01"
+                    {
+                        over "SM_CardBoxA_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxA_02"
+                    {
+                        over "SM_CardBoxA_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxA_04"
+                    {
+                        over "SM_CardBoxA_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxA_06"
+                    {
+                        over "SM_CardBoxA_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxC_01"
+                    {
+                        over "SM_CardBoxC_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxC_02"
+                    {
+                        over "SM_CardBoxC_02"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxC_03"
+                    {
+                        over "SM_CardBoxC_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxC_04"
+                    {
+                        over "SM_CardBoxC_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxC_05"
+                    {
+                        over "SM_CardBoxC_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxD_01"
+                    {
+                        over "SM_CardBoxD_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxD_02"
+                    {
+                        over "SM_CardBoxD_02"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxD_03"
+                    {
+                        over "SM_CardBoxD_03"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxD_04"
+                    {
+                        over "SM_CardBoxD_04"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxD_05"
+                    {
+                        over "SM_CardBoxD_05"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxD_06"
+                    {
+                        over "SM_CardBoxD_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxD_07"
+                    {
+                        over "SM_CardBoxD_05"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxD_08"
+                    {
+                        over "SM_CardBoxD_05"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                }
+                over "BoxSetB"
+                {
+                    over "SM_CardBoxA_01"
+                    {
+                        over "SM_CardBoxA_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxA_03"
+                    {
+                        over "SM_CardBoxA_02"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxA_2"
+                    {
+                        over "SM_CardBoxA_02"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxB_01"
+                    {
+                        over "SM_CardBoxB_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxB_02"
+                    {
+                        over "SM_CardBoxB_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxC_04"
+                    {
+                        over "SM_CardBoxC_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxC_05"
+                    {
+                        over "SM_CardBoxC_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxC_06"
+                    {
+                        over "SM_CardBoxC_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxC_07"
+                    {
+                        over "SM_CardBoxC_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxC_08"
+                    {
+                        over "SM_CardBoxC_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxC_09"
+                    {
+                        over "SM_CardBoxC_01"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxD_10"
+                    {
+                        over "SM_CardBoxD_03"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                    over "SM_CardBoxD_11"
+                    {
+                        over "SM_CardBoxD_05"
+                        {
+                            bool physics:collisionEnabled = false
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
