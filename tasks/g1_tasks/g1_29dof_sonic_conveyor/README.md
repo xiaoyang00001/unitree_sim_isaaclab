@@ -173,7 +173,7 @@ HandCmd 默认超时为 `0.20 s`；超时后保持最后安全的 `q/kp/kd`、�
 
 | 文件 | 来源 | 说明 |
 |---|---|---|
-| warehouse-simple6_v48.usd | 分叉 git-LFS tip 版（**入本仓库 git**） | 工位平移/镜像已烘入；**内含 59 条绝对 S3 URL**，新机首载需联网或预热 `~/.cache/ov` |
+| warehouse-simple6_v61.usd | 分叉 git-LFS tip 版（**入本仓库 git**） | 工位平移/镜像已烘入；**内含 59 条绝对 S3 URL**，新机首载需联网或预热 `~/.cache/ov` |
 | ConveyorBelt02.usd (46.7MB) | 分叉工作区手拷 | 被 warehouse USD 以 `./ConveyorBelt02.usd` 相对引用，**必须同目录**；体积过大已在本仓库 .gitignore 排除，换机需手拷 |
 | peer_robot/g1_43dof_peer.usd | `tools/build_peer_robot_usd.py` 生成（derived，不入 git） | 无碰撞镜像机器人产物；缺失时任务启动 fail-fast |
 | nolo_label.png | 分叉 git | warehouse USD 相对引用的地面贴花 |
