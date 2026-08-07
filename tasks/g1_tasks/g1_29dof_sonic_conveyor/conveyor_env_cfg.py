@@ -56,12 +56,19 @@ from tasks.g1_tasks.g1_29dof_dex3_sonic.g1_29dof_dex3_sonic_env_cfg import (
 )
 
 from . import conveyor_events
+from .asset_variants import resolve_conveyor_background_usd
 from .background_assets import resolve_background_asset
 from .scene_layout import resolve_scene_layout
 from .zmq_scene_sync import ZmqEnvResetSyncActionCfg, ZmqSceneStateSyncActionCfg
 
 _ASSETS_DIR = Path(__file__).resolve().parent / "scene_assets"
-BACKGROUND_MODE, BACKGROUND_USD_PATH = resolve_background_asset(_ASSETS_DIR)
+BACKGROUND_MODE, _BACKGROUND_BASE_USD_PATH = resolve_background_asset(_ASSETS_DIR)
+BACKGROUND_USD_PATH = resolve_conveyor_background_usd(
+    _ASSETS_DIR,
+    baseline_path=_BACKGROUND_BASE_USD_PATH,
+)
+if BACKGROUND_USD_PATH != _BACKGROUND_BASE_USD_PATH:
+    BACKGROUND_MODE = f"{BACKGROUND_MODE}+conveyor_visual_only"
 
 # ==================================================================
 # 配置加载：configs/scene_sync.env → os.environ.setdefault（进程 env 永远优先）
@@ -652,6 +659,8 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
         prim_path="/World/envs/env_.*/Background",
         init_state=AssetBaseCfg.InitialStateCfg(pos=[-4.68, 14.39363, 0], rot=[0.7071, 0.0, 0.0, 0.7071]),
         spawn=UsdFileCfg(
+            # 默认沿用背景选择器的 clean wrapper；显式开启 conveyor visual-only
+            # 资产时切到在 clean wrapper 上替换 ConveyorBelt payload 的 adapter。
             usd_path=str(BACKGROUND_USD_PATH),
         ),
     )
