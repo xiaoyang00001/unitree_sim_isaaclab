@@ -2,6 +2,10 @@
 
 SONIC DDS 控制的 G1 + warehouse 流水线场景 + ZMQ 双机场景同步。
 
+场景物理、USD 轻量化、资源选型、分阶段施工顺序和验收指标统一记录在
+[Isaac G1 双机器人流水线场景优化路线与验收基线](../../../doc/conveyor_scene_optimization_roadmap_zh.md)。
+该文档是后续优化的执行入口；其中待办项不表示已经实施。
+
 场景与流水线驱动移植自 IsaacLab 分叉 `feat/conveyor-loop-totes-wip`
 （tip 17e71c0a0）的 `pick_place` 任务；机器人与 DDS/XR/观测链路沿用本工程
 `g1_29dof_dex3_sonic` 的 SONIC 底座。源仓库中“流水线两筐”和“推车两大筐”的分支、
@@ -173,7 +177,7 @@ HandCmd 默认超时为 `0.20 s`；超时后保持最后安全的 `q/kp/kd`、�
 
 | 文件 | 来源 | 说明 |
 |---|---|---|
-| warehouse-simple6_v61.usd | 分叉 git-LFS tip 版（**入本仓库 git**） | 工位平移/镜像已烘入；**内含 59 条绝对 S3 URL**，新机首载需联网或预热 `~/.cache/ov` |
+| warehouse-simple6_v61.usd | 分叉 git-LFS tip 版（**入本仓库 git**） | 工位平移/镜像已烘入；2026-08-07 对根层 Sdf reference list-op 的静态审计记录约 1,805 个唯一资产路径，不等于传递依赖或实际下载数；新机首载仍需联网/预热缓存，后续按[优化路线](../../../doc/conveyor_scene_optimization_roadmap_zh.md)生成可复现依赖清单并本地化 |
 | ConveyorBelt02.usd (46.7MB) | 分叉工作区手拷 | 被 warehouse USD 以 `./ConveyorBelt02.usd` 相对引用，**必须同目录**；体积过大已在本仓库 .gitignore 排除，换机需手拷 |
 | peer_robot/g1_43dof_peer.usd | `tools/build_peer_robot_usd.py` 生成（derived，不入 git） | 无碰撞镜像机器人产物；缺失时任务启动 fail-fast |
 | nolo_label.png | 分叉 git | warehouse USD 相对引用的地面贴花 |
