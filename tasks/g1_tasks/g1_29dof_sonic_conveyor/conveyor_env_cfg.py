@@ -56,10 +56,12 @@ from tasks.g1_tasks.g1_29dof_dex3_sonic.g1_29dof_dex3_sonic_env_cfg import (
 )
 
 from . import conveyor_events
+from .background_assets import resolve_background_asset
 from .scene_layout import resolve_scene_layout
 from .zmq_scene_sync import ZmqEnvResetSyncActionCfg, ZmqSceneStateSyncActionCfg
 
 _ASSETS_DIR = Path(__file__).resolve().parent / "scene_assets"
+BACKGROUND_MODE, BACKGROUND_USD_PATH = resolve_background_asset(_ASSETS_DIR)
 
 # ==================================================================
 # 配置加载：configs/scene_sync.env → os.environ.setdefault（进程 env 永远优先）
@@ -365,6 +367,7 @@ def _log_scene_layout() -> None:
         )
     else:
         print(f"{tag} 场景同步: 关 [ISAACLAB_SCENE_SYNC=0]")
+    print(f"{tag} 背景资产: {BACKGROUND_MODE} ({BACKGROUND_USD_PATH.name})")
     if TOTES_ON_CONVEYOR:
         print(f"{tag} 场景布局: 流水线（两筐缩半在传送带上流动） [ISAACLAB_TOTES_ON_CONVEYOR=1]")
     else:
@@ -649,7 +652,7 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
         prim_path="/World/envs/env_.*/Background",
         init_state=AssetBaseCfg.InitialStateCfg(pos=[-4.68, 14.39363, 0], rot=[0.7071, 0.0, 0.0, 0.7071]),
         spawn=UsdFileCfg(
-            usd_path=str(_ASSETS_DIR / "warehouse-simple6_v61.usd"),
+            usd_path=str(BACKGROUND_USD_PATH),
         ),
     )
 

@@ -363,3 +363,39 @@ Interroll、FlexLink、Bosch Rexroth 等厂商 CAD 只在需要一比一复刻�
 - [ ] P3 料筐、robot_2 可达性、镜像 LOD、灯光和相机完成。
 - [ ] P4 Isaac Sim 5.1 资产本地化和新机离线部署完成。
 - [ ] 达到 50 Hz 目标或留下同口径、可复现的剩余瓶颈账本。
+
+## 10. 实施记录
+
+### 2026-08-07：P1.1 背景动态装饰物 visual-only
+
+- 分支：`feat/conveyor-background-visual-only`
+- 基线提交：`9865bcf`
+- 运行环境：Ubuntu 24.04、Isaac Sim 5.1.0、RTX 5080、`--device cpu`
+- governor：`powersave`；本轮只作功能和告警对照，不据此比较性能收益
+- scene-sync：关闭，单机场景 smoke
+- 并发条件：原 GUI Kit 进程仍在运行，因此不记录冷启动和显存结论
+
+改动：
+
+- 新增 `warehouse-simple6_v61_visual_only.usda` 强覆盖层，保留原始 v61 视觉。
+- 对 10 个 `ConveyorBelt_Box`、5 个 `KLT_Bin` 及其 15 个引用子 Prim 删除物理 API，
+  同时显式设置 `physics:collisionEnabled=false` 和 `physics:rigidBodyEnabled=false`。
+- 默认使用 visual-only 层；`ISAACLAB_CONVEYOR_BACKGROUND=legacy_v61` 保留原始场景 A/B 回退。
+- 配置非法值 fail-fast，并增加不启动 Kit 的选择器和覆盖完整性单测。
+
+验证结果：
+
+| 指标 | `legacy_v61` | `visual_only` |
+|---|---:|---:|
+| 目标动态 triangle-mesh fallback | 26 | 0 |
+| 800/900 步末 tote1 y | 17.297（未到位） | 14.135 |
+| 800/900 步末 tote2 y | 17.306（未到位） | 14.140 |
+| 流水线 smoke | FAIL | PASS |
+| 现有 Python 单测 | — | 44/44 PASS |
+
+visual-only 候选使用 `tools/smoke_conveyor_scene.py --steps 900 --sync 0 --device cpu`，两筐分别
+沿 `-Y` 移动 3.265 m 和 3.860 m，且末态仍在带面。裸 USD 组合检查也确认 15 个根 Prim 和
+15 个引用子 Prim 都没有有效 RigidBodyAPI/CollisionAPI。
+
+本项只完成背景纸箱/KLT 装饰物清理，**不代表整个 P1 已完成**：`ConveyorBelt02.usd` 内部
+刚体/碰撞、背景灯光、PhysicsScene、RenderProduct 和远处布景仍由后续独立工作树处理。

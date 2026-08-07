@@ -1,0 +1,253 @@
+#usda 1.0
+(
+    defaultPrim = "Root"
+    subLayers = [
+        @./warehouse-simple6_v61.usd@
+    ]
+)
+
+# v61 把下列纸箱和 KLT 料箱作为动态三角网格刚体写进背景。它们只是布景，不应进入
+# 任务物理、reset 或 scene-sync。本强层删除根 Prim 的物理 API，同时把根及纸箱引用
+# 子 Prim 的碰撞/刚体开关显式关闭；即使上游资产以后重新添加 API，禁用属性仍提供保护。
+over "Root"
+{
+    over "ConveyorBelt_Box_00" (
+        delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+    )
+    {
+        bool physics:collisionEnabled = 0
+        bool physics:rigidBodyEnabled = 0
+
+        over "SM_CardBoxD_01" (
+            delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+        )
+        {
+            bool physics:collisionEnabled = 0
+            bool physics:rigidBodyEnabled = 0
+        }
+    }
+
+    over "ConveyorBelt_Box_01" (
+        delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+    )
+    {
+        bool physics:collisionEnabled = 0
+        bool physics:rigidBodyEnabled = 0
+
+        over "SM_CardBoxD_01" (
+            delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+        )
+        {
+            bool physics:collisionEnabled = 0
+            bool physics:rigidBodyEnabled = 0
+        }
+    }
+
+    over "ConveyorBelt_Box_02" (
+        delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+    )
+    {
+        bool physics:collisionEnabled = 0
+        bool physics:rigidBodyEnabled = 0
+
+        over "SM_CardBoxD_01" (
+            delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+        )
+        {
+            bool physics:collisionEnabled = 0
+            bool physics:rigidBodyEnabled = 0
+        }
+    }
+
+    over "ConveyorBelt_Box_03" (
+        delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+    )
+    {
+        bool physics:collisionEnabled = 0
+        bool physics:rigidBodyEnabled = 0
+
+        over "SM_CardBoxD_01" (
+            delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+        )
+        {
+            bool physics:collisionEnabled = 0
+            bool physics:rigidBodyEnabled = 0
+        }
+    }
+
+    over "ConveyorBelt_Box_04" (
+        delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+    )
+    {
+        bool physics:collisionEnabled = 0
+        bool physics:rigidBodyEnabled = 0
+
+        over "SM_CardBoxD_01" (
+            delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+        )
+        {
+            bool physics:collisionEnabled = 0
+            bool physics:rigidBodyEnabled = 0
+        }
+    }
+
+    over "ConveyorBelt_Box_05" (
+        delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+    )
+    {
+        bool physics:collisionEnabled = 0
+        bool physics:rigidBodyEnabled = 0
+
+        over "SM_CardBoxD_01" (
+            delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+        )
+        {
+            bool physics:collisionEnabled = 0
+            bool physics:rigidBodyEnabled = 0
+        }
+    }
+
+    over "ConveyorBelt_Box_06" (
+        delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+    )
+    {
+        bool physics:collisionEnabled = 0
+        bool physics:rigidBodyEnabled = 0
+
+        over "SM_CardBoxD_01" (
+            delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+        )
+        {
+            bool physics:collisionEnabled = 0
+            bool physics:rigidBodyEnabled = 0
+        }
+    }
+
+    over "ConveyorBelt_Box_07" (
+        delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+    )
+    {
+        bool physics:collisionEnabled = 0
+        bool physics:rigidBodyEnabled = 0
+
+        over "SM_CardBoxD_01" (
+            delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+        )
+        {
+            bool physics:collisionEnabled = 0
+            bool physics:rigidBodyEnabled = 0
+        }
+    }
+
+    over "ConveyorBelt_Box_08" (
+        delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+    )
+    {
+        bool physics:collisionEnabled = 0
+        bool physics:rigidBodyEnabled = 0
+
+        over "SM_CardBoxD_01" (
+            delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+        )
+        {
+            bool physics:collisionEnabled = 0
+            bool physics:rigidBodyEnabled = 0
+        }
+    }
+
+    over "ConveyorBelt_Box_09" (
+        delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+    )
+    {
+        bool physics:collisionEnabled = 0
+        bool physics:rigidBodyEnabled = 0
+
+        over "SM_CardBoxD_01" (
+            delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+        )
+        {
+            bool physics:collisionEnabled = 0
+            bool physics:rigidBodyEnabled = 0
+        }
+    }
+
+    over "KLT_Bin_00" (
+        delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+    )
+    {
+        bool physics:collisionEnabled = 0
+        bool physics:rigidBodyEnabled = 0
+
+        over "SM_CardBoxC_01" (
+            delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+        )
+        {
+            bool physics:collisionEnabled = 0
+            bool physics:rigidBodyEnabled = 0
+        }
+    }
+
+    over "KLT_Bin_01" (
+        delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+    )
+    {
+        bool physics:collisionEnabled = 0
+        bool physics:rigidBodyEnabled = 0
+
+        over "SM_CardBoxC_01" (
+            delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+        )
+        {
+            bool physics:collisionEnabled = 0
+            bool physics:rigidBodyEnabled = 0
+        }
+    }
+
+    over "KLT_Bin_02" (
+        delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+    )
+    {
+        bool physics:collisionEnabled = 0
+        bool physics:rigidBodyEnabled = 0
+
+        over "SM_CardBoxC_01" (
+            delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+        )
+        {
+            bool physics:collisionEnabled = 0
+            bool physics:rigidBodyEnabled = 0
+        }
+    }
+
+    over "KLT_Bin_03" (
+        delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+    )
+    {
+        bool physics:collisionEnabled = 0
+        bool physics:rigidBodyEnabled = 0
+
+        over "SM_CardBoxC_01" (
+            delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+        )
+        {
+            bool physics:collisionEnabled = 0
+            bool physics:rigidBodyEnabled = 0
+        }
+    }
+
+    over "KLT_Bin_04" (
+        delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+    )
+    {
+        bool physics:collisionEnabled = 0
+        bool physics:rigidBodyEnabled = 0
+
+        over "SM_CardBoxC_01" (
+            delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
+        )
+        {
+            bool physics:collisionEnabled = 0
+            bool physics:rigidBodyEnabled = 0
+        }
+    }
+}

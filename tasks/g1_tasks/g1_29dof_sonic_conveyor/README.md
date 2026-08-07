@@ -46,6 +46,11 @@ python sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor \
 
 例如：`ISAACLAB_TOTES_ON_CONVEYOR=0 python sim_main.py ...`。
 
+背景默认使用 `warehouse-simple6_v61_visual_only.usda` 强覆盖层：保留 v61 外观，但在 PhysX
+解析前删除 10 个流水线纸箱和 5 个 KLT 料箱的刚体/碰撞语义，避免装饰物参与物理、复位和
+双端同步。A/B 或排障时可用 `ISAACLAB_CONVEYOR_BACKGROUND=legacy_v61` 临时恢复原始 v61；
+无效值会在启动时直接报错，不会静默换场景。
+
 ### 筐被搬上流水线后的运动
 
 两种布局共用同一套流水线驱动。`ISAACLAB_TOTES_ON_CONVEYOR=0` 时，机器人把推车上的
@@ -177,8 +182,9 @@ HandCmd 默认超时为 `0.20 s`；超时后保持最后安全的 `q/kp/kd`、�
 
 | 文件 | 来源 | 说明 |
 |---|---|---|
-| warehouse-simple6_v61.usd | 分叉 git-LFS tip 版（**入本仓库 git**） | 工位平移/镜像已烘入；2026-08-07 对根层 Sdf reference list-op 的静态审计记录约 1,805 个唯一资产路径，不等于传递依赖或实际下载数；新机首载仍需联网/预热缓存，后续按[优化路线](../../../doc/conveyor_scene_optimization_roadmap_zh.md)生成可复现依赖清单并本地化 |
-| ConveyorBelt02.usd (46.7MB) | 分叉工作区手拷 | 被 warehouse USD 以 `./ConveyorBelt02.usd` 相对引用，**必须同目录**；体积过大已在本仓库 .gitignore 排除，换机需手拷 |
+| warehouse-simple6_v61.usd | 分叉 git-LFS tip 版（**入本仓库 git**） | 原始 v61，作为 `ISAACLAB_CONVEYOR_BACKGROUND=legacy_v61` 的 A/B 回退；2026-08-07 对根层 Sdf reference list-op 的静态审计记录约 1,805 个唯一资产路径，不等于传递依赖或实际下载数 |
+| warehouse-simple6_v61_visual_only.usda | 本仓库任务专用强覆盖层 | 默认背景入口；引用原始 v61，删除 10 个纸箱和 5 个 KLT 料箱的刚体/碰撞 API 并显式禁用物理，视觉保持不变 |
+| ConveyorBelt02.usd (46.7MB) | 分叉工作区拷入（**已入本仓库 git**） | 被 warehouse USD 以 `./ConveyorBelt02.usd` 相对引用，必须与 warehouse 层保持可解析的相对路径；后续 visual-only 派生层不直接重写这个二进制源资产 |
 | peer_robot/g1_43dof_peer.usd | `tools/build_peer_robot_usd.py` 生成（derived，不入 git） | 无碰撞镜像机器人产物；缺失时任务启动 fail-fast |
 | nolo_label.png | 分叉 git | warehouse USD 相对引用的地面贴花 |
 | props/pushcart_physics.usda | 分叉工作区手拷（未入 git） | 引用 Nucleus 5.1 SM_PushcartA_02 |
