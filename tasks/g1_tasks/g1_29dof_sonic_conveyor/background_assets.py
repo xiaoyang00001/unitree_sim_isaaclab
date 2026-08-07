@@ -1,8 +1,9 @@
 """Background asset selection for the conveyor task.
 
 This module intentionally has no Isaac Sim imports so the selection and fallback contract can be
-tested without starting Kit.  The visual-only USD is a strong override layer on top of the original
-v61 scene; the original asset remains available for controlled A/B comparisons.
+tested without starting Kit.  The workcell-lite asset is opt-in while its functional integration is
+still being completed; the visual-only v61 layer remains the default and the original asset remains
+available for controlled A/B comparisons.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from pathlib import Path
 BACKGROUND_MODE_ENV = "ISAACLAB_CONVEYOR_BACKGROUND"
 DEFAULT_BACKGROUND_MODE = "visual_only"
 BACKGROUND_ASSET_FILENAMES = {
+    "workcell_lite": "conveyor_workcell_lite.usd",
     "visual_only": "warehouse-simple6_v61_visual_only.usda",
     "legacy_v61": "warehouse-simple6_v61.usd",
 }

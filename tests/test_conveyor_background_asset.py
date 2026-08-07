@@ -37,6 +37,16 @@ class ConveyorBackgroundAssetTest(unittest.TestCase):
         self.assertEqual(path.name, "warehouse-simple6_v61.usd")
         self.assertTrue(path.is_file())
 
+    def test_workcell_lite_background_is_explicitly_opt_in(self) -> None:
+        mode, path = _MODULE.resolve_background_asset(
+            _ASSETS_DIR,
+            {_MODULE.BACKGROUND_MODE_ENV: " workcell_lite "},
+        )
+
+        self.assertEqual(mode, "workcell_lite")
+        self.assertEqual(path.name, "conveyor_workcell_lite.usd")
+        self.assertTrue(path.is_file())
+
     def test_unknown_background_mode_fails_fast(self) -> None:
         with self.assertRaisesRegex(ValueError, "可选值"):
             _MODULE.resolve_background_asset(

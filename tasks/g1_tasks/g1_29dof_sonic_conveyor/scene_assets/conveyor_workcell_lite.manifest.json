@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "description": "v61 流水线工位的白名单引用薄层，只组合传送带、工位地面标识、地面碰撞与仓库外墙。",
+  "source_asset": "warehouse-simple6_v61_visual_only.usda",
+  "source_asset_sha256": "0e138bd8375b496579c94a1a017c8edd9d1e87ee69860dc09e541c205245503c",
+  "source_root_child_count": 3017,
+  "output_asset": "conveyor_workcell_lite.usd",
+  "keep_root_exact": [
+    "ConveyorBelt",
+    "GroundPlane",
+    "SM_floor47",
+    "SM_floor58",
+    "FloorZone_Robot",
+    "FloorZone_KeepClear",
+    "Stripe_Walk1",
+    "Stripe_Walk2",
+    "Stripe_Conv1"
+  ],
+  "keep_root_prefixes": [
+    "SM_WallA_"
+  ],
+  "omit_pseudoroot_prims": [
+    "/PhysicsScene",
+    "/Render",
+    "/NavMesh"
+  ],
+  "required_active_prims": [
+    "/Root/ConveyorBelt",
+    "/Root/ConveyorBelt/ConveyorBelt_A08_06",
+    "/Root/ConveyorBelt/ConveyorBelt_A08_07",
+    "/Root/ConveyorBelt/ConveyorBelt_A08_08",
+    "/Root/GroundPlane",
+    "/Root/SM_floor47",
+    "/Root/SM_floor58"
+  ],
+  "required_inactive_prims": [
+    "/PhysicsScene",
+    "/Render",
+    "/Render/OmniverseKit/HydraTextures/omni_kit_widget_viewport_ViewportTexture_0",
+    "/Render/OmniverseGlobalRenderSettings",
+    "/Render/Vars/LdrColor",
+    "/NavMesh",
+    "/Root/Camera",
+    "/Root/DistantLight",
+    "/Root/RectLight",
+    "/Root/KLT_Bins",
+    "/Root/forklift",
+    "/Root/SM_PushcartA_02_22",
+    "/Root/WorkTable_1",
+    "/Root/WorkTable_2"
+  ],
+  "forbidden_active_type_names": [
+    "Camera",
+    "PhysicsScene",
+    "DomeLight",
+    "DistantLight",
+    "RectLight",
+    "SphereLight",
+    "DiskLight",
+    "CylinderLight",
+    "PortalLight",
+    "RenderProduct",
+    "RenderSettings",
+    "RenderVar",
+    "NavMeshVolume"
+  ],
+  "audit_limits": {
+    "max_lite_active_prims": 2000,
+    "max_lite_used_layers": 100,
+    "min_active_prim_reduction": 25000,
+    "min_used_layer_reduction": 1600
+  },
+  "remote_dependency_prefix": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/",
+  "expected_lite_remote_layers": 8
+}
