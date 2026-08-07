@@ -932,10 +932,22 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
 
     def __post_init__(self):
         super().__post_init__()
-        # GUI 开局相机对准流水线工位(默认相机看世界原点,工作区在 (-5,14) 附近,
-        # 打开就是空镜头还得手动飞过去)。
-        self.viewer.eye = (-5.62, 19.0, 2.4)
-        self.viewer.lookat = (-5.62, 14.148, 1.0)
+        # GUI 开局相机站在流水线开头(入料端 y=18.222)正对着流水线看下去:eye/lookat
+        # 的 x 都压在带面中线 -5.62 上,视线方向是纯 -Y,与筐的流动方向一致,作业组
+        # 居中、整条带向远处延伸(默认相机看世界原点,打开就是空镜头还得手动飞过去)。
+        #
+        # ⚠️ eye 的 y 不能写死:作业组位置随 ISAACLAB_TOTES_ON_CONVEYOR 变,两种布局
+        # 差 4.6 m。这里取两个约束的较大者——
+        #   ① 退到作业组后方 4 m:=0 布局下拖车/两筐/两台机器人全堆在
+        #      ROBOT_WORKSTATION_Y=18.75,写死 19.0 会让相机贴在拖车上只剩 0.25 m;
+        #   ② 至少站到入料端(18.222)外:否则"站在流水线开头"不成立。
+        # 下限取 18.8 而不是更靠后,是因为 =1 布局下空拖车 pushcart_2 停在 y=19.394,
+        # 18.8 正好夹在入料端与拖车之间(各留 ~0.6 m),再往后就要穿拖车。
+        # 于是 =1 布局得 18.80(作业组在 14.148,相机在开头外 0.58 m),
+        #     =0 布局得 22.75(作业组本身就顶在开头,必须再往后退)。
+        _cam_eye_y = max(ROBOT_WORKSTATION_Y + 4.0, 18.8)
+        self.viewer.eye = (-5.62, _cam_eye_y, 2.8)
+        self.viewer.lookat = (-5.62, ROBOT_WORKSTATION_Y, 1.0)
         if _PERF_AB:
             print(f"[conveyor_env_cfg] ⚠️ 性能 A/B 诊断开关生效: {sorted(_PERF_AB)}")
             if "no_peer" in _PERF_AB:
