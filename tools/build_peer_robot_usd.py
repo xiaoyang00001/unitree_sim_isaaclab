@@ -17,7 +17,7 @@ Isaac-G1-29DoF-Sonic-Conveyor 的对端镜像机器人必须无碰撞（纯跟�
     python tools/build_peer_robot_usd.py
 
 产物: tasks/g1_tasks/g1_29dof_sonic_conveyor/scene_assets/peer_robot/g1_43dof_peer.usd
-（derived 资产不入 git；conveyor_env_cfg 检测到产物缺失会回退 URDF 直转并告警。）
+（当前产物和 configuration 依赖已入 git；本脚本用于源 URDF 变化后的确定性刷新。）
 """
 
 import os

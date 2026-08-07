@@ -10,7 +10,8 @@ DDS/XR 链路沿用本工程 ``g1_29dof_dex3_sonic`` 的 SONIC 底座。
 双机形态（对等/混合权威）：
 * 每台机器跑本文件的同一个任务，用 ``ISAACLAB_LOCAL_ROBOT_ID``（1/2）区分身份；
 * 本机 G1 名为 ``robot``（prim ``Robot``，DDS/观测/XR 全链路与 SONIC 任务一致），
-  对端 G1 是 ``peer_robot`` 镜像体（无碰撞、无重力，由 scene_state 帧驱动）；
+  对端 G1 是 ``peer_robot`` 镜像体（默认无碰撞 articulation；可 opt-in 为纯显示
+  USD Xform/FK，两者都由 scene_state 帧驱动）；
 * 场景物体的物理权威固定在 ID=1：ID=2 侧物体 spawn 成 kinematic 纯跟随；
 * 流水线驱动事件只在物体权威端生效；
 * 已知限制：只有 ID=1 侧机器人能与物体发生物理交互（镜像体无碰撞）。
@@ -68,6 +69,8 @@ from .conveyor_drive import (
     BELT_X_CENTER,
     resolve_conveyor_drive,
 )
+from .peer_visual_lod import JOINT_NAMES as PEER_VISUAL_LOD_JOINT_NAMES
+from .peer_visual_lod import resolve_peer_robot_mode
 from .scene_layout import resolve_scene_layout
 from .scene_props import resolve_scene_props
 from .tote_assets import resolve_tote_asset
@@ -180,6 +183,11 @@ SCENE_SYNC_ENABLED = _env_bool("ISAACLAB_SCENE_SYNC", True) and _PYZMQ_AVAILABLE
 if _env_bool("ISAACLAB_SCENE_SYNC", True) and not _PYZMQ_AVAILABLE:
     print("[conveyor_env_cfg] ⚠️ pyzmq 未安装，场景同步强制关闭，本机按单机权威模式跑")
 
+# 显式 opt-in：默认继续使用已验过的无碰撞 articulation 镜像；visual_lod
+# 改为纯 USD Xform/FK 后端，不创建镜像 articulation、刚体、碰撞、执行器或传感器。
+PEER_ROBOT_MODE = resolve_peer_robot_mode(os.environ.get("ISAACLAB_PEER_ROBOT_MODE"))
+PEER_VISUAL_LOD = PEER_ROBOT_MODE == "visual_lod"
+
 # 本机物体是否是 kinematic 镜像（= 非权威端且同步开着）。
 # 同步关掉时（单机自测）任何一端都当权威跑，物体保持动态、流水线照常驱动。
 MIRROR_OBJECTS = SCENE_SYNC_ENABLED and not OBJECT_AUTHORITY
@@ -225,9 +233,17 @@ def _scene_state_sync_cfg() -> ZmqSceneStateSyncActionCfg:
     if not SCENE_SYNC_ENABLED:
         return ZmqSceneStateSyncActionCfg(asset_name="robot")
     connect_endpoint = SCENE_SYNC_CONNECT_ENDPOINT
+    apply_visual_robots = {}
     if VIEWER_MODE:
         publish_robots = {}
-        apply_robots = {"robot_1": "peer_robot", "robot_2": "peer_robot_2"}
+        if PEER_VISUAL_LOD:
+            apply_robots = {}
+            apply_visual_robots = {
+                "robot_1": "/World/envs/env_0/PeerRobot",
+                "robot_2": "/World/envs/env_0/PeerRobot2",
+            }
+        else:
+            apply_robots = {"robot_1": "peer_robot", "robot_2": "peer_robot_2"}
     elif HOST_MODE:
         # host 只发不收：双机器人 + 物体全部单向广播，viewer 的容缺 apply 自动补上
         # robot_2。connect 置空让接收方向干净失能（不建 SUB socket、不刷 stale）。
@@ -236,7 +252,13 @@ def _scene_state_sync_cfg() -> ZmqSceneStateSyncActionCfg:
         connect_endpoint = ""
     else:
         publish_robots = {LOCAL_ROBOT_GLOBAL_NAME: "robot"}
-        apply_robots = {PEER_ROBOT_GLOBAL_NAME: "peer_robot"}
+        if PEER_VISUAL_LOD:
+            apply_robots = {}
+            apply_visual_robots = {
+                PEER_ROBOT_GLOBAL_NAME: "/World/envs/env_0/PeerRobot",
+            }
+        else:
+            apply_robots = {PEER_ROBOT_GLOBAL_NAME: "peer_robot"}
     return ZmqSceneStateSyncActionCfg(
         asset_name="robot",
         bind_endpoint=SCENE_SYNC_BIND_ENDPOINT,
@@ -245,6 +267,8 @@ def _scene_state_sync_cfg() -> ZmqSceneStateSyncActionCfg:
         local_sender_name=LOCAL_ROBOT_GLOBAL_NAME,
         publish_robots=publish_robots,
         apply_robots=apply_robots,
+        apply_visual_robots=apply_visual_robots,
+        visual_robot_joint_names=PEER_VISUAL_LOD_JOINT_NAMES if apply_visual_robots else (),
         publish_object_names=SYNC_OBJECT_NAMES if OBJECT_AUTHORITY else (),
         apply_object_names=() if OBJECT_AUTHORITY else SYNC_OBJECT_NAMES,
         external_pump=SCENE_SYNC_MAINLOOP,
@@ -666,6 +690,7 @@ def _make_second_local_robot_cfg() -> ArticulationCfg:
 
 
 _PEER_ROBOT_USD = _ASSETS_DIR / "peer_robot" / "g1_43dof_peer.usd"
+_PEER_VISUAL_LOD_USD = _ASSETS_DIR / "peer_robot" / "g1_43dof_visual_lod.usda"
 
 # 镜像体的无重力/零阻尼自由体刚体参数：关节与 root 由 scene_state 帧直写，
 # 去穿透无意义，但 PhysX 不接受 0，只能不设置（None）。
@@ -778,6 +803,40 @@ def _make_foot_contact_sensor(prim_name: str) -> ContactSensorCfg | None:
         force_threshold=5.0,
         debug_vis=False,
     )
+
+
+def _make_peer_visual_lod_cfg(
+    *,
+    prim_path: str = "{ENV_REGEX_NS}/PeerRobot",
+    pos: tuple[float, float, float] = PEER_ROBOT_POS,
+    rot: tuple[float, float, float, float] = PEER_ROBOT_ROT,
+) -> AssetBaseCfg:
+    """Create a render-only G1 mirror; scene-state drives its link Xforms."""
+
+    return AssetBaseCfg(
+        prim_path=prim_path,
+        init_state=AssetBaseCfg.InitialStateCfg(pos=pos, rot=rot),
+        spawn=UsdFileCfg(
+            usd_path=str(_PEER_VISUAL_LOD_USD),
+            activate_contact_sensors=False,
+        ),
+    )
+
+
+def _make_peer_scene_cfg() -> ArticulationCfg | AssetBaseCfg:
+    if PEER_VISUAL_LOD:
+        return _make_peer_visual_lod_cfg()
+    return _make_peer_robot_cfg()
+
+
+def _make_second_peer_scene_cfg() -> ArticulationCfg | AssetBaseCfg:
+    if PEER_VISUAL_LOD:
+        return _make_peer_visual_lod_cfg(
+            prim_path="{ENV_REGEX_NS}/PeerRobot2",
+            pos=PEER2_ROBOT_POS,
+            rot=PEER2_ROBOT_ROT,
+        )
+    return _make_second_peer_robot_cfg()
 
 
 # ==================================================================
@@ -1025,10 +1084,10 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
 
     # 对端 G1 镜像体：由 scene_state 帧驱动。viewer 模式下它镜像 robot_1；
     # host 模式下两台都是真身，不需要镜像体。
-    peer_robot: ArticulationCfg | None = None if HOST_MODE else _make_peer_robot_cfg()
+    peer_robot: ArticulationCfg | AssetBaseCfg | None = None if HOST_MODE else _make_peer_scene_cfg()
 
     # viewer 专用第二镜像体（robot_2）。对等/host 模式为 None，场景里不生成。
-    peer_robot_2: ArticulationCfg | None = _make_second_peer_robot_cfg() if VIEWER_MODE else None
+    peer_robot_2: ArticulationCfg | AssetBaseCfg | None = _make_second_peer_scene_cfg() if VIEWER_MODE else None
 
     # host 专用：robot_2 全动力学本体 + 它的足底接触诊断（参数照抄底座 foot_contact）。
     robot_2: ArticulationCfg | None = _make_second_local_robot_cfg() if HOST_MODE else None
@@ -1284,10 +1343,17 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
             )
         # 回退的 URDF 直转 peer 带碰撞体，会被地面弹出后无重力恒速上飘。
         # host 模式没有镜像体，不需要该产物。
-        if not HOST_MODE and not _PEER_ROBOT_USD.exists():
+        if not HOST_MODE and not PEER_VISUAL_LOD and not _PEER_ROBOT_USD.exists():
             raise RuntimeError(
                 f"缺少无碰撞镜像机器人产物 {_PEER_ROBOT_USD}\n先运行: python tools/build_peer_robot_usd.py"
             )
+        if not HOST_MODE and PEER_VISUAL_LOD and not _PEER_VISUAL_LOD_USD.exists():
+            raise RuntimeError(
+                f"缺少纯显示镜像机器人资产 {_PEER_VISUAL_LOD_USD}\n"
+                "先运行: python tools/build_peer_visual_lod_usd.py"
+            )
+        if not HOST_MODE:
+            print(f"[conveyor_env_cfg] 镜像机器人模式: {PEER_ROBOT_MODE}")
         # XR 锚定重定向。⚠️ 只改 self.xr 不够——teleop_devices 构建时把 xr_cfg
         # **拷贝**了一份（2026-08-02 实测：cfg 打印挂 PeerRobot、teleop 设备实际仍用
         # Robot 路径，AR 视角锚到场外 ghost 上）。必须把 self.xr 与每个 teleop 设备

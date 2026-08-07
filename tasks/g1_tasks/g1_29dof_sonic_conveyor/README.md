@@ -18,7 +18,7 @@ SONIC DDS 控制的 G1 + warehouse 流水线场景 + ZMQ 双机场景同步。
 cd ~/unitree_sim_isaaclab
 conda activate env_isaaclab
 
-# 每台机器先跑一次：生成无碰撞镜像机器人 USD（缺失时任务启动会 fail-fast 提示）
+# articulation 产物已随仓库提供；仅在缺失或上游 URDF 变化后重新生成
 python tools/build_peer_robot_usd.py
 
 # 1 号机（物体权威 + 复位权威，流水线驱动在这端跑）
@@ -34,6 +34,19 @@ python sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor \
 
 单机自测（不建 socket）：`ISAACLAB_SCENE_SYNC=0`。
 持久配置写 `configs/scene_sync.env`（进程环境变量永远优先）。
+
+镜像机器人默认继续使用已验过的无碰撞 articulation。需要先试用不进入 PhysX 的
+43-DoF 纯显示 LOD，可在接收镜像的进程增加：
+
+```bash
+ISAACLAB_PEER_ROBOT_MODE=visual_lod
+```
+
+该模式按 `scene_state` 的 base pose + 43 关节角执行 USD Xform/FK，ID=0 viewer 的
+`PeerRobot`、`PeerRobot2` 均支持；不是静态模型或隐藏 articulation。实现、协议兼容、
+资产统计和后置动态验收清单见
+[流水线镜像机器人纯显示 LOD](../../../doc/conveyor_peer_visual_lod_zh.md)。删除变量或设为
+`articulation` 即回退。
 
 ## 场景布局切换
 
@@ -112,7 +125,7 @@ NavMesh、Render 设置、额外 PhysicsScene、货架、纸箱堆、推车与�
 | 项 | 权威 | 说明 |
 |---|---|---|
 | 本机机器人 `robot` | 各自机器 | 各自的 SONIC deploy 经 `rt/lowcmd` 驱动 |
-| 对端机器人 `peer_robot` | 对端 | scene_state 帧驱动的无碰撞无重力镜像体 |
+| 对端机器人 `peer_robot` | 对端 | 默认无碰撞 articulation；可显式切纯 USD Xform/FK 的 visual_lod |
 | 场景物体（随布局生成） | 固定 ID=1 | ID=2 侧 spawn 成 kinematic 纯跟随 |
 | 流水线驱动 | ID=1 | 镜像端强制关（本地驱动会和同步打架） |
 | 整环境复位 | ID=1 | 广播 reset_id，ID=2 跟随；ID=2 本地复位不回传 |
@@ -226,7 +239,8 @@ HandCmd 默认超时为 `0.20 s`；超时后保持最后安全的 `q/kp/kd`、�
 | conveyor_workcell_lite.usd | `tools/build_conveyor_workcell_lite.py` 生成的 ASCII USD 薄层 | opt-in 背景；白名单引用 63 个 v61 根 Prim，当前静态审计为 27,802→1,052 active Prim、1,818→13 used layer |
 | conveyor_workcell_lite.manifest.json | 本仓库可复现生成清单 | 锁定源哈希、保留规则、必须存在/缺席的 Prim 和组合降幅门槛 |
 | ConveyorBelt02.usd (46.7MB) | 分叉工作区拷入（**已入本仓库 git**） | 被 warehouse USD 以 `./ConveyorBelt02.usd` 相对引用，必须与 warehouse 层保持可解析的相对路径；后续 visual-only 派生层不直接重写这个二进制源资产 |
-| peer_robot/g1_43dof_peer.usd | `tools/build_peer_robot_usd.py` 生成（derived，不入 git） | 无碰撞镜像机器人产物；缺失时任务启动 fail-fast |
+| peer_robot/g1_43dof_peer.usd | `tools/build_peer_robot_usd.py` 生成（已入 git） | 默认 articulation 模式的无碰撞镜像机器人；缺失时任务启动 fail-fast |
+| peer_robot/g1_43dof_visual_lod.usda | `tools/build_peer_visual_lod_usd.py` 生成（入 git） | 43-DoF 纯显示镜像；47 个解析 Gprim、3 份共享材质、无 PhysX schema |
 | nolo_label.png | 分叉 git | warehouse USD 相对引用的地面贴花 |
 | props/pushcart_physics.usda | 分叉工作区手拷（未入 git） | 引用 Nucleus 5.1 SM_PushcartA_02 |
 | props/cart_box_d05_physics.usda | 分叉 git-LFS tip 版 | 已含关 CCD 修复（ae9118a2e） |

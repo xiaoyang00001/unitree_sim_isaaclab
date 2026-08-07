@@ -17,8 +17,8 @@
 复位事件通道 ``ZmqEnvResetSyncAction`` 保持源版单向语义：ID=1 是复位权威
 （publisher），ID=2 跟随。两个 topic 共用 ID=1 的 PUB socket。
 
-两端硬约束（源版一致）：num_envs=1；两端机器人 USD/关节序逐字一致
-（joint_order_hash 校验，不符整帧拒收）；两端物体清单与命名一致。
+硬约束：num_envs=1；articulation 两端关节序逐字一致（joint_order_hash 校验）；
+纯显示接收端用帧内 joint_names 校验 43 个名称并按名映射；两端物体清单与命名一致。
 """
 
 from __future__ import annotations
@@ -107,6 +107,16 @@ class ZmqSceneStateSyncActionCfg(ActionTermCfg):
     apply_robots: dict[str, str] = {}
     """从对端帧应用的机器人：{全局名: 本地场景实体名}，例如 {"robot_2": "peer_robot"}。"""
 
+    apply_visual_robots: dict[str, str] = {}
+    """纯显示镜像：{全局名: USD 根 Prim 路径}。与 ``apply_robots`` 互斥。
+
+    该路径直接由无 PhysX 的 FK/Xform 后端更新，不会向 Isaac Lab 场景注册
+    Articulation、RigidObject、collider、actuator 或 contact reporter。
+    """
+
+    visual_robot_joint_names: tuple[str, ...] = ()
+    """纯显示后端接受的完整关节名称集合；wire order 可由每帧 ``joint_names`` 决定。"""
+
     publish_object_names: tuple[str, ...] = ()
     """本机发布的刚体清单（仅物体权威端非空；全局名 = 场景实体名）。"""
 
@@ -160,6 +170,21 @@ class ZmqSceneStateSyncAction(ActionTerm):
         self._apply_robots = {
             global_name: self._env.scene[entity] for global_name, entity in dict(cfg.apply_robots).items()
         }
+        duplicate_apply_names = set(cfg.apply_robots).intersection(cfg.apply_visual_robots)
+        if duplicate_apply_names:
+            raise ValueError(
+                "scene sync robot cannot use articulation and visual_lod backends together: "
+                f"{sorted(duplicate_apply_names)}"
+            )
+        self._apply_visual_robots = {}
+        if cfg.apply_visual_robots:
+            from .peer_visual_lod import UsdVisualLodMirror, validate_joint_order
+
+            validate_joint_order(cfg.visual_robot_joint_names)
+            self._apply_visual_robots = {
+                global_name: UsdVisualLodMirror(str(root_prim_path))
+                for global_name, root_prim_path in dict(cfg.apply_visual_robots).items()
+            }
         self._publish_objects = {name: self._env.scene[name] for name in cfg.publish_object_names}
         self._apply_objects = {name: self._env.scene[name] for name in cfg.apply_object_names}
         self._object_is_kinematic = {
@@ -167,7 +192,9 @@ class ZmqSceneStateSyncAction(ActionTerm):
         }
 
         self._publish_enabled = bool(cfg.bind_endpoint) and bool(self._publish_robots or self._publish_objects)
-        self._apply_enabled = bool(cfg.connect_endpoint) and bool(self._apply_robots or self._apply_objects)
+        self._apply_enabled = bool(cfg.connect_endpoint) and bool(
+            self._apply_robots or self._apply_visual_robots or self._apply_objects
+        )
 
         self._publisher_session = uuid.uuid4().hex
         self._publisher_frame_id = 0
@@ -186,9 +213,9 @@ class ZmqSceneStateSyncAction(ActionTerm):
         self._last_stale_warning_time = 0.0
         self._stale_reported = False
 
-        # 两端（乃至本机 robot 与 peer_robot 镜像）必须共用同一关节序，
-        # 哈希写进每帧，接收侧不符整帧拒收。同步整体关闭（两方向映射都空，
-        # ISAACLAB_SCENE_SYNC=0 的单机模式）时没有机器人可校验，跳过。
+        # articulation 两端（乃至本机 robot 与 peer_robot 镜像）必须共用同一
+        # 关节序，哈希不符整帧拒收。纯显示 viewer 没有镜像 articulation，改用
+        # 帧内 joint_names 恢复 wire order，并校验完整名称集合与哈希。
         all_robots = {**self._publish_robots, **self._apply_robots}
         joint_orders = [tuple(robot.joint_names) for robot in all_robots.values()]
         if joint_orders:
@@ -197,9 +224,24 @@ class ZmqSceneStateSyncAction(ActionTerm):
                     "scene sync requires the local robot and the peer mirror to share one fixed joint order"
                 )
             self._joint_count = len(joint_orders[0])
+            self._joint_names = joint_orders[0]
             self._joint_order_hash = hashlib.sha256("\0".join(joint_orders[0]).encode("utf-8")).hexdigest()[:16]
+            if self._apply_visual_robots:
+                from .peer_visual_lod import validate_joint_order
+
+                validate_joint_order(self._joint_names)
+        elif self._apply_visual_robots:
+            # Pure viewer: no local articulation exists from which to discover
+            # wire order.  The publisher includes joint_names; here we only pin
+            # the expected 43-name set and validate each received order/hash.
+            from .peer_visual_lod import validate_joint_order
+
+            self._joint_names = None
+            self._joint_count = len(validate_joint_order(cfg.visual_robot_joint_names))
+            self._joint_order_hash = ""
         else:
             self._joint_count = 0
+            self._joint_names = ()
             self._joint_order_hash = ""
 
         self._pub_socket = None
@@ -238,7 +280,7 @@ class ZmqSceneStateSyncAction(ActionTerm):
                 sorted(self._publish_robots) + sorted(self._publish_objects),
                 cfg.bind_endpoint or "-",
                 self._publish_decimation,
-                sorted(self._apply_robots) + sorted(self._apply_objects),
+                sorted(self._apply_robots) + sorted(self._apply_visual_robots) + sorted(self._apply_objects),
                 cfg.connect_endpoint or "-",
                 self._joint_count,
                 self._joint_order_hash,
@@ -369,6 +411,11 @@ class ZmqSceneStateSyncAction(ActionTerm):
             "reset_id": self._publisher_reset_id,
             "joint_count": self._joint_count,
             "joint_order_hash": self._joint_order_hash,
+            # Backward-compatible v1 extension: articulation receivers still
+            # validate the hash as before and ignore this field.  visual_lod
+            # receivers need names because a viewer has no local articulation
+            # from which it could recover Isaac's actual wire order.
+            "joint_names": list(self._joint_names or ()),
             "robots": {
                 name: {
                     "root_state": robot.data.root_state_w[0].tolist(),
@@ -431,16 +478,13 @@ class ZmqSceneStateSyncAction(ActionTerm):
                 return False
             if int(payload["joint_count"]) != self._joint_count:
                 raise ValueError(f"joint_count mismatch: remote={payload['joint_count']} local={self._joint_count}")
-            if str(payload["joint_order_hash"]) != self._joint_order_hash:
-                raise ValueError(
-                    f"joint order mismatch: remote={payload['joint_order_hash']} local={self._joint_order_hash}"
-                )
+            frame_joint_names = self._validate_remote_joint_order(payload)
             if self._expected_reset_id is not None and reset_id != self._expected_reset_id:
                 return False
 
             robot_states = self._parse_robot_states(payload["robots"])
             object_states = self._parse_object_states(payload["objects"])
-            self._apply_scene_states(robot_states, object_states)
+            self._apply_scene_states(robot_states, object_states, frame_joint_names)
 
             self._last_session = session
             self._last_frame_id = frame_id
@@ -465,7 +509,7 @@ class ZmqSceneStateSyncAction(ActionTerm):
         self, payload: dict[str, Any]
     ) -> dict[str, tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         parsed = {}
-        for name in self._apply_robots:
+        for name in {**self._apply_robots, **self._apply_visual_robots}:
             # 容缺：apply 清单允许超集（viewer 声明 robot_1+robot_2，而权威端在
             # 双机器人落地前只发 robot_1）。缺席的机器人跳过、保持当前姿态；
             # 若整帧拒收，会把帧里已有的其他实体一起拖死。
@@ -485,6 +529,33 @@ class ZmqSceneStateSyncAction(ActionTerm):
             parsed[name] = (root_state, joint_pos, joint_vel)
         return parsed
 
+    def _validate_remote_joint_order(self, payload: dict[str, Any]) -> tuple[str, ...]:
+        """Validate old articulation frames and name-carrying visual frames."""
+
+        remote_hash = str(payload["joint_order_hash"])
+        raw_names = payload.get("joint_names")
+        if self._apply_visual_robots:
+            if not isinstance(raw_names, list):
+                raise ValueError(
+                    "visual_lod requires scene_state frames with joint_names; update the publisher"
+                )
+            from .peer_visual_lod import validate_wire_joint_order
+
+            frame_joint_names = validate_wire_joint_order(
+                tuple(str(name) for name in raw_names), remote_hash
+            )
+            if self._joint_order_hash and remote_hash != self._joint_order_hash:
+                raise ValueError(
+                    f"joint order mismatch: remote={remote_hash} local={self._joint_order_hash}"
+                )
+            return frame_joint_names
+
+        if remote_hash != self._joint_order_hash:
+            raise ValueError(
+                f"joint order mismatch: remote={remote_hash} local={self._joint_order_hash}"
+            )
+        return tuple(self._joint_names or ())
+
     def _parse_object_states(self, payload: dict[str, Any]) -> dict[str, torch.Tensor]:
         return {name: self._payload_tensor(payload[name], "root_state", 13) for name in self._apply_objects}
 
@@ -500,8 +571,17 @@ class ZmqSceneStateSyncAction(ActionTerm):
         self,
         robot_states: dict[str, tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
         object_states: dict[str, torch.Tensor],
+        frame_joint_names: tuple[str, ...],
     ) -> None:
         for name, (root_state, joint_pos, joint_vel) in robot_states.items():
+            visual_robot = self._apply_visual_robots.get(name)
+            if visual_robot is not None:
+                visual_robot.apply_state(
+                    root_state.flatten().tolist(),
+                    joint_pos.flatten().tolist(),
+                    frame_joint_names,
+                )
+                continue
             robot = self._apply_robots[name]
             # 镜像侧只写位姿、**不写速度**（对端的 joint_vel/root 速度整组丢弃）。
             #
