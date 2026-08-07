@@ -56,6 +56,13 @@ from tasks.g1_tasks.g1_29dof_dex3_sonic.g1_29dof_dex3_sonic_env_cfg import (
 )
 
 from . import conveyor_events
+from .conveyor_drive import (
+    BELT_COLLIDER_THICKNESS,
+    BELT_TOP_Z,
+    BELT_WIDTH,
+    BELT_X_CENTER,
+    resolve_conveyor_drive,
+)
 from .scene_layout import resolve_scene_layout
 from .zmq_scene_sync import ZmqEnvResetSyncActionCfg, ZmqSceneStateSyncActionCfg
 
@@ -328,15 +335,68 @@ PEER2_ROBOT_POS = (ROBOT_2_X, ROBOT_WORKSTATION_Y, 0.76)
 PEER2_ROBOT_ROT = _ROBOT_2_ROT
 
 # ==================================================================
-# 流水线驱动参数（语义与源分支一致；镜像端强制关驱动，本地驱动会和同步打架，
-# 且 CPU pipeline 下给 kinematic 筐写速度会刷爆 PhysX 错误上限掐停仿真）。
+# 流水线驱动参数。默认 legacy 保持历史行为；显式设置
+# ISAACLAB_CONVEYOR_DRIVE_MODE=surface_velocity 才启用 PhysX 接触驱动。
+# surface_velocity 比 legacy 的单机诊断语义更严格：固定只允许物体权威 ID=1 启用，
+# 即便 ID=2 临时关闭同步也不会自己驱动，避免两端恢复同步后状态分叉。
 # ==================================================================
 CONVEYOR_TOTE_NAMES = ("cart2_tote1", "cart2_tote2")
-CONVEYOR_SPEED = _env_float("ISAACLAB_CONVEYOR_SPEED", 0.3)
-CONVEYOR_Y_RECYCLE = _env_float("ISAACLAB_CONVEYOR_Y_RECYCLE", 10.6)
-CONVEYOR_Y_RESPAWN = _env_float("ISAACLAB_CONVEYOR_Y_RESPAWN", 18.0)
-CONVEYOR_Y_STOP = SCENE_LAYOUT.conveyor_y_stop
-CONVEYOR_ENABLED = _env_bool("ISAACLAB_CONVEYOR_ENABLED", True) and not MIRROR_OBJECTS
+CONVEYOR_DRIVE = resolve_conveyor_drive(
+    os.environ,
+    object_authority=OBJECT_AUTHORITY,
+    mirror_objects=MIRROR_OBJECTS,
+    default_y_stop=SCENE_LAYOUT.conveyor_y_stop,
+    default_handoff_offset=0.10 if TOTES_ON_CONVEYOR else 0.20,
+)
+CONVEYOR_DRIVE_MODE = CONVEYOR_DRIVE.mode
+CONVEYOR_SPEED = CONVEYOR_DRIVE.speed
+CONVEYOR_VELOCITY_Y = CONVEYOR_DRIVE.velocity_y
+CONVEYOR_Y_RECYCLE = CONVEYOR_DRIVE.y_recycle
+CONVEYOR_Y_RESPAWN = CONVEYOR_DRIVE.y_respawn
+CONVEYOR_Y_STOP = CONVEYOR_DRIVE.y_stop
+CONVEYOR_LEGACY_ENABLED = CONVEYOR_DRIVE.legacy_enabled
+CONVEYOR_SURFACE_VELOCITY_ENABLED = CONVEYOR_DRIVE.surface_velocity_enabled
+CONVEYOR_SURFACE_RECYCLE_ENABLED = CONVEYOR_DRIVE.surface_recycle_enabled
+CONVEYOR_ENABLED = CONVEYOR_LEGACY_ENABLED or CONVEYOR_SURFACE_VELOCITY_ENABLED
+
+CONVEYOR_GUIDE_THICKNESS = 0.04
+CONVEYOR_GUIDE_HEIGHT = 0.12
+
+
+def _make_conveyor_side_guide_cfg(prim_name: str, x: float) -> AssetBaseCfg:
+    """Create an upstream low-friction guide without enclosing the grasp zone."""
+
+    return AssetBaseCfg(
+        prim_path=f"{{ENV_REGEX_NS}}/{prim_name}",
+        init_state=AssetBaseCfg.InitialStateCfg(
+            pos=[
+                x,
+                CONVEYOR_DRIVE.drive_segment.center_y,
+                BELT_TOP_Z + CONVEYOR_GUIDE_HEIGHT * 0.5,
+            ],
+            rot=[1.0, 0.0, 0.0, 0.0],
+        ),
+        spawn=sim_utils.CuboidCfg(
+            size=(
+                CONVEYOR_GUIDE_THICKNESS,
+                CONVEYOR_DRIVE.drive_segment.length,
+                CONVEYOR_GUIDE_HEIGHT,
+            ),
+            visible=False,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+            collision_props=sim_utils.CollisionPropertiesCfg(
+                contact_offset=0.002,
+                rest_offset=0.0,
+            ),
+            # Tote_B04 使用 frictionCombineMode=min，因此这里的低摩擦会主导
+            # 侧壁接触，约束横向漂移但不在 Y 方向拖慢输送。
+            physics_material=sim_utils.RigidBodyMaterialCfg(
+                static_friction=0.1,
+                dynamic_friction=0.1,
+                restitution=0.0,
+            ),
+        ),
+    )
 
 # 背景里的分拣料箱：bin_02 是动态刚体，开局下沉且会被机器人撞飞，锁成 kinematic。
 BACKGROUND_LOCK_PRIM_NAMES = ("blue_sorting_bin_02",)
@@ -379,12 +439,25 @@ def _log_scene_layout() -> None:
             f"{tag}   筐出生/复位落点 y: tote1={CART2_TOTE1_POS[1]:.3f} tote2={CART2_TOTE2_POS[1]:.3f}"
             f"（整场景复位写回同一位置；碰撞板尽头 y=18.220）"
         )
-    drive = (
-        "关"
-        if not CONVEYOR_ENABLED
-        else ("开，一路循环不停" if CONVEYOR_Y_STOP <= 0 else f"开，流到 y={CONVEYOR_Y_STOP:.3f} 停住")
+    if not CONVEYOR_DRIVE.requested_enabled:
+        drive = "关 [ISAACLAB_CONVEYOR_ENABLED=0]"
+    elif not CONVEYOR_ENABLED:
+        drive = f"关（{CONVEYOR_DRIVE_MODE} 不在本机生效；Surface Velocity 固定由 ID=1 权威端驱动）"
+    elif CONVEYOR_Y_STOP is None:
+        drive = "开，一路循环不停"
+    else:
+        drive = f"开，目标中心 y={CONVEYOR_Y_STOP:.3f} 停住"
+    print(
+        f"{tag}   流水线驱动: {drive}（backend={CONVEYOR_DRIVE_MODE}，"
+        f"{CONVEYOR_SPEED} m/s 沿 -Y）"
     )
-    print(f"{tag}   流水线驱动: {drive}（{CONVEYOR_SPEED} m/s 沿 -Y，作用于带面 y[10.19,18.22]）")
+    if CONVEYOR_DRIVE.stop_segment is not None:
+        print(
+            f"{tag}   碰撞面分区: 驱动 y[{CONVEYOR_DRIVE.drive_segment.y_min:.3f},"
+            f"{CONVEYOR_DRIVE.drive_segment.y_max:.3f}] | 静态停止/抓取 "
+            f"y[{CONVEYOR_DRIVE.stop_segment.y_min:.3f},{CONVEYOR_DRIVE.stop_segment.y_max:.3f}] "
+            f"(handoff_offset={CONVEYOR_DRIVE.handoff_offset:.3f})"
+        )
 
 
 # ==================================================================
@@ -649,22 +722,45 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
         prim_path="/World/envs/env_.*/Background",
         init_state=AssetBaseCfg.InitialStateCfg(pos=[-4.68, 14.39363, 0], rot=[0.7071, 0.0, 0.0, 0.7071]),
         spawn=UsdFileCfg(
+            # Surface Velocity 必须让简化带面独占接触；legacy 保留原始 A08
+            # 碰撞，确保后端回退与资产 A/B 仍有真实意义。
+            func=(
+                conveyor_events.spawn_warehouse_with_visual_conveyor
+                if CONVEYOR_DRIVE_MODE == "surface_velocity"
+                else sim_utils.spawn_from_usd
+            ),
             usd_path=str(_ASSETS_DIR / "warehouse-simple6_v61.usd"),
         ),
     )
 
-    # 流水线（背景 USD ConveyorBelt_A08 ×3 段）只有视觉、无物理。这里补一块
-    # 不可见 kinematic 碰撞板托住物体：顶面对齐滚轮顶 z≈0.772（板厚 0.04 →
-    # 中心 z=0.752），覆盖滚轮可用宽度 x∈[-6.07,-5.17] 与整条 y 跨度 [10.19,18.22]。
-    # 世界坐标由背景放置变换(pos=[-4.68,14.39363,0],rot=90°Z)换算自 USD 内几何。
+    # 流水线在 legacy 下保留背景 USD 的 A08 原生碰撞，用于历史回退；
+    # surface_velocity 在 spawn 时关闭 A08 碰撞，只让下列简化带面参与接触。
+    # 原先的一整块 kinematic 碰撞板按 y_stop 拆为两块，无缝覆盖
+    # 原 y[10.19,18.22]：
+    #   conveyor_collider      入料/驱动段；预置禁用的 PhysxSurfaceVelocityAPI
+    #   conveyor_stop_collider 下游静态高摩擦停止/抓取段
+    # 因此当前开关是“历史回退”口径，不是只改 driver 的单变量 A/B。
+    # 合并 visual-only 输送机资产后，严格 driver A/B 应让两种模式都选用
+    # visual-only 资产和同一组简化碰撞几何。
+    # 顶面对齐滚轮顶 z≈0.772（板厚 0.04 → 中心 z=0.752），可用宽度
+    # x∈[-6.07,-5.17]。y_stop<=0 的循环模式不生成静态停止段，驱动段覆盖全长。
     conveyor_collider = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/ConveyorCollider",
         init_state=AssetBaseCfg.InitialStateCfg(
-            pos=[-5.62, 14.205, 0.752],
+            pos=[
+                BELT_X_CENTER,
+                CONVEYOR_DRIVE.drive_segment.center_y,
+                BELT_TOP_Z - BELT_COLLIDER_THICKNESS * 0.5,
+            ],
             rot=[1.0, 0.0, 0.0, 0.0],
         ),
         spawn=sim_utils.CuboidCfg(
-            size=(0.90, 8.03, 0.04),
+            func=conveyor_events.spawn_surface_velocity_cuboid,
+            size=(
+                BELT_WIDTH,
+                CONVEYOR_DRIVE.drive_segment.length,
+                BELT_COLLIDER_THICKNESS,
+            ),
             visible=False,  # 只提供碰撞，视觉沿用背景 USD 的流水线模型
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
             collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.003, rest_offset=0.0),
@@ -674,6 +770,57 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
                 restitution=0.0,
             ),
         ),
+    )
+
+    conveyor_stop_collider: AssetBaseCfg | None = (
+        AssetBaseCfg(
+            prim_path="{ENV_REGEX_NS}/ConveyorStopCollider",
+            init_state=AssetBaseCfg.InitialStateCfg(
+                pos=[
+                    BELT_X_CENTER,
+                    CONVEYOR_DRIVE.stop_segment.center_y,
+                    BELT_TOP_Z - BELT_COLLIDER_THICKNESS * 0.5,
+                ],
+                rot=[1.0, 0.0, 0.0, 0.0],
+            ),
+            spawn=sim_utils.CuboidCfg(
+                size=(
+                    BELT_WIDTH,
+                    CONVEYOR_DRIVE.stop_segment.length,
+                    BELT_COLLIDER_THICKNESS,
+                ),
+                visible=False,
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+                collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.003, rest_offset=0.0),
+                physics_material=sim_utils.RigidBodyMaterialCfg(
+                    static_friction=0.8,
+                    dynamic_friction=0.6,
+                    restitution=0.0,
+                ),
+            ),
+        )
+        if CONVEYOR_DRIVE.stop_segment is not None
+        else None
+    )
+
+    # Surface 模式关闭 A08 原始复杂碰撞后，用两条低摩擦直导轨约束入料段横向
+    # 漂移。导轨只覆盖 drive_segment，到静态停止/抓取段前结束，避免机械手从
+    # ±X 方向抓筐时先撞上不可见侧壁。legacy 继续使用 A08 自带框架/滚轮碰撞。
+    conveyor_guide_positive_x: AssetBaseCfg | None = (
+        _make_conveyor_side_guide_cfg(
+            "ConveyorGuidePositiveX",
+            BELT_X_CENTER + BELT_WIDTH * 0.5 + CONVEYOR_GUIDE_THICKNESS * 0.5,
+        )
+        if CONVEYOR_DRIVE_MODE == "surface_velocity"
+        else None
+    )
+    conveyor_guide_negative_x: AssetBaseCfg | None = (
+        _make_conveyor_side_guide_cfg(
+            "ConveyorGuideNegativeX",
+            BELT_X_CENTER - BELT_WIDTH * 0.5 - CONVEYOR_GUIDE_THICKNESS * 0.5,
+        )
+        if CONVEYOR_DRIVE_MODE == "surface_velocity"
+        else None
     )
 
     # 纸箱推车组（外侧位 x=-6.8）：拖车 + 两纸箱 + 顶上的长条测试箱。
@@ -865,7 +1012,7 @@ class HostObservationsCfg:
 
 @configclass
 class ConveyorEventsCfg:
-    """背景料箱锁 kinematic + 流水线送筐（权威端才驱动）。"""
+    """背景锁定 + 互斥的 legacy / Surface Velocity 流水线事件。"""
 
     lock_sorting_bins = EventTerm(
         func=conveyor_events.lock_background_rigid_bodies,
@@ -877,15 +1024,39 @@ class ConveyorEventsCfg:
         },
     )
 
+    configure_surface_velocity = EventTerm(
+        func=conveyor_events.configure_conveyor_surface_velocity,
+        mode="startup",
+        params={
+            "prim_name": "ConveyorCollider",
+            "velocity_y": CONVEYOR_VELOCITY_Y,
+            "enabled": CONVEYOR_SURFACE_VELOCITY_ENABLED,
+            # 函数内再校验一次 ID=1，防止以后改配置时意外放宽权威门禁。
+            "local_robot_id": LOCAL_ROBOT_ID,
+        },
+    )
+
     drive_totes = EventTerm(
         func=conveyor_events.drive_totes_on_conveyor,
         mode="interval",
         interval_range_s=(0.02, 0.02),
         params={
             "object_names": CONVEYOR_TOTE_NAMES,
-            "velocity_y": -CONVEYOR_SPEED,
-            "enabled": CONVEYOR_ENABLED,
-            "y_stop": CONVEYOR_Y_STOP if CONVEYOR_Y_STOP > 0 else None,
+            "velocity_y": CONVEYOR_VELOCITY_Y,
+            "enabled": CONVEYOR_LEGACY_ENABLED,
+            "y_stop": CONVEYOR_Y_STOP,
+            "y_recycle": CONVEYOR_Y_RECYCLE,
+            "y_respawn": CONVEYOR_Y_RESPAWN,
+        },
+    )
+
+    recycle_surface_totes = EventTerm(
+        func=conveyor_events.recycle_totes_on_surface_conveyor,
+        mode="interval",
+        interval_range_s=(0.02, 0.02),
+        params={
+            "object_names": CONVEYOR_TOTE_NAMES,
+            "enabled": CONVEYOR_SURFACE_RECYCLE_ENABLED,
             "y_recycle": CONVEYOR_Y_RECYCLE,
             "y_respawn": CONVEYOR_Y_RESPAWN,
         },
@@ -932,6 +1103,12 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
 
     def __post_init__(self):
         super().__post_init__()
+        # 只把实际后端注册进 interval manager。Surface 停止模式完全依靠 PhysX
+        # 接触，不需要逐步事件；循环模式仅保留回收事件，绝不保留 legacy 速度覆写。
+        if not CONVEYOR_LEGACY_ENABLED:
+            self.events.drive_totes = None
+        if not CONVEYOR_SURFACE_RECYCLE_ENABLED:
+            self.events.recycle_surface_totes = None
         # GUI 开局相机对准流水线工位(默认相机看世界原点,工作区在 (-5,14) 附近,
         # 打开就是空镜头还得手动飞过去)。
         self.viewer.eye = (-5.62, 19.0, 2.4)
@@ -944,6 +1121,7 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
                 for _name in _PROP_NAMES:
                     setattr(self.scene, _name, None)
                 self.events.drive_totes = None
+                self.events.recycle_surface_totes = None
             if "plain_ground" in _PERF_AB:
                 self.scene.background = None
                 self.events.lock_sorting_bins = None

@@ -3,12 +3,16 @@
 
 """Runtime events for the warehouse conveyor scene.
 
-移植自 IsaacLab 分叉 feat/conveyor-loop-totes-wip 的
-``pick_place/mdp/events.py``（17e71c0a0），内容逐字保留。
+legacy 驱动移植自 IsaacLab 分叉 feat/conveyor-loop-totes-wip 的
+``pick_place/mdp/events.py``（17e71c0a0），保留其无 GPU→CPU 同步的张量写入逻辑。
 
-流水线驱动：背景 USD 的 ConveyorBelt_A08 三段是纯视觉件（无 PhysX 表面速度、
-无滚轮刚体），物体靠场景里的不可见 kinematic 碰撞板 ``conveyor_collider`` 托住。
-因此"流动"不能靠物理带动，只能由本模块按固定周期覆写筐的 root 线速度来模拟。
+流水线驱动：背景 USD 的 ConveyorBelt_A08 三段自带滚轮刚体和复杂
+碰撞网格。Surface 模式在 PhysX 解析前关闭这些原生碰撞，改由任务的
+不可见 kinematic proxy 带面托住并驱动物体。A/B 后端为：
+
+* ``legacy``：按固定周期覆写筐的 root 线速度（保留历史行为）；
+* ``surface_velocity``：在入料段碰撞面启用 Isaac Sim 5.1 的
+  ``PhysxSurfaceVelocityAPI``，下游停止/抓取段保持静态摩擦面。
 
 另含背景刚体的 kinematic 锁定，见 ``lock_background_rigid_bodies``。
 """
@@ -19,11 +23,170 @@ from typing import TYPE_CHECKING
 
 import torch
 
+import isaaclab.sim as sim_utils
+from isaaclab.sim.utils import clone
 from isaacsim.core.utils.stage import get_current_stage
-from pxr import Usd, UsdPhysics
+from pxr import Gf, PhysxSchema, Usd, UsdPhysics
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv
+
+
+@clone
+def spawn_warehouse_with_visual_conveyor(
+    prim_path: str,
+    cfg: sim_utils.UsdFileCfg,
+    translation: tuple[float, float, float] | None = None,
+    orientation: tuple[float, float, float, float] | None = None,
+    **kwargs,
+) -> Usd.Prim:
+    """Spawn the warehouse with A08 physics disabled before PhysX parsing.
+
+    ``warehouse-simple6_v61.usd`` references three ConveyorBelt_A08 sections.
+    Each section brings a rigid ``Rollers`` collider exactly on top of the
+    task-owned simplified conveyor surface, plus a detailed body-mesh collider
+    whose section seams can catch a tote.  In the baseline these overlapping
+    contacts stop the totes near the infeed or at a section seam.
+
+    All A08 collision APIs are disabled in the session layer before the outer
+    clone and before simulation starts.  The task supplies a flat drive/stop
+    surface plus two simple side guides, so tote motion no longer depends on
+    detailed asset seams.  A collision-free A08 revision is accepted, while a
+    missing A08 section still fails fast so asset layout changes cannot silently
+    invalidate the simplified contact geometry.
+    """
+
+    prim = sim_utils.spawn_from_usd(
+        prim_path,
+        cfg,
+        translation=translation,
+        orientation=orientation,
+        **kwargs,
+    )
+    conveyor_root = get_current_stage().GetPrimAtPath(f"{prim_path}/ConveyorBelt")
+    if not (conveyor_root and conveyor_root.IsValid()):
+        raise RuntimeError(f"warehouse 流水线根节点不存在：{prim_path}/ConveyorBelt")
+
+    disabled_paths: list[str] = []
+    matched_sections = 0
+    for section in conveyor_root.GetChildren():
+        if not section.GetName().startswith("ConveyorBelt_A08"):
+            continue
+        matched_sections += 1
+        for child in Usd.PrimRange(section):
+            collision_api = UsdPhysics.CollisionAPI(child)
+            if not collision_api:
+                continue
+            collision_api.GetCollisionEnabledAttr().Set(False)
+            disabled_paths.append(str(child.GetPath()))
+
+    if matched_sections == 0:
+        raise RuntimeError(
+            f"{prim_path}/ConveyorBelt 下没有找到 ConveyorBelt_A08；"
+            "资产结构已变化，请重新核对简化碰撞面"
+        )
+    if disabled_paths:
+        print(
+            "[conveyor_spawn] A08 保持视觉、关闭原生碰撞 "
+            f"{len(disabled_paths)} 个；接触统一由简化带面/侧导轨负责"
+        )
+    else:
+        # 兼容后续直接把 A08 制作为 visual-only 的轻量资产。
+        print("[conveyor_spawn] A08 已无原生碰撞；接触由简化带面/侧导轨负责")
+    return prim
+
+
+@clone
+def spawn_surface_velocity_cuboid(
+    prim_path: str,
+    cfg: sim_utils.CuboidCfg,
+    translation: tuple[float, float, float] | None = None,
+    orientation: tuple[float, float, float, float] | None = None,
+    **kwargs,
+) -> Usd.Prim:
+    """Spawn a cuboid with a disabled PhysX surface-velocity API pre-authored.
+
+    Isaac Sim 5.1's own ``CreateConveyorBelt`` command applies
+    ``UsdPhysics.RigidBodyAPI``, ``UsdPhysics.CollisionAPI`` and
+    ``PhysxSchema.PhysxSurfaceVelocityAPI`` before playback.  The ordinary
+    Isaac Lab cuboid already supplies the rigid body and child collision; this
+    wrapper adds the same surface API to the rigid-body root before the outer
+    clone operation.  The startup event only changes existing attributes, so
+    PhysX never needs to discover a newly applied schema after simulation has
+    started.
+
+    The API starts disabled and at zero velocity on every backend/robot ID.
+    ``configure_conveyor_surface_velocity`` is the sole activation point.
+    """
+
+    # The outer @clone has already resolved prim_path to env_0.  Calling the
+    # standard decorated spawner with that concrete path creates one source;
+    # the outer decorator then copies the fully authored API to other envs.
+    prim = sim_utils.spawn_cuboid(
+        prim_path,
+        cfg,
+        translation=translation,
+        orientation=orientation,
+        **kwargs,
+    )
+    surface_api = PhysxSchema.PhysxSurfaceVelocityAPI.Apply(prim)
+    surface_api.CreateSurfaceVelocityEnabledAttr().Set(False)
+    surface_api.CreateSurfaceVelocityLocalSpaceAttr().Set(False)
+    surface_api.CreateSurfaceVelocityAttr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+    surface_api.CreateSurfaceAngularVelocityAttr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+    return prim
+
+
+def configure_conveyor_surface_velocity(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor | None,
+    prim_name: str = "ConveyorCollider",
+    velocity_y: float = -0.3,
+    enabled: bool = False,
+    local_robot_id: int = 0,
+):
+    """Enable the moving collision surface on the fixed ID=1 authority only.
+
+    The velocity is expressed in world coordinates because the configured
+    collider has identity rotation and the task's conveyor direction is fixed
+    at ``-Y``.  All non-authority/mirror/legacy cases explicitly leave the
+    pre-authored API disabled at zero, preventing contact drive and legacy root
+    velocity writes from running together.
+    """
+
+    stage = get_current_stage()
+    if stage is None:
+        raise RuntimeError("无法配置流水线 Surface Velocity：当前 USD Stage 不存在")
+
+    if env_ids is None:
+        env_ids = torch.arange(env.scene.num_envs, device=env.device, dtype=torch.long)
+
+    authority_enabled = enabled and local_robot_id == 1 and abs(velocity_y) >= 1e-8
+    for env_id in env_ids.tolist():
+        prim_path = f"/World/envs/env_{env_id}/{prim_name}"
+        prim = stage.GetPrimAtPath(prim_path)
+        if not (prim and prim.IsValid()):
+            raise RuntimeError(f"流水线驱动碰撞面不存在：{prim_path}")
+
+        rigid_api = UsdPhysics.RigidBodyAPI(prim)
+        if not rigid_api:
+            raise RuntimeError(f"Surface Velocity 目标不是刚体：{prim_path}")
+        if authority_enabled and not bool(rigid_api.GetKinematicEnabledAttr().Get()):
+            raise RuntimeError(f"Surface Velocity 目标必须是 kinematic 刚体：{prim_path}")
+
+        surface_api = PhysxSchema.PhysxSurfaceVelocityAPI(prim)
+        if not surface_api:
+            # 防守性回退：正常路径已在 spawn 时预先 Apply，不应走到这里。
+            surface_api = PhysxSchema.PhysxSurfaceVelocityAPI.Apply(prim)
+        surface_api.GetSurfaceVelocityLocalSpaceAttr().Set(False)
+        surface_api.GetSurfaceVelocityAttr().Set(
+            Gf.Vec3f(0.0, velocity_y if authority_enabled else 0.0, 0.0)
+        )
+        surface_api.GetSurfaceAngularVelocityAttr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        surface_api.GetSurfaceVelocityEnabledAttr().Set(authority_enabled)
+
+        state = f"{velocity_y:.3f} m/s 沿世界 -Y" if authority_enabled else "关闭"
+        print(f"[conveyor_event] surface_velocity: {prim_path} -> {state}")
 
 
 def lock_background_rigid_bodies(
@@ -197,3 +360,63 @@ def drive_totes_on_conveyor(
         vel[:, 0] = torch.where(drive, torch.zeros_like(vel[:, 0]), vel[:, 0])
         vel[:, 1] = torch.where(drive, torch.full_like(vel[:, 1], velocity_y), vel[:, 1])
         obj.write_root_velocity_to_sim(vel, env_ids=env_ids)
+
+
+def recycle_totes_on_surface_conveyor(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor | None,
+    object_names: tuple[str, ...] = ("cart2_tote1", "cart2_tote2"),
+    enabled: bool = False,
+    belt_top_z: float = 0.772,
+    z_tolerance: float = 0.15,
+    x_range: tuple[float, float] = (-6.17, -5.07),
+    y_range: tuple[float, float] = (10.19, 18.22),
+    y_recycle: float = 10.6,
+    y_respawn: float = 18.0,
+    respawn_z: float = 0.775,
+):
+    """Recycle totes in full-length surface-velocity loop mode without driving them.
+
+    The stopped workflow has a static downstream segment and never enables this
+    event.  When ``ISAACLAB_CONVEYOR_Y_STOP<=0`` selects loop mode, PhysX contact
+    motion remains the only drive; this event merely teleports a tote that
+    reaches the outfeed back to the infeed and clears its velocity.
+
+    Only environments selected by the recycle mask are written.  Objects still
+    travelling on the belt are left entirely to PhysX contact motion instead of
+    being needlessly woken by a periodic pose/velocity rewrite.
+    """
+
+    if not enabled:
+        return
+
+    if env_ids is None:
+        env_ids = torch.arange(env.scene.num_envs, device=env.device, dtype=torch.long)
+    if len(env_ids) == 0:
+        return
+
+    origins = env.scene.env_origins[env_ids]
+    for object_name in object_names:
+        obj = env.scene[object_name]
+        pos_local = obj.data.root_pos_w[env_ids] - origins
+        on_belt = (
+            (pos_local[:, 2] >= belt_top_z - z_tolerance)
+            & (pos_local[:, 2] <= belt_top_z + z_tolerance)
+            & (pos_local[:, 0] >= x_range[0])
+            & (pos_local[:, 0] <= x_range[1])
+            & (pos_local[:, 1] >= y_range[0])
+            & (pos_local[:, 1] <= y_range[1])
+        )
+        recycle = on_belt & (pos_local[:, 1] <= y_recycle)
+
+        recycle_env_ids = env_ids[recycle]
+        if len(recycle_env_ids) == 0:
+            continue
+
+        pose = obj.data.root_state_w[recycle_env_ids, :7].clone()
+        pose[:, 1] = origins[recycle, 1] + y_respawn
+        pose[:, 2] = origins[recycle, 2] + respawn_z
+        obj.write_root_pose_to_sim(pose, env_ids=recycle_env_ids)
+
+        velocity = torch.zeros_like(obj.data.root_vel_w[recycle_env_ids])
+        obj.write_root_velocity_to_sim(velocity, env_ids=recycle_env_ids)
