@@ -934,8 +934,8 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
         super().__post_init__()
         # GUI 开局相机对准流水线工位(默认相机看世界原点,工作区在 (-5,14) 附近,
         # 打开就是空镜头还得手动飞过去)。
-        self.viewer.eye = (-2.4, 11.9, 2.6)
-        self.viewer.lookat = (-5.3, 14.5, 1.0)
+        self.viewer.eye = (-5.62, 19.0, 2.4)
+        self.viewer.lookat = (-5.62, 14.148, 1.0)
         if _PERF_AB:
             print(f"[conveyor_env_cfg] ⚠️ 性能 A/B 诊断开关生效: {sorted(_PERF_AB)}")
             if "no_peer" in _PERF_AB:
