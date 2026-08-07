@@ -399,3 +399,42 @@ visual-only 候选使用 `tools/smoke_conveyor_scene.py --steps 900 --sync 0 --d
 
 本项只完成背景纸箱/KLT 装饰物清理，**不代表整个 P1 已完成**：`ConveyorBelt02.usd` 内部
 刚体/碰撞、背景灯光、PhysicsScene、RenderProduct 和远处布景仍由后续独立工作树处理。
+
+### 2026-08-07：P1.2 workcell-lite 白名单组合与布局道具卸载
+
+- 分支：`feat/conveyor-workcell-lite`
+- 基线提交：`f46c157`
+- 状态：功能实现和静态检查完成；按当前施工顺序，动态场景验收留到联合集成后进行。
+
+资产实现：
+
+- `conveyor_workcell_lite.usd` 是可提交的 ASCII 薄层，不复制 v61 几何。它不再对完整
+  v61 做 active override，而是只引用 63 个白名单根 Prim，让未选中的远程引用不进
+  组合 Stage。
+- 保留三段输送机、GroundPlane、两块工位地面、安全标识和仓库外墙；删除相机、
+  NavMesh、RenderProduct/Settings/Var、额外 PhysicsScene、货架/纸箱堆、推车、叉车和原背景
+  灯光。任务自身的 `sun` 仍作为唯一显式灯光。
+- `conveyor_workcell_lite.manifest.json` 锁定源哈希、根节点数、白名单和降幅门槛；
+  `tools/build_conveyor_workcell_lite.py --check` 同时做逐字节再生检查与裸 USD 组合检查。
+- 背景默认仍是 `visual_only`；只有显式设置
+  `ISAACLAB_CONVEYOR_BACKGROUND=workcell_lite` 才启用新资产，`legacy_v61` 回退路径保留。
+
+道具实现：
+
+- 默认 `ISAACLAB_CONVEYOR_PROPS=layout`：流水线布局只生成两筐，推车布局只生成
+  `pushcart_2+两筐`。
+- 两种布局均不生成第一组推车、两纸箱、`test_box`、继承 packing table 和三个
+  cubes；scene-sync 默认清单同步缩减，不会引用未生成实体。
+- `ISAACLAB_CONVEYOR_PROPS=legacy_props` 可恢复上述全量旧道具，用于 A/B 与回退。
+
+静态组合结果（Isaac Sim 5.1）：
+
+| 指标 | v61 visual-only | workcell-lite |
+|---|---:|---:|
+| 顶层根 Prim | 3,017 | 63 |
+| active Prim | 27,802 | 1,052 |
+| used layer | 1,818 | 13 |
+| 保留的 Isaac 5.1 远程层 | 未裁剪 | 8 |
+
+完整依赖路径和生成方式见
+[`conveyor_workcell_lite_zh.md`](../tasks/g1_tasks/g1_29dof_sonic_conveyor/scene_assets/conveyor_workcell_lite_zh.md)。

@@ -43,6 +43,7 @@ from tasks.common_observations.g1_29dof_state import get_robot_boy_joint_states
 
 from tasks.g1_tasks.g1_29dof_dex3_sonic.g1_29dof_dex3_sonic_env_cfg import (
     SONIC_CUBE_INITIAL_Z,
+    SONIC_PACKING_TABLE_USD,
     G129SonicEnvCfg,
     G129SonicSceneCfg,
     _make_sonic_cube_cfg,
@@ -66,6 +67,7 @@ from .conveyor_drive import (
     resolve_conveyor_drive,
 )
 from .scene_layout import resolve_scene_layout
+from .scene_props import resolve_scene_props
 from .zmq_scene_sync import ZmqEnvResetSyncActionCfg, ZmqSceneStateSyncActionCfg
 
 _ASSETS_DIR = Path(__file__).resolve().parent / "scene_assets"
@@ -126,6 +128,16 @@ def _env_str_tuple(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
+# 布局与道具必须在同步清单之前解析：精简布局不生成的资产也不能进入
+# scene_state，否则同步 term 会按旧名称查找不存在的场景实体。
+SCENE_LAYOUT = resolve_scene_layout(os.environ)
+TOTES_ON_CONVEYOR = SCENE_LAYOUT.totes_on_conveyor
+SCENE_PROPS = resolve_scene_props(
+    os.environ,
+    totes_on_conveyor=TOTES_ON_CONVEYOR,
+)
+
+
 # ==================================================================
 # 双机身份与同步端点
 # ==================================================================
@@ -181,23 +193,12 @@ SCENE_SYNC_CONNECT_ENDPOINT = _env_str(
     "ISAACLAB_SCENE_SYNC_CONNECT_ENDPOINT", f"tcp://{SCENE_SYNC_PEER_IP}:{_PEER_PORT}"
 )
 
-# 进 scene_state 帧的场景物体（两端清单必须逐字一致）。
-# 比源分支多了 pushcart（被撞动时镜像端也能看到）和底座打包桌三方块
-# cube_1/2/3（不进清单的话两端各自模拟、碰一下就静默分叉），代价可忽略。
+# 进 scene_state 帧的场景物体（两端清单必须逐字一致）。默认清单直接取布局实际
+# 生成的刚体：流水线布局只有两筐，推车布局是 pushcart_2+两筐；legacy_props 才恢复
+# 旧的两组推车、纸箱、test_box 和打包桌三方块。
 SYNC_OBJECT_NAMES = _env_str_tuple(
     "ISAACLAB_SCENE_SYNC_OBJECTS",
-    (
-        "pushcart",
-        "cart_box1",
-        "cart_box2",
-        "test_box",
-        "pushcart_2",
-        "cart2_tote1",
-        "cart2_tote2",
-        "cube_1",
-        "cube_2",
-        "cube_3",
-    ),
+    SCENE_PROPS.spawned_names,
 )
 
 
@@ -280,9 +281,6 @@ def _env_reset_sync_cfg() -> ZmqEnvResetSyncActionCfg:
 # conveyor_collider 碰撞板常驻不随开关回退；背景 USD 里烘入的桌子/料箱平移
 # 与镜像改动也不随开关回退（要回退得换 USD 文件）。
 # ==================================================================
-SCENE_LAYOUT = resolve_scene_layout(os.environ)
-TOTES_ON_CONVEYOR = SCENE_LAYOUT.totes_on_conveyor
-
 CART_GROUP_X = SCENE_LAYOUT.cart_group_x
 CART_GROUP_Y = SCENE_LAYOUT.cart_group_y
 ROBOT_SIDE_OFFSET = SCENE_LAYOUT.robot_side_offset
@@ -457,6 +455,11 @@ def _log_scene_layout() -> None:
     else:
         print(f"{tag} 场景布局: 推车（两筐原尺寸叠在推车上） [ISAACLAB_TOTES_ON_CONVEYOR=0]")
     print(
+        f"{tag} 道具策略: {SCENE_PROPS.mode} "
+        f"[生成={','.join(SCENE_PROPS.spawned_names)}; "
+        f"继承打包桌={'开' if SCENE_PROPS.inherited_packing_table else '关'}]"
+    )
+    print(
         f"{tag}   拖车/筐 x={PUSHCART_2_POS[0]:.3f} y={PUSHCART_2_POS[1]:.3f}"
         f" | robot_1 x={ROBOT_1_X:.3f} robot_2 x={ROBOT_2_X:.3f} y={ROBOT_WORKSTATION_Y:.3f}"
         f" | 流水线中线 x=-5.620 入料端 y=18.222"
@@ -514,6 +517,22 @@ def _make_conveyor_cube_cfg(
     if _is_mirror_object(object_name):
         cfg.spawn.rigid_props = sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True)
     return cfg
+
+
+def _make_legacy_packing_table_cfg() -> AssetBaseCfg:
+    """Recreate the inherited SONIC table only for the explicit legacy-props mode."""
+
+    return AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/PackingTable",
+        init_state=AssetBaseCfg.InitialStateCfg(
+            pos=(0.55, 0.0, -0.3),
+            rot=(0.70710678, 0.0, 0.0, -0.70710678),
+        ),
+        spawn=UsdFileCfg(
+            usd_path=str(SONIC_PACKING_TABLE_USD),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+        ),
+    )
 
 
 def _make_pushcart_spawn_cfg(object_name: str) -> UsdFileCfg:
@@ -740,10 +759,16 @@ def _make_second_peer_robot_cfg() -> ArticulationCfg:
 
 @configclass
 class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
-    """SONIC 底座（打包桌+三方块+本机 G1）+ warehouse 流水线工作区 + 对端镜像 G1。"""
+    """SONIC 本机 G1 + warehouse 流水线工作区 + 对端镜像 G1。"""
 
     # warehouse 背景 USD 自带地面，去掉底座的无限地平面避免 z-fighting。
     ground = None
+
+    # 父场景的打包桌位于原点，与 (-5, 14) 的流水线工位无关。layout 策略直接不
+    # 生成；legacy_props 做 A/B 时才用工厂函数恢复同一配置。
+    packing_table: AssetBaseCfg | None = (
+        _make_legacy_packing_table_cfg() if SCENE_PROPS.inherited_packing_table else None
+    )
 
     background = AssetBaseCfg(
         prim_path="/World/envs/env_.*/Background",
@@ -846,53 +871,85 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
     )
 
     # 纸箱推车组（外侧位 x=-6.8）：拖车 + 两纸箱 + 顶上的长条测试箱。
-    pushcart = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/Pushcart",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=[-6.8, 19.39363, 0.0], rot=[0.0, 0.0, 0.0, 1.0]),
-        spawn=_make_pushcart_spawn_cfg("pushcart"),
-    )
-    cart_box1 = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/CartBox1",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=[-6.8, 19.39363, 0.45], rot=[0.0, 0.0, 0.0, 1.0]),
-        spawn=_make_graspable_cart_box_spawn_cfg("cart_box1"),
-    )
-    cart_box2 = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/CartBox2",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=[-6.8, 19.39363, 0.60], rot=[0.0, 0.0, 0.0, 1.0]),
-        spawn=_make_graspable_cart_box_spawn_cfg("cart_box2"),
-    )
-    test_box = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/TestBox",
-        init_state=RigidObjectCfg.InitialStateCfg(
-            pos=[-6.8, 19.39363, 1.095],
-            rot=[0.0, 0.0, 0.0, 1.0],
-        ),
-        spawn=sim_utils.CuboidCfg(
-            size=(0.20, 0.05, 0.10),
-            rigid_props=(
-                sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True)
-                if _is_mirror_object("test_box")
-                else sim_utils.RigidBodyPropertiesCfg(
-                    disable_gravity=False,
-                    max_depenetration_velocity=3.0,
-                )
+    pushcart: RigidObjectCfg | None = (
+        RigidObjectCfg(
+            prim_path="{ENV_REGEX_NS}/Pushcart",
+            init_state=RigidObjectCfg.InitialStateCfg(
+                pos=[-6.8, 19.39363, 0.0], rot=[0.0, 0.0, 0.0, 1.0]
             ),
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.25),
-            collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.003, rest_offset=0.0),
-            physics_material=sim_utils.RigidBodyMaterialCfg(
-                static_friction=1.2,
-                dynamic_friction=0.9,
-                restitution=0.0,
+            spawn=_make_pushcart_spawn_cfg("pushcart"),
+        )
+        if SCENE_PROPS.spawns("pushcart")
+        else None
+    )
+    cart_box1: RigidObjectCfg | None = (
+        RigidObjectCfg(
+            prim_path="{ENV_REGEX_NS}/CartBox1",
+            init_state=RigidObjectCfg.InitialStateCfg(
+                pos=[-6.8, 19.39363, 0.45], rot=[0.0, 0.0, 0.0, 1.0]
             ),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.76, 0.56, 0.28), roughness=0.70),
-        ),
+            spawn=_make_graspable_cart_box_spawn_cfg("cart_box1"),
+        )
+        if SCENE_PROPS.spawns("cart_box1")
+        else None
+    )
+    cart_box2: RigidObjectCfg | None = (
+        RigidObjectCfg(
+            prim_path="{ENV_REGEX_NS}/CartBox2",
+            init_state=RigidObjectCfg.InitialStateCfg(
+                pos=[-6.8, 19.39363, 0.60], rot=[0.0, 0.0, 0.0, 1.0]
+            ),
+            spawn=_make_graspable_cart_box_spawn_cfg("cart_box2"),
+        )
+        if SCENE_PROPS.spawns("cart_box2")
+        else None
+    )
+    test_box: RigidObjectCfg | None = (
+        RigidObjectCfg(
+            prim_path="{ENV_REGEX_NS}/TestBox",
+            init_state=RigidObjectCfg.InitialStateCfg(
+                pos=[-6.8, 19.39363, 1.095],
+                rot=[0.0, 0.0, 0.0, 1.0],
+            ),
+            spawn=sim_utils.CuboidCfg(
+                size=(0.20, 0.05, 0.10),
+                rigid_props=(
+                    sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True)
+                    if _is_mirror_object("test_box")
+                    else sim_utils.RigidBodyPropertiesCfg(
+                        disable_gravity=False,
+                        max_depenetration_velocity=3.0,
+                    )
+                ),
+                mass_props=sim_utils.MassPropertiesCfg(mass=0.25),
+                collision_props=sim_utils.CollisionPropertiesCfg(
+                    contact_offset=0.003, rest_offset=0.0
+                ),
+                physics_material=sim_utils.RigidBodyMaterialCfg(
+                    static_friction=1.2,
+                    dynamic_friction=0.9,
+                    restitution=0.0,
+                ),
+                visual_material=sim_utils.PreviewSurfaceCfg(
+                    diffuse_color=(0.76, 0.56, 0.28), roughness=0.70
+                ),
+            ),
+        )
+        if SCENE_PROPS.spawns("test_box")
+        else None
     )
 
     # 第二台拖车与两个塑料筐（位置随 TOTES_ON_CONVEYOR 切换，见上方常量段）。
-    pushcart_2 = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/Pushcart2",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=PUSHCART_2_POS, rot=[0.0, 0.0, 0.0, 1.0]),
-        spawn=_make_pushcart_spawn_cfg("pushcart_2"),
+    pushcart_2: RigidObjectCfg | None = (
+        RigidObjectCfg(
+            prim_path="{ENV_REGEX_NS}/Pushcart2",
+            init_state=RigidObjectCfg.InitialStateCfg(
+                pos=PUSHCART_2_POS, rot=[0.0, 0.0, 0.0, 1.0]
+            ),
+            spawn=_make_pushcart_spawn_cfg("pushcart_2"),
+        )
+        if SCENE_PROPS.spawns("pushcart_2")
+        else None
     )
     cart2_tote1 = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Cart2Tote1",
@@ -907,9 +964,27 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
 
     # 底座打包桌三方块换成镜像感知版（位置/颜色与底座一致）：不同步的话
     # 两端各自模拟，任一端机器人碰一下就静默分叉。
-    cube_1 = _make_conveyor_cube_cfg("cube_1", "Cube1", (0.31243, -0.00553, SONIC_CUBE_INITIAL_Z), (0.82, 0.66, 0.36))
-    cube_2 = _make_conveyor_cube_cfg("cube_2", "Cube2", (0.31397, 0.10565, SONIC_CUBE_INITIAL_Z), (0.88, 0.72, 0.40))
-    cube_3 = _make_conveyor_cube_cfg("cube_3", "Cube3", (0.41625, 0.04810, SONIC_CUBE_INITIAL_Z), (0.76, 0.56, 0.28))
+    cube_1: RigidObjectCfg | None = (
+        _make_conveyor_cube_cfg(
+            "cube_1", "Cube1", (0.31243, -0.00553, SONIC_CUBE_INITIAL_Z), (0.82, 0.66, 0.36)
+        )
+        if SCENE_PROPS.spawns("cube_1")
+        else None
+    )
+    cube_2: RigidObjectCfg | None = (
+        _make_conveyor_cube_cfg(
+            "cube_2", "Cube2", (0.31397, 0.10565, SONIC_CUBE_INITIAL_Z), (0.88, 0.72, 0.40)
+        )
+        if SCENE_PROPS.spawns("cube_2")
+        else None
+    )
+    cube_3: RigidObjectCfg | None = (
+        _make_conveyor_cube_cfg(
+            "cube_3", "Cube3", (0.41625, 0.04810, SONIC_CUBE_INITIAL_Z), (0.76, 0.56, 0.28)
+        )
+        if SCENE_PROPS.spawns("cube_3")
+        else None
+    )
 
     # 本机 G1：SONIC 底座同款（DDS 驱动、名字仍是 robot/prim Robot），只挪到工位。
     # viewer 模式下退化为场外 ghost（见 _make_local_robot_cfg）。
@@ -1101,7 +1176,19 @@ if _PERF_AB and SCENE_SYNC_ENABLED:
         "ISAACLAB_CONVEYOR_PERF_AB 是诊断开关,必须与 ISAACLAB_SCENE_SYNC=0 联用"
     )
 
-_PROP_NAMES = ("pushcart", "cart_box1", "cart_box2", "test_box", "pushcart_2", "cart2_tote1", "cart2_tote2")
+_PROP_NAMES = (
+    "packing_table",
+    "pushcart",
+    "cart_box1",
+    "cart_box2",
+    "test_box",
+    "pushcart_2",
+    "cart2_tote1",
+    "cart2_tote2",
+    "cube_1",
+    "cube_2",
+    "cube_3",
+)
 
 
 @configclass
