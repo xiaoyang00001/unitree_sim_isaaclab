@@ -1,0 +1,106 @@
+#usda 1.0
+(
+    defaultPrim = "ToteB04"
+    metersPerUnit = 1
+    upAxis = "Z"
+    doc = """Task physics wrapper for the NVIDIA SimReady Tote_B04 visual asset.
+    The visual source measures 60 x 40 x 30 authored units and is scaled by the
+    task to 0.6 x 0.4 x 0.3 m (or half size on the conveyor).  Five primitive
+    boxes preserve the open top while avoiding runtime convex decomposition."""
+)
+
+def Xform "ToteB04" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    prepend references = @https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/NVIDIA/Assets/DigitalTwin/Assets/Warehouse/Storage/Totes/Tote_B/Tote_B04_60x40x30cm_PR_V_NVD_01.usd@
+)
+{
+    float physics:mass = 1.0
+
+    def Material "GraspPhysicsMaterial" (
+        prepend apiSchemas = ["PhysicsMaterialAPI", "PhysxMaterialAPI"]
+    )
+    {
+        float physics:staticFriction = 2.0
+        float physics:dynamicFriction = 1.6
+        float physics:restitution = 0.0
+        uniform token physxMaterial:frictionCombineMode = "min"
+        uniform token physxMaterial:restitutionCombineMode = "min"
+    }
+
+    over "Tote_B04_01" (
+        delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+    )
+    {
+        bool physics:collisionEnabled = false
+    }
+
+    def Xform "CompoundCollision"
+    {
+        token visibility = "invisible"
+
+        def Cube "Bottom" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+        )
+        {
+            double size = 1
+            rel material:binding:physics = </ToteB04/GraspPhysicsMaterial> (
+                bindMaterialAs = "strongerThanDescendants"
+            )
+            double3 xformOp:scale = (60, 40, 2.5)
+            double3 xformOp:translate = (0, 0, 1.25)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+
+        def Cube "WallPositiveX" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+        )
+        {
+            double size = 1
+            rel material:binding:physics = </ToteB04/GraspPhysicsMaterial> (
+                bindMaterialAs = "strongerThanDescendants"
+            )
+            double3 xformOp:scale = (2.5, 40, 30)
+            double3 xformOp:translate = (28.75, 0, 15)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+
+        def Cube "WallNegativeX" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+        )
+        {
+            double size = 1
+            rel material:binding:physics = </ToteB04/GraspPhysicsMaterial> (
+                bindMaterialAs = "strongerThanDescendants"
+            )
+            double3 xformOp:scale = (2.5, 40, 30)
+            double3 xformOp:translate = (-28.75, 0, 15)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+
+        def Cube "WallPositiveY" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+        )
+        {
+            double size = 1
+            rel material:binding:physics = </ToteB04/GraspPhysicsMaterial> (
+                bindMaterialAs = "strongerThanDescendants"
+            )
+            double3 xformOp:scale = (55, 2.5, 30)
+            double3 xformOp:translate = (0, 18.75, 15)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+
+        def Cube "WallNegativeY" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+        )
+        {
+            double size = 1
+            rel material:binding:physics = </ToteB04/GraspPhysicsMaterial> (
+                bindMaterialAs = "strongerThanDescendants"
+            )
+            double3 xformOp:scale = (55, 2.5, 30)
+            double3 xformOp:translate = (0, -18.75, 15)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+    }
+}

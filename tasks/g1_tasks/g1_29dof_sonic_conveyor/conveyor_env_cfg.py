@@ -59,6 +59,8 @@ from tasks.g1_tasks.g1_29dof_dex3_sonic.g1_29dof_dex3_sonic_env_cfg import (
 from . import conveyor_events
 from .asset_variants import VISUAL_ONLY_BACKGROUND_USD, resolve_conveyor_background_usd
 from .background_assets import resolve_background_asset
+from .contact_modes import resolve_contact_report_mode
+from .contact_spawners import configure_robot_contact_reports
 from .conveyor_drive import (
     BELT_COLLIDER_THICKNESS,
     BELT_TOP_Z,
@@ -68,6 +70,7 @@ from .conveyor_drive import (
 )
 from .scene_layout import resolve_scene_layout
 from .scene_props import resolve_scene_props
+from .tote_assets import resolve_tote_asset
 from .zmq_scene_sync import ZmqEnvResetSyncActionCfg, ZmqSceneStateSyncActionCfg
 
 _ASSETS_DIR = Path(__file__).resolve().parent / "scene_assets"
@@ -83,6 +86,9 @@ _ASSETS_DIR = Path(__file__).resolve().parent / "scene_assets"
 from .sync_identity import load_scene_sync_env, resolve_host_both_robots, resolve_local_robot_id
 
 load_scene_sync_env(verbose_tag="[conveyor_env_cfg]")
+
+CONTACT_REPORT_MODE = resolve_contact_report_mode(os.environ)
+TOTE_COLLIDER_MODE, TOTE_USD_PATH = resolve_tote_asset(_ASSETS_DIR / "props", os.environ)
 
 
 def _env_str(name: str, default: str) -> str:
@@ -450,6 +456,8 @@ def _log_scene_layout() -> None:
     else:
         print(f"{tag} 场景同步: 关 [ISAACLAB_SCENE_SYNC=0]")
     print(f"{tag} 背景资产: {BACKGROUND_MODE} ({BACKGROUND_USD_PATH.name})")
+    print(f"{tag} 料筐碰撞: {TOTE_COLLIDER_MODE} ({TOTE_USD_PATH.name})")
+    print(f"{tag} ContactReport: {CONTACT_REPORT_MODE}")
     if TOTES_ON_CONVEYOR:
         print(f"{tag} 场景布局: 流水线（两筐缩半在传送带上流动） [ISAACLAB_TOTES_ON_CONVEYOR=1]")
     else:
@@ -591,14 +599,16 @@ def _grasp_object_rigid_props() -> sim_utils.RigidBodyPropertiesCfg:
 
 
 def _make_cart2_tote_spawn_cfg(object_name: str) -> UsdFileCfg:
-    """塑料筐（Tote_B04）。高摩擦材质（2.0/1.6，combine=min）绑定在 usda 内。
+    """塑料筐（Tote_B04），碰撞变体由 ``ISAACLAB_TOTE_COLLIDER`` 选择。
 
     原 0.01 → 0.6×0.4×0.3 m；流水线布局缩小一半到 0.005 → 0.3×0.2×0.15 m
-    （原点仍在筐底面）。TOTES_ON_CONVEYOR=0 时恢复原尺寸。
+    （原点仍在筐底面）。默认 compound 使用底板+四壁五个 box，保持开口语义；
+    ``convex_decomposition`` 保留历史高成本碰撞以便回退。两者都绑定同一套
+    2.0/1.6、combine=min 的抓取摩擦材质。
     """
 
     return UsdFileCfg(
-        usd_path=str(_ASSETS_DIR / "props" / "tote_b04_physics.usda"),
+        usd_path=str(TOTE_USD_PATH),
         scale=SCENE_LAYOUT.tote_scale,
         mass_props=sim_utils.MassPropertiesCfg(mass=_env_float("ISAACLAB_GRASP_OBJECT_MASS", 0.45)),
         rigid_props=(
@@ -626,10 +636,9 @@ def _make_local_robot_cfg() -> ArticulationCfg:
         cfg.prim_path = "{ENV_REGEX_NS}/Robot"
         cfg.init_state.pos = LOCAL_ROBOT_POS
         cfg.init_state.rot = LOCAL_ROBOT_ROT
-        # SONIC 底座场景的 foot_contact 传感器挂在 Robot/.*_ankle_roll_link 上，
-        # 没有 contact reporter API 会在 gym.make 时 RuntimeError。ghost 无碰撞体，
-        # 打开后传感器恒零，只为满足初始化。
-        cfg.spawn.activate_contact_sensors = True
+        # viewer ghost 若启用足底诊断，也只在两只 ankle-roll 上挂 reporter；
+        # off 模式下场景不会创建 foot_contact，ghost 不再承担传感器占位成本。
+        configure_robot_contact_reports(cfg.spawn, CONTACT_REPORT_MODE)
         # ghost 完全不可见：viewer 画面（尤其 AR 自由视角）里不该出现第三台机器人
         # （2026-08-02 用户在 AR 里看到 3 台实测反馈）。物理照常模拟，仅隐藏视觉。
         cfg.spawn.visible = False
@@ -637,6 +646,7 @@ def _make_local_robot_cfg() -> ArticulationCfg:
     cfg = make_sonic_robot_cfg()
     cfg.init_state.pos = LOCAL_ROBOT_POS
     cfg.init_state.rot = LOCAL_ROBOT_ROT
+    configure_robot_contact_reports(cfg.spawn, CONTACT_REPORT_MODE)
     return cfg
 
 
@@ -651,6 +661,7 @@ def _make_second_local_robot_cfg() -> ArticulationCfg:
     cfg.prim_path = "{ENV_REGEX_NS}/Robot2"
     cfg.init_state.pos = (ROBOT_2_X, ROBOT_WORKSTATION_Y, 0.76)
     cfg.init_state.rot = _ROBOT_2_ROT
+    configure_robot_contact_reports(cfg.spawn, CONTACT_REPORT_MODE)
     return cfg
 
 
@@ -738,6 +749,9 @@ def _make_peer_robot_cfg() -> ArticulationCfg:
             "[conveyor_env_cfg] ⚠️ 先运行: python tools/build_peer_robot_usd.py"
             "（否则 peer_robot 会被地面弹出上飘）"
         )
+        # peer 没有对应 ContactSensor；即便诊断选择 all，也不能让缺失烘焙
+        # 资产的 URDF 回退重新给整台镜像机器人挂 ContactReportAPI。
+        cfg.spawn.activate_contact_sensors = False
         cfg.spawn.rigid_props = sim_utils.RigidBodyPropertiesCfg(**_PEER_RIGID_PROPS)
         cfg.spawn.collision_props = sim_utils.CollisionPropertiesCfg(collision_enabled=False)
     return cfg
@@ -750,6 +764,20 @@ def _make_second_peer_robot_cfg() -> ArticulationCfg:
     cfg.init_state.pos = PEER2_ROBOT_POS
     cfg.init_state.rot = PEER2_ROBOT_ROT
     return cfg
+
+
+def _make_foot_contact_sensor(prim_name: str) -> ContactSensorCfg | None:
+    """Create the two-ankle diagnostic sensor unless production selected off."""
+
+    if CONTACT_REPORT_MODE == "off":
+        return None
+    return ContactSensorCfg(
+        prim_path=f"{{ENV_REGEX_NS}}/{prim_name}/.*_ankle_roll_link",
+        history_length=4,
+        track_air_time=True,
+        force_threshold=5.0,
+        debug_vis=False,
+    )
 
 
 # ==================================================================
@@ -769,6 +797,11 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
     packing_table: AssetBaseCfg | None = (
         _make_legacy_packing_table_cfg() if SCENE_PROPS.inherited_packing_table else None
     )
+
+    # 覆盖 SONIC 底座的足底传感器：ankles/all 模式仍只读取两只脚踝，off
+    # 模式连 ContactSensor 对象也不创建。reporter 的实际挂载范围由机器人
+    # spawner 决定，因此默认 ankles 不再给全身每个刚体添加 ContactReportAPI。
+    foot_contact: ContactSensorCfg | None = _make_foot_contact_sensor("Robot")
 
     background = AssetBaseCfg(
         prim_path="/World/envs/env_.*/Background",
@@ -1000,15 +1033,7 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
     # host 专用：robot_2 全动力学本体 + 它的足底接触诊断（参数照抄底座 foot_contact）。
     robot_2: ArticulationCfg | None = _make_second_local_robot_cfg() if HOST_MODE else None
     foot_contact_2: ContactSensorCfg | None = (
-        ContactSensorCfg(
-            prim_path="{ENV_REGEX_NS}/Robot2/.*_ankle_roll_link",
-            history_length=4,
-            track_air_time=True,
-            force_threshold=5.0,
-            debug_vis=False,
-        )
-        if HOST_MODE
-        else None
+        _make_foot_contact_sensor("Robot2") if HOST_MODE else None
     )
 
     # 方向光制造明暗面，避免 DomeLight 均匀照明导致的"塑料感"。

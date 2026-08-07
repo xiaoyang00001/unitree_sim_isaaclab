@@ -73,6 +73,23 @@ NavMesh、Render 设置、额外 PhysicsScene、货架、纸箱堆、推车与�
 组合统计和远程依赖说明见
 [`scene_assets/conveyor_workcell_lite_zh.md`](scene_assets/conveyor_workcell_lite_zh.md)。
 
+### 料筐碰撞与 ContactReport
+
+料筐默认使用 `ISAACLAB_TOTE_COLLIDER=compound`：视觉仍引用同一份 SimReady
+`Tote_B04`，物理碰撞改为底板加四壁的 5 个 box，保持开口容器语义并避免运行时
+`convexDecomposition`。需要抓取 A/B 时可回退
+`ISAACLAB_TOTE_COLLIDER=convex_decomposition`。
+
+机器人 ContactReport 通过 `ISAACLAB_CONVEYOR_CONTACT_REPORT` 选择：
+
+| 值 | 行为 |
+|---|---|
+| `ankles`（默认） | 只给左右 `ankle_roll_link` 添加 ContactReport，保留足底诊断 |
+| `off` | 不创建 ContactReport 和足底 ContactSensor，供生产模式使用 |
+| `all` | 恢复历史全身 reporter，供诊断 A/B 使用 |
+
+环境变量拼写错误会直接报错，不会静默回退到高成本模式。
+
 ### 筐被搬上流水线后的运动
 
 两种布局共用同一套流水线驱动。`ISAACLAB_TOTES_ON_CONVEYOR=0` 时，机器人把推车上的
@@ -213,4 +230,5 @@ HandCmd 默认超时为 `0.20 s`；超时后保持最后安全的 `q/kp/kd`、�
 | nolo_label.png | 分叉 git | warehouse USD 相对引用的地面贴花 |
 | props/pushcart_physics.usda | 分叉工作区手拷（未入 git） | 引用 Nucleus 5.1 SM_PushcartA_02 |
 | props/cart_box_d05_physics.usda | 分叉 git-LFS tip 版 | 已含关 CCD 修复（ae9118a2e） |
-| props/tote_b04_physics.usda | 分叉 git-LFS | 内嵌 2.0/1.6 combine=min 高摩擦材质（抓取配方一部分） |
+| props/tote_b04_compound_physics.usda | 本仓库任务专用物理层 | 默认料筐碰撞；复用 SimReady 视觉，以底板+四壁 5-box compound 保持开口语义 |
+| props/tote_b04_physics.usda | 分叉 git-LFS | 历史 convex decomposition 回退；内嵌 2.0/1.6 combine=min 高摩擦材质 |
