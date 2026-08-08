@@ -71,5 +71,32 @@ warehouse-simple6_v61_conveyor_visual_only.usda
 - legacy 开启资产变体时使用 clean background + visual-only ConveyorBelt；
 - Surface Velocity 总是使用上述 visual-only 组合，任务 proxy/侧导轨是唯一接触几何。
 
+## 与 workcell-lite 轻量工位组合
+
+`ISAACLAB_CONVEYOR_BACKGROUND=workcell_lite` 的 baseline 是
+`conveyor_workcell_lite.usd`，其 `/Root/ConveyorBelt` 经 **reference** 取自 clean
+wrapper 的同名子树。payload 定义在引用目标的 layer stack 内部，上层
+`delete payload` 跨 reference arc 无效，所以不能照抄上面的仓库 adapter 写法。
+
+专用组合层 `conveyor_workcell_lite_conveyor_visual_only.usda`（同一生成器产出）
+改为把 reference 重定向到仓库 adapter 的 `/Root/ConveyorBelt` 子树：
+
+```text
+conveyor_workcell_lite_conveyor_visual_only.usda
+  -> conveyor_workcell_lite.usd                    # 轻量工位 baseline（subLayer）
+  -> /Root/ConveyorBelt reference 重定向为
+     warehouse-simple6_v61_conveyor_visual_only.usda</Root/ConveyorBelt>
+       # payload 替换在该 layer stack 内生效；v61 的 xform 与子 Prim 覆盖保留
+```
+
+`asset_variants.py` 按 baseline 文件名路由两份 adapter；组合层缺失、subLayer
+不是轻量工位、或 ConveyorBelt 引用未替换时启动即 fail-fast。生成器与
+`tests/test_conveyor_workcell_visual_only_adapter.py` 静态确认：ConveyorBelt
+子树 0 刚体/0 碰撞，全 stage 0 刚体，碰撞仅存静态边界——地面、工位地贴
+（FloorZone_*/Stripe_* 引用的官方 SM_FloorDecal 资产，Kit 能解析 S3 时进入
+组合，与完整场景行为一致；离线 pxr 下天然缺席）与仓库外墙——且地面/外墙
+碰撞必须健在（防上游清理层误清导致穿地），lite 的 Prim/layer 门槛与 Camera、
+Render、NavMesh、PhysicsScene、货架、额外灯光缺席契约不被破坏。
+
 动态 smoke、停止误差和机器人站位属于后续验收阶段，本文档不把静态组合
 检查当作功能验收结论。

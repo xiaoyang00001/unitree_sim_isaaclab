@@ -1,6 +1,6 @@
 # 流水线功能集成 TODO
 
-更新时间：2026-08-07
+更新时间：2026-08-08
 
 当前集成分支：`feat/conveyor-functional-integration`
 
@@ -13,25 +13,28 @@
 - `ankles/all/off` ContactReport 模式；
 - 镜像机器人纯 USD FK/Xform 视觉 LOD（当前为 opt-in）。
 
-## P0：补齐 workcell-lite 与纯视觉输送机的组合层
+## P0：补齐 workcell-lite 与纯视觉输送机的组合层（✅ 静态部分已完成）
 
-当前 `asset_variants.py` 只有一份固定 subLayer 完整 clean-v61 的 conveyor
-visual-only adapter。选择 `ISAACLAB_CONVEYOR_BACKGROUND=workcell_lite` 后再启用
-`ISAACLAB_CONVEYOR_VISUAL_ONLY_ASSET=1` 或 `surface_velocity`，会切回完整 clean-v61，
-从而丢失轻量工位效果。
+分支 `feat/conveyor-workcell-visual-only-adapter` 已落地：
 
-后续需要：
+1. ✅ `conveyor_workcell_lite_conveyor_visual_only.usda` 由
+   `tools/build_conveyor_visual_only_usd.py` 生成：subLayer
+   `conveyor_workcell_lite.usd`；由于 lite 的 `/Root/ConveyorBelt` 是 reference
+   （payload 在引用目标 layer stack 内，跨 arc 的 `delete payload` 无效），组合层
+   把 reference 重定向到完整仓库 adapter 的 `</Root/ConveyorBelt>` 子树，payload
+   替换在该 stack 内生效，v61 的 xform 与子 Prim 覆盖保留；
+2. ✅ `asset_variants.py` 按 baseline 文件名路由两份 adapter；组合层缺失、
+   subLayer 不是轻量工位、引用未替换、或被依赖的完整 adapter 过期时 fail-fast；
+3. ✅ 生成器 `--check` 与 `tests/test_conveyor_workcell_visual_only_adapter.py`
+   静态确认：ConveyorBelt 0 rigid/0 collision，仅存地面+地贴+外墙静态边界碰撞
+   且地面/外墙碰撞必须健在，lite Prim/layer 门槛满足，Camera、Render、NavMesh、
+   PhysicsScene、货架、额外灯光保持缺席，belt 视觉签名与本地变换均与完整
+   adapter 一致，instanceable Prim 出现即报错拒绝（防审计链静默漏检）；
+4. ✅ `CONVEYOR_VISUAL_ONLY_ASSET_ENABLED` 兼容两份 adapter，最终模式日志为
+   `workcell_lite+conveyor_visual_only[(surface_forced)]`。
 
-1. 生成 `conveyor_workcell_lite_conveyor_visual_only.usda`，subLayer
-   `conveyor_workcell_lite.usd`，并把 `/Root/ConveyorBelt` payload 替换成
-   `ConveyorBelt02_visual_only.usda`；
-2. 在 `asset_variants.py` 按 baseline 文件名路由两份 adapter，缺失或 subLayer
-   不匹配时 fail-fast；
-3. 扩展生成器和测试，确认组合后输送机为 0 rigid/0 collision，同时仍满足 lite
-   Prim/layer 门槛，且 Camera、Render、NavMesh、PhysicsScene、货架等保持缺席；
-4. 修正最终模式日志与 `CONVEYOR_VISUAL_ONLY_ASSET_ENABLED` 判断。
-
-完成前不要把“workcell_lite + surface_velocity”当作轻量场景性能结果。
+⚠️ 仍属 P1 的动态验收（Kit 启动、双端、抓取、长时、性能 A/B）未做；在此之前
+不要把“workcell_lite + surface_velocity”当作轻量场景性能结果。
 
 ## P1：集成与动态验收
 

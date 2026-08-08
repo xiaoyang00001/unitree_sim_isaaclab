@@ -58,7 +58,11 @@ from tasks.g1_tasks.g1_29dof_dex3_sonic.g1_29dof_dex3_sonic_env_cfg import (
 )
 
 from . import conveyor_events
-from .asset_variants import VISUAL_ONLY_BACKGROUND_USD, resolve_conveyor_background_usd
+from .asset_variants import (
+    VISUAL_ONLY_BACKGROUND_USD,
+    WORKCELL_LITE_VISUAL_ONLY_BACKGROUND_USD,
+    resolve_conveyor_background_usd,
+)
 from .background_assets import resolve_background_asset
 from .contact_modes import resolve_contact_report_mode
 from .contact_spawners import configure_robot_contact_reports
@@ -391,7 +395,8 @@ CONVEYOR_ENABLED = CONVEYOR_LEGACY_ENABLED or CONVEYOR_SURFACE_VELOCITY_ENABLED
 
 # 背景清理和输送机物理是两层独立选择：默认 legacy 后端沿用第一阶段的 clean
 # background，但保留 ConveyorBelt02 原生物理；显式资产开关可让 legacy 也使用纯视觉
-# 输送机。Surface Velocity 必须强制使用叠加 clean background 的 visual-only adapter，
+# 输送机。Surface Velocity 强制使用纯视觉输送机 adapter（按 baseline 路由：完整
+# 仓库背景叠加 clean background，workcell_lite 走保持轻量工位的专用组合层），
 # 从 USD 组合阶段移除原生 6 个刚体/56 个碰撞，确保任务 proxy 是唯一接触面。
 _REQUESTED_BACKGROUND_MODE, _BACKGROUND_BASE_USD_PATH = resolve_background_asset(
     _ASSETS_DIR
@@ -401,15 +406,20 @@ BACKGROUND_USD_PATH = resolve_conveyor_background_usd(
     baseline_path=_BACKGROUND_BASE_USD_PATH,
     drive_mode=CONVEYOR_DRIVE_MODE,
 )
-CONVEYOR_VISUAL_ONLY_ASSET_ENABLED = (
-    BACKGROUND_USD_PATH.name == VISUAL_ONLY_BACKGROUND_USD
-)
+CONVEYOR_VISUAL_ONLY_ASSET_ENABLED = BACKGROUND_USD_PATH.name in {
+    VISUAL_ONLY_BACKGROUND_USD,
+    WORKCELL_LITE_VISUAL_ONLY_BACKGROUND_USD,
+}
 if BACKGROUND_USD_PATH == _BACKGROUND_BASE_USD_PATH:
     BACKGROUND_MODE = _REQUESTED_BACKGROUND_MODE
 else:
-    # adapter 固定 subLayer clean wrapper；即使用户同时请求 legacy_v61，实际生效层
-    # 仍是 clean background，日志必须反映最终组合而不是被覆盖的请求值。
-    BACKGROUND_MODE = "visual_only+conveyor_visual_only"
+    # workcell-lite 走保持轻量 baseline 的专用组合层；完整仓库 adapter 固定
+    # subLayer clean wrapper，即使用户同时请求 legacy_v61，实际生效层仍是 clean
+    # background。日志必须反映最终组合而不是被覆盖的请求值。
+    if BACKGROUND_USD_PATH.name == WORKCELL_LITE_VISUAL_ONLY_BACKGROUND_USD:
+        BACKGROUND_MODE = "workcell_lite+conveyor_visual_only"
+    else:
+        BACKGROUND_MODE = "visual_only+conveyor_visual_only"
     if CONVEYOR_DRIVE_MODE == "surface_velocity":
         BACKGROUND_MODE += "(surface_forced)"
 
