@@ -20,13 +20,43 @@ DRIVE_MODE_LEGACY = "legacy"
 DRIVE_MODE_SURFACE_VELOCITY = "surface_velocity"
 DRIVE_MODES = (DRIVE_MODE_LEGACY, DRIVE_MODE_SURFACE_VELOCITY)
 
+# ------------------------------------------------------------------
+# 流水线整体北移量（世界 +Y，单位 m）——**本工程唯一真源**。
+#
+# 由来：安检机改为靠 +Y 落地墙 SM_WallA_6M16（离线实测南面 y=23.6055，取
+# 23.606）摆放，机身放大到 SHROUD_INFEED_DESIGN_SCALE=1.40 后半长 1.783936，留
+# 0.05 m 墙缝 ⇒ 机身远端面 23.556、机身中心 y_c=21.772064。让流水线入料端
+# （离线实测带体到 y=18.2223）正好推进到机身中心：
+#     Δ = 21.772064 - 18.2223 = 3.54966  →  取 3.55
+# 此时带端越过近端条帘 0.4147 m、离远端条帘还差 0.4142 m，端头断面正好藏在
+# 不透明机柜 y[21.2816, 22.2626] 里，从南北两侧都不穿帮。
+#
+# ⚠️ Δ 有硬上限约 3.58：流水线每 2 m 一组的支腿站外偏 0.576 m 大于隧道洞口
+#    半宽，再往北就会扎穿机柜侧板。改 Δ 前先看 shroud_config 的贯穿断言。
+# ⚠️ 几何位移写在背景 clean wrapper warehouse-simple6_v61_visual_only.usda 的
+#    over "ConveyorBelt"（世界 y +Δ ≡ 背景局部 x +Δ，因为背景挂载时绕 Z 转了
+#    +90°），四种背景模式经 reference / subLayer 自动继承。唯一例外是
+#    ISAACLAB_CONVEYOR_BACKGROUND=legacy_v61 的裸 v61，它不含位移，带体会与本
+#    常量差 Δ 米——那条历史回退路径已在 README 里显式声明失效。
+# ⚠️ shroud_config.py / scene_layout.py 为保持零相对 import 各抄了一份 Δ，
+#    tests/test_conveyor_drive.py 与 test_conveyor_shroud_config.py 交叉断言三处
+#    一致，别只改一边。
+CONVEYOR_NORTH_SHIFT_Y = 3.55
+
 # Measured usable top surface of the three ConveyorBelt_A08 visual sections.
+# BELT_Y_*_BASE 是北移前的实测值，运行值 = 基准 + Δ。
 BELT_X_CENTER = -5.62
 BELT_WIDTH = 0.90
-BELT_Y_MIN = 10.19
-BELT_Y_MAX = 18.22
+BELT_Y_MIN_BASE = 10.19
+BELT_Y_MAX_BASE = 18.22
+BELT_Y_MIN = round(BELT_Y_MIN_BASE + CONVEYOR_NORTH_SHIFT_Y, 6)  # 13.74
+BELT_Y_MAX = round(BELT_Y_MAX_BASE + CONVEYOR_NORTH_SHIFT_Y, 6)  # 21.77
 BELT_TOP_Z = 0.772
 BELT_COLLIDER_THICKNESS = 0.04
+
+# 循环模式（y_stop<=0）的回收线与回生落点，同样随北移整体平移。
+DEFAULT_Y_RECYCLE = round(10.6 + CONVEYOR_NORTH_SHIFT_Y, 6)  # 14.15
+DEFAULT_Y_RESPAWN = round(18.0 + CONVEYOR_NORTH_SHIFT_Y, 6)  # 21.55
 
 
 def _env_bool(environ: Mapping[str, str], name: str, default: bool) -> bool:
@@ -168,11 +198,11 @@ def resolve_conveyor_drive(
     )
 
     y_recycle = _require_finite(
-        _env_float(environ, "ISAACLAB_CONVEYOR_Y_RECYCLE", 10.6),
+        _env_float(environ, "ISAACLAB_CONVEYOR_Y_RECYCLE", DEFAULT_Y_RECYCLE),
         "ISAACLAB_CONVEYOR_Y_RECYCLE",
     )
     y_respawn = _require_finite(
-        _env_float(environ, "ISAACLAB_CONVEYOR_Y_RESPAWN", 18.0),
+        _env_float(environ, "ISAACLAB_CONVEYOR_Y_RESPAWN", DEFAULT_Y_RESPAWN),
         "ISAACLAB_CONVEYOR_Y_RESPAWN",
     )
 

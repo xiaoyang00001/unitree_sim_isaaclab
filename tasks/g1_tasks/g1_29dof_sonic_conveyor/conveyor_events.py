@@ -30,6 +30,18 @@ from pxr import Gf, PhysxSchema, Usd, UsdPhysics
 
 from . import conveyor_queue
 
+# 带面判据的默认参数直接取自 conveyor_drive 的常量，避免第二处真源。
+# ⚠️ ConveyorEventsCfg 只显式传 y_stop / y_recycle / y_respawn，**不传 y_range**，
+#    所以下面的默认值就是运行时真正生效的判据；流水线北移后漏改会让筐一进新带段
+#    就被判"不在带上"，整段驱动静默失效。
+from .conveyor_drive import (
+    BELT_TOP_Z,
+    BELT_Y_MAX,
+    BELT_Y_MIN,
+    DEFAULT_Y_RECYCLE,
+    DEFAULT_Y_RESPAWN,
+)
+
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv
 
@@ -219,11 +231,13 @@ def drive_belt_boxes_on_conveyor(
     object_names: tuple[str, ...] = (),
     velocity_y: float = -0.3,
     enabled: bool = True,
-    belt_top_z: float = 0.772,
+    belt_top_z: float = BELT_TOP_Z,
     z_tolerance: float = 0.15,
     x_range: tuple[float, float] = (-6.17, -5.07),
-    y_range: tuple[float, float] = (10.19, 18.22),
-    y_stop: float | None = 14.148,
+    # 北移后带面判据必须跟 conveyor_drive 的常量走（scanner 合并语义点：
+    # 这个函数是 belt-boxes 线新增的，git 自动合并不会替它换常量）。
+    y_range: tuple[float, float] = (BELT_Y_MIN, BELT_Y_MAX),
+    y_stop: float | None = None,
     queue_gap: float = 0.07,
     half_lengths: tuple[float, ...] = (),
 ):
@@ -298,13 +312,13 @@ def drive_totes_on_conveyor(
     object_names: tuple[str, ...] = ("cart2_tote1", "cart2_tote2"),
     velocity_y: float = -0.3,
     enabled: bool = True,
-    belt_top_z: float = 0.772,
+    belt_top_z: float = BELT_TOP_Z,
     z_tolerance: float = 0.15,
     x_range: tuple[float, float] = (-6.17, -5.07),
-    y_range: tuple[float, float] = (10.19, 18.22),
+    y_range: tuple[float, float] = (BELT_Y_MIN, BELT_Y_MAX),
     y_stop: float | None = None,
-    y_recycle: float = 10.6,
-    y_respawn: float = 18.0,
+    y_recycle: float = DEFAULT_Y_RECYCLE,
+    y_respawn: float = DEFAULT_Y_RESPAWN,
     respawn_z: float = 0.775,
 ):
     """把塑料筐沿流水线 -Y 方向匀速送走，到工位停住（或到出料端传回入料端）。
@@ -383,12 +397,12 @@ def recycle_totes_on_surface_conveyor(
     env_ids: torch.Tensor | None,
     object_names: tuple[str, ...] = ("cart2_tote1", "cart2_tote2"),
     enabled: bool = False,
-    belt_top_z: float = 0.772,
+    belt_top_z: float = BELT_TOP_Z,
     z_tolerance: float = 0.15,
     x_range: tuple[float, float] = (-6.17, -5.07),
-    y_range: tuple[float, float] = (10.19, 18.22),
-    y_recycle: float = 10.6,
-    y_respawn: float = 18.0,
+    y_range: tuple[float, float] = (BELT_Y_MIN, BELT_Y_MAX),
+    y_recycle: float = DEFAULT_Y_RECYCLE,
+    y_respawn: float = DEFAULT_Y_RESPAWN,
     respawn_z: float = 0.775,
 ):
     """Recycle totes in full-length surface-velocity loop mode without driving them.

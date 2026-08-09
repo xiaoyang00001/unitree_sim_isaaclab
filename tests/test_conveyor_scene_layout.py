@@ -18,6 +18,19 @@ _LAYOUT_MODULE = importlib.util.module_from_spec(_LAYOUT_SPEC)
 sys.modules[_LAYOUT_SPEC.name] = _LAYOUT_MODULE
 _LAYOUT_SPEC.loader.exec_module(_LAYOUT_MODULE)
 resolve_scene_layout = _LAYOUT_MODULE.resolve_scene_layout
+CONVEYOR_NORTH_SHIFT_Y = _LAYOUT_MODULE.CONVEYOR_NORTH_SHIFT_Y
+
+_DRIVE_MODULE_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "tasks/g1_tasks/g1_29dof_sonic_conveyor/conveyor_drive.py"
+)
+_DRIVE_SPEC = importlib.util.spec_from_file_location(
+    "conveyor_drive_for_layout_test", _DRIVE_MODULE_PATH
+)
+assert _DRIVE_SPEC is not None and _DRIVE_SPEC.loader is not None
+_DRIVE_MODULE = importlib.util.module_from_spec(_DRIVE_SPEC)
+sys.modules[_DRIVE_SPEC.name] = _DRIVE_MODULE
+_DRIVE_SPEC.loader.exec_module(_DRIVE_MODULE)
 
 
 class ConveyorSceneLayoutTest(unittest.TestCase):
@@ -25,45 +38,89 @@ class ConveyorSceneLayoutTest(unittest.TestCase):
         layout = resolve_scene_layout({})
 
         self.assertTrue(layout.totes_on_conveyor)
-        self.assertEqual(layout.pushcart_2_pos, (-5.4, 19.39363, 0.0))
-        self.assertEqual(layout.cart2_tote1_pos, (-5.35, 17.4, 0.775))
-        self.assertEqual(layout.cart2_tote2_pos, (-5.89, 18.0, 0.775))
+        # 全部含流水线整体北移 Δ=3.55（19.39363/17.4/18.0 + Δ）。
+        self.assertEqual(layout.pushcart_2_pos, (-5.4, 22.94363, 0.0))
+        self.assertEqual(layout.cart2_tote1_pos, (-5.35, 20.95, 0.775))
+        self.assertEqual(layout.cart2_tote2_pos, (-5.89, 21.55, 0.775))
         self.assertEqual(layout.tote_scale, (0.005, 0.005, 0.005))
         self.assertEqual(layout.robot_1_x, -4.75)
         self.assertEqual(layout.robot_2_x, -6.7)
-        self.assertEqual(layout.robot_workstation_y, 14.148)
-        self.assertEqual(layout.conveyor_y_stop, 14.148)
+        self.assertEqual(layout.robot_workstation_y, 17.698)
+        self.assertEqual(layout.conveyor_y_stop, 17.698)
 
     def test_zero_selects_stacked_full_size_totes_on_pushcart(self) -> None:
         layout = resolve_scene_layout({"ISAACLAB_TOTES_ON_CONVEYOR": "0"})
 
         self.assertFalse(layout.totes_on_conveyor)
-        self.assertEqual(layout.pushcart_2_pos, (-5.62, 18.75, 0.0))
-        self.assertEqual(layout.cart2_tote1_pos, (-5.62, 18.75, 0.3794))
-        self.assertEqual(layout.cart2_tote2_pos, (-5.62, 18.75, 0.6814))
+        # =0 的作业组同样整体 +Δ：18.75 → 22.30，z 叠放高度不变。
+        self.assertEqual(layout.pushcart_2_pos, (-5.62, 22.3, 0.0))
+        self.assertEqual(layout.cart2_tote1_pos, (-5.62, 22.3, 0.3794))
+        self.assertEqual(layout.cart2_tote2_pos, (-5.62, 22.3, 0.6814))
         self.assertEqual(layout.tote_scale, (0.01, 0.01, 0.01))
         self.assertEqual(layout.robot_1_x, -4.82)
         self.assertEqual(layout.robot_2_x, -6.42)
-        self.assertEqual(layout.robot_workstation_y, 18.75)
-        self.assertEqual(layout.conveyor_y_stop, 11.5)
+        self.assertEqual(layout.robot_workstation_y, 22.3)
+        self.assertEqual(layout.conveyor_y_stop, 15.05)
 
     def test_existing_position_overrides_are_preserved(self) -> None:
         layout = resolve_scene_layout(
             {
                 "ISAACLAB_TOTES_ON_CONVEYOR": "false",
                 "ISAACLAB_CART_GROUP_X": "-5.5",
-                "ISAACLAB_CART_GROUP_Y": "18.9",
+                "ISAACLAB_CART_GROUP_Y": "20.9",
                 "ISAACLAB_ROBOT_SIDE_OFFSET": "0.7",
                 "ISAACLAB_ROBOT_2_X": "-6.9",
-                "ISAACLAB_CONVEYOR_Y_STOP": "12.25",
+                "ISAACLAB_CONVEYOR_Y_STOP": "16.25",
             }
         )
 
-        self.assertEqual(layout.pushcart_2_pos, (-5.5, 18.9, 0.0))
+        self.assertEqual(layout.pushcart_2_pos, (-5.5, 20.9, 0.0))
         self.assertEqual(layout.robot_1_x, -4.8)
         self.assertEqual(layout.robot_2_x, -6.9)
-        self.assertEqual(layout.robot_workstation_y, 18.9)
-        self.assertEqual(layout.conveyor_y_stop, 12.25)
+        self.assertEqual(layout.robot_workstation_y, 20.9)
+        self.assertEqual(layout.conveyor_y_stop, 16.25)
+
+
+class ConveyorLayoutNorthShiftTest(unittest.TestCase):
+    """北移量在 scene_layout / conveyor_drive 两处副本必须一致。"""
+
+    def test_shift_constant_matches_conveyor_drive(self) -> None:
+        self.assertEqual(CONVEYOR_NORTH_SHIFT_Y, _DRIVE_MODULE.CONVEYOR_NORTH_SHIFT_Y)
+
+    def test_conveyor_layout_spawn_points_stay_on_the_shifted_belt(self) -> None:
+        layout = resolve_scene_layout({})
+        belt_max = _DRIVE_MODULE.BELT_Y_MAX
+        belt_min = _DRIVE_MODULE.BELT_Y_MIN
+
+        # 后筐后缘（半长 0.10）不能悬出带尾；工位仍在带上。
+        self.assertLess(layout.cart2_tote2_pos[1] + 0.10, belt_max)
+        self.assertGreater(layout.cart2_tote1_pos[1], layout.robot_workstation_y)
+        self.assertGreater(layout.robot_workstation_y, belt_min)
+        # 行程长度不随整体平移改变。
+        self.assertAlmostEqual(
+            layout.cart2_tote1_pos[1] - layout.robot_workstation_y, 3.252, places=6
+        )
+        self.assertAlmostEqual(
+            layout.cart2_tote2_pos[1] - layout.robot_workstation_y, 3.852, places=6
+        )
+
+    def test_pushcart_layout_group_stays_between_the_belt_end_and_the_wall(self) -> None:
+        """=0 作业组北移后仍夹在带端与 +Y 墙之间，不必按布局分叉 Δ。"""
+
+        layout = resolve_scene_layout({"ISAACLAB_TOTES_ON_CONVEYOR": "0"})
+        belt_max = _DRIVE_MODULE.BELT_Y_MAX  # 21.77
+        wall_face_y = 23.606
+        cart_half_len_y = 0.412  # pushcart spawn scale 0.5 后实测 y 跨度 0.824
+
+        cart_south = layout.cart_group_y - cart_half_len_y
+        cart_north = layout.cart_group_y + cart_half_len_y
+        self.assertGreater(cart_south, belt_max)          # 不压到带面
+        self.assertLess(cart_north, wall_face_y - 0.20)   # 离墙留余量
+        self.assertAlmostEqual(cart_south - belt_max, 0.118, places=3)
+        self.assertAlmostEqual(wall_face_y - cart_north, 0.894, places=3)
+        # 出料段停止点仍落在带上（handoff 0.20）。
+        self.assertLess(_DRIVE_MODULE.BELT_Y_MIN, layout.conveyor_y_stop + 0.20)
+        self.assertLess(layout.conveyor_y_stop + 0.20, belt_max)
 
 
 class BeltBoxLayoutTest(unittest.TestCase):
@@ -86,11 +143,11 @@ class BeltBoxLayoutTest(unittest.TestCase):
         self.assertEqual(
             layout.belt_box_positions,
             (
-                (-5.62, 14.95, 0.775),
-                (-5.62, 15.70, 0.775),
-                (-5.62, 16.45, 0.775),
-                (-5.62, 17.20, 0.775),
-                (-5.62, 17.95, 0.775),
+                (-5.62, 18.50, 0.775),
+                (-5.62, 19.25, 0.775),
+                (-5.62, 20.00, 0.775),
+                (-5.62, 20.75, 0.775),
+                (-5.62, 21.50, 0.775),
             ),
         )
         self.assertEqual(layout.belt_box_half_lengths, (0.19, 0.2263, 0.19, 0.2263, 0.19))
@@ -184,7 +241,7 @@ class BeltBoxLayoutTest(unittest.TestCase):
         layout = resolve_scene_layout(
             {
                 "ISAACLAB_BELT_BOX_COUNT": "3",
-                "ISAACLAB_BELT_BOX_SPAWN_Y_LEAD": "16.0",
+                "ISAACLAB_BELT_BOX_SPAWN_Y_LEAD": "19.55",
                 "ISAACLAB_BELT_BOX_SPAWN_PITCH": "0.7",
                 "ISAACLAB_BELT_BOX_QUEUE_GAP": "0.1",
                 "ISAACLAB_BELT_BOX_LANE_X": "-5.617",
@@ -195,7 +252,7 @@ class BeltBoxLayoutTest(unittest.TestCase):
         self.assertEqual(layout.belt_box_queue_gap, 0.1)
         self.assertEqual(
             layout.belt_box_positions,
-            ((-5.617, 16.0, 0.775), (-5.617, 16.7, 0.775), (-5.617, 17.4, 0.775)),
+            ((-5.617, 19.55, 0.775), (-5.617, 20.25, 0.775), (-5.617, 20.95, 0.775)),
         )
 
     def test_spacing_is_wide_enough_to_read_as_separate_boxes(self) -> None:
@@ -256,7 +313,7 @@ class BeltBoxLayoutTest(unittest.TestCase):
 
     def test_queue_running_off_the_belt_tail_fails_fast(self) -> None:
         with self.assertRaisesRegex(ValueError, "悬出带面"):
-            resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_Y_LEAD": "17.0"})
+            resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_Y_LEAD": "20.55"})
 
     def test_enlarging_the_pitch_without_room_fails_fast(self) -> None:
         """间距、行程、数量此消彼长：只调大 pitch 而不让出行程就会被拦住。"""
@@ -269,10 +326,10 @@ class BeltBoxLayoutTest(unittest.TestCase):
             {
                 "ISAACLAB_BELT_BOX_SPAWN_PITCH": "1.0",
                 "ISAACLAB_BELT_BOX_COUNT": "3",
-                "ISAACLAB_BELT_BOX_SPAWN_Y_LEAD": "15.0",
+                "ISAACLAB_BELT_BOX_SPAWN_Y_LEAD": "18.55",
             }
         )
-        self.assertEqual([pos[1] for pos in layout.belt_box_positions], [15.0, 16.0, 17.0])
+        self.assertEqual([pos[1] for pos in layout.belt_box_positions], [18.55, 19.55, 20.55])
 
     def test_lead_bound_follows_a_custom_workstation(self) -> None:
         """y_stop 被覆盖时，队首下界跟着走——不能拿默认 14.148 硬判。"""

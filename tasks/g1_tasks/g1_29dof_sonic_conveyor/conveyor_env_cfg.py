@@ -71,12 +71,24 @@ from .conveyor_drive import (
     BELT_TOP_Z,
     BELT_WIDTH,
     BELT_X_CENTER,
+    BELT_Y_MAX,
+    BELT_Y_MIN,
+    CONVEYOR_NORTH_SHIFT_Y,
     resolve_conveyor_drive,
 )
 from .peer_visual_lod import JOINT_NAMES as PEER_VISUAL_LOD_JOINT_NAMES
 from .peer_visual_lod import resolve_peer_robot_mode
 from .scene_layout import resolve_scene_layout
 from .scene_props import resolve_scene_props
+from .shroud_config import (
+    SHROUD_FACE_Y_ENV,
+    SHROUD_MODE_ENV,
+    SHROUD_PRIM_NAME,
+    TOTE_LANE_SPAN_X,
+    WALL_CLEARANCE,
+    WALL_FACE_Y,
+    resolve_conveyor_shroud,
+)
 from .tote_assets import resolve_tote_asset
 from .zmq_scene_sync import ZmqEnvResetSyncActionCfg, ZmqSceneStateSyncActionCfg
 
@@ -150,6 +162,11 @@ SCENE_PROPS = resolve_scene_props(
     os.environ,
     totes_on_conveyor=TOTES_ON_CONVEYOR,
     belt_box_names=BELT_BOX_NAMES,
+)
+# 端口遮挡罩：纯视觉隧道罩，端口随布局切换（流水线布局贴入料端、推车布局贴末尾）。
+CONVEYOR_SHROUD = resolve_conveyor_shroud(
+    os.environ,
+    totes_on_conveyor=TOTES_ON_CONVEYOR,
 )
 
 
@@ -309,10 +326,16 @@ def _env_reset_sync_cfg() -> ZmqEnvResetSyncActionCfg:
 #
 #   1 = 流水线布局：两塑料筐缩小一半（scale 0.005）放上流水线滚轮面的**入料端**，
 #       由 drive_totes 事件沿 -Y 送到第二段工位停住；双机站第二段两侧
-#       (x=-4.75 / -6.7, y=14.148)，pushcart_2 空车留在 y=19.39363。
+#       (x=-4.75 / -6.7, y=17.698)，pushcart_2 空车留在 y=22.94363。
 #   0 = 原布局：两筐恢复原尺寸（scale 0.01）叠放回 pushcart_2 拖车顶面
-#       (x=-5.62, y=18.75)；双机回到拖车两侧工位；筐被机器人搬上入料端后
+#       (x=-5.62, y=22.30)；双机回到拖车两侧工位；筐被机器人搬上入料端后
 #       自动流到出料段停住（作业闭环）。
+#
+# ⚠️ 上面所有世界 y 都已含流水线整体北移 CONVEYOR_NORTH_SHIFT_Y=3.55
+#    （14.148→17.698 / 18.75→22.30 / 19.39363→22.94363）。北移的几何位移写在背景
+#    clean wrapper 的 over "ConveyorBelt"，两种布局共用同一个 Δ：=0 的作业组站在
+#    入料端之北，北移后拖车占位 y[21.888,22.712]，离带端仍是 0.116 m、离 +Y 墙面
+#    23.606 还有 0.894 m，墙给的上限（Δ<=4.24）远大于 3.55，不需要按布局分叉。
 #
 # conveyor_collider 碰撞板常驻不随开关回退；背景 USD 里烘入的桌子/料箱平移
 # 与镜像改动也不随开关回退（要回退得换 USD 文件）。
@@ -329,15 +352,18 @@ ROBOT_2_X = SCENE_LAYOUT.robot_2_x
 PUSHCART_2_POS = list(SCENE_LAYOUT.pushcart_2_pos)
 
 # 两塑料筐在流水线上的出生 y：贴着入料端排布，保持原来 0.6 m 的前后错位
-# （tote1 在前，沿 -Y 先到工位）。碰撞板 y 跨度 [10.19, 18.22]，筐在 y 方向半长
-# 0.1 m，所以后车最多到 18.0 左右；再往上会悬出板尾。
+# （tote1 在前，沿 -Y 先到工位）。碰撞板 y 跨度 [13.74, 21.77]，筐在 y 方向半长
+# 0.1 m，所以后车最多到 21.55 左右；再往上会悬出板尾。
+# 北移后两个落点是 20.95 / 21.55：tote2 已经落进安检机不透明机柜
+# y[21.2816, 22.2626] 内部（出生瞬间被真正遮住），tote1 还差 0.33 m。
 #
 # ⚠️ 这同时是**复位落点**：整场景复位（手动 rt/reset_pose/cmd、倒地自动、对端同步）
 # 走的是 mdp.reset_scene_to_default，把筐写回这里的 init_state。放在入料端才能让
 # 一次复位＝重新完整流一遍。早期取 16.4/17.0 时复位只剩 2.25/2.85 m 的行程。
-# 到工位 14.148 分别是 3.25 / 3.85 m；筐是被拖拽滑行不是被带动，实测速度约
-# 0.244 m/s（低于 velocity_y 的 0.3，见 README「已知限制 / 待实测」），所以约 13.3 / 15.8 s
-# 到位，各自越过 y_stop 约 11 mm 后被动摩擦停住（smoke 900 步实测 14.136 / 14.137）。
+# 到工位 17.698 分别是 3.25 / 3.85 m —— 行程长度与耗时都不随整体平移改变。筐是被
+# 拖拽滑行不是被带动，实测速度约 0.244 m/s（低于 velocity_y 的 0.3，见 README
+# 「已知限制 / 待实测」），所以约 13.3 / 15.8 s 到位，各自越过 y_stop 约 11 mm 后
+# 被动摩擦停住（北移前 smoke 900 步实测 14.136 / 14.137，等价于现在的 17.686 / 17.687）。
 TOTE_SPAWN_Y_LEAD = SCENE_LAYOUT.cart2_tote1_pos[1]
 TOTE_SPAWN_Y_TRAIL = SCENE_LAYOUT.cart2_tote2_pos[1]
 
@@ -510,6 +536,40 @@ def _make_conveyor_side_guide_cfg(prim_name: str, x: float) -> AssetBaseCfg:
         ),
     )
 
+
+CONVEYOR_SHROUD_USD_PATH = _ASSETS_DIR / "props" / CONVEYOR_SHROUD.asset_filename
+
+
+def _make_conveyor_shroud_cfg() -> AssetBaseCfg:
+    """端口遮挡罩：隧道式安检机，**纯视觉零物理**。
+
+    刻意不传 ``collision_props`` / ``rigid_props``——``UsdFileCfg`` 不传就不会
+    给 prim 加 CollisionAPI/RigidBodyAPI，被引用的 DigitalTwin 资产本身也是
+    coll=0 / rigid=0（薄层 doc 里有离线审计结论）。同时不登记进 ``scene_props``：
+    ``AssetBaseCfg`` 落到 ``scene.extras`` 的 XformPrimView，天然不进 PhysX、
+    不参与 reset、也不进 zmq_scene_sync 的 RigidObject 清单。
+    """
+
+    if not CONVEYOR_SHROUD_USD_PATH.is_file():
+        raise FileNotFoundError(
+            f"端口遮挡罩资产不存在: {CONVEYOR_SHROUD_USD_PATH}；"
+            f"可用 {SHROUD_MODE_ENV}=off 暂时关闭"
+        )
+    return AssetBaseCfg(
+        prim_path=f"{{ENV_REGEX_NS}}/{SHROUD_PRIM_NAME}",
+        init_state=AssetBaseCfg.InitialStateCfg(
+            pos=list(CONVEYOR_SHROUD.pos),
+            rot=list(CONVEYOR_SHROUD.rot),
+        ),
+        spawn=UsdFileCfg(
+            usd_path=str(CONVEYOR_SHROUD_USD_PATH),
+            # 源资产是 cm 原生（自带 metersPerUnit=0.01 且无补偿缩放），
+            # 与 Tote_B04 同样由任务侧补 0.01 换算因子。
+            scale=CONVEYOR_SHROUD.scale,
+        ),
+    )
+
+
 # 背景里的分拣料箱：bin_02 是动态刚体，开局下沉且会被机器人撞飞，锁成 kinematic。
 BACKGROUND_LOCK_PRIM_NAMES = ("blue_sorting_bin_02",)
 
@@ -555,12 +615,46 @@ def _log_scene_layout() -> None:
     print(
         f"{tag}   拖车/筐 x={PUSHCART_2_POS[0]:.3f} y={PUSHCART_2_POS[1]:.3f}"
         f" | robot_1 x={ROBOT_1_X:.3f} robot_2 x={ROBOT_2_X:.3f} y={ROBOT_WORKSTATION_Y:.3f}"
-        f" | 流水线中线 x=-5.620 入料端 y=18.222"
+        f" | 流水线中线 x={BELT_X_CENTER:.3f} 入料端 y={BELT_Y_MAX:.3f}"
+        f"（整体北移 Δ={CONVEYOR_NORTH_SHIFT_Y:.2f}）"
     )
     if CONVEYOR_TOTE_NAMES and TOTES_ON_CONVEYOR:
         print(
             f"{tag}   筐出生/复位落点 y: tote1={CART2_TOTE1_POS[1]:.3f} tote2={CART2_TOTE2_POS[1]:.3f}"
-            f"（整场景复位写回同一位置；碰撞板尽头 y=18.220）"
+            f"（整场景复位写回同一位置；碰撞板 y[{BELT_Y_MIN:.3f},{BELT_Y_MAX:.3f}]）"
+        )
+    _shroud_port = "入料端" if CONVEYOR_SHROUD.port == "infeed" else "末尾出料端"
+    if CONVEYOR_SHROUD.enabled:
+        print(
+            f"{tag}   端口遮挡罩: {CONVEYOR_SHROUD.mode}（纯视觉 X 光安检机隧道，{_shroud_port}）"
+            f" [{CONVEYOR_SHROUD.asset_filename}]"
+        )
+        print(
+            f"{tag}     pos=({CONVEYOR_SHROUD.pos[0]:.3f},{CONVEYOR_SHROUD.pos[1]:.5f},"
+            f"{CONVEYOR_SHROUD.pos[2]:.5f}) yaw={CONVEYOR_SHROUD.yaw_degrees:.0f}° "
+            f"scale={CONVEYOR_SHROUD.scale[0]:g}(设计放大 {CONVEYOR_SHROUD.design_scale:g}) "
+            f"| +Y 端面 y={CONVEYOR_SHROUD.face_y:.3f} "
+            f"占位 y[{CONVEYOR_SHROUD.y_span[0]:.3f},{CONVEYOR_SHROUD.y_span[1]:.3f}] "
+            f"x[{CONVEYOR_SHROUD.x_span[0]:.3f},{CONVEYOR_SHROUD.x_span[1]:.3f}] 顶 z={CONVEYOR_SHROUD.top_z:.3f}"
+        )
+        print(
+            f"{tag}     条帘洞口 z[{CONVEYOR_SHROUD.opening_z[0]:.3f},{CONVEYOR_SHROUD.opening_z[1]:.3f}]"
+            f" 宽 {CONVEYOR_SHROUD.opening_width_x:.3f}（带面 z={BELT_TOP_Z:.3f}，"
+            f"两条筐道横跨 {TOTE_LANE_SPAN_X:.2f}）"
+            f" | 覆盖 {SHROUD_FACE_Y_ENV} 可整体平移"
+        )
+        if CONVEYOR_SHROUD.port == "infeed":
+            print(
+                f"{tag}     靠墙贯穿: 墙面 y={WALL_FACE_Y:.3f} 留缝 {WALL_CLEARANCE:.3f} | "
+                f"条帘 y[{CONVEYOR_SHROUD.curtain_y_span[0]:.3f},{CONVEYOR_SHROUD.curtain_y_span[1]:.3f}] "
+                f"机柜 y[{CONVEYOR_SHROUD.cabinet_y_span[0]:.3f},{CONVEYOR_SHROUD.cabinet_y_span[1]:.3f}] | "
+                f"带端 y={BELT_Y_MAX:.3f} 插入={'是' if CONVEYOR_SHROUD.belt_penetrates else '否'} "
+                f"| 隐藏外露滚筒床 {len(CONVEYOR_SHROUD.hidden_submesh_names)} 个 Mesh"
+            )
+    else:
+        print(
+            f"{tag}   端口遮挡罩: 关 [{SHROUD_MODE_ENV}=off]"
+            f"（开启时会贴在{_shroud_port}，+Y 端面 y={CONVEYOR_SHROUD.face_y:.3f}）"
         )
     if CONVEYOR_BELT_BOX_NAMES:
         _spawn = ", ".join(
@@ -1004,7 +1098,7 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
     # surface_velocity 通过 visual-only adapter 在组合阶段去掉原生物理，只让
     # 下列简化带面参与接触。
     # 原先的一整块 kinematic 碰撞板按 y_stop 拆为两块，无缝覆盖
-    # 原 y[10.19,18.22]：
+    # 北移后的 y[13.74,21.77]（= 北移前 [10.19,18.22] + 3.55）：
     #   conveyor_collider      入料/驱动段；预置禁用的 PhysxSurfaceVelocityAPI
     #   conveyor_stop_collider 下游静态高摩擦停止/抓取段
     # legacy + ISAACLAB_CONVEYOR_VISUAL_ONLY_ASSET=1 可让两种 backend 共用
@@ -1090,12 +1184,21 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
         else None
     )
 
+    # 端口遮挡罩：贴在生效端口外侧的隧道式安检机，只为"料筐有来处/去处"的观感。
+    # 纯视觉 AssetBase，不进 PhysX、不进 scene_props 同步清单，端口随布局切换。
+    conveyor_shroud: AssetBaseCfg | None = (
+        _make_conveyor_shroud_cfg() if CONVEYOR_SHROUD.enabled else None
+    )
+
     # 纸箱推车组（外侧位 x=-6.8）：拖车 + 两纸箱 + 顶上的长条测试箱。
+    # y 随流水线北移 +3.55 → 22.94363。x=-6.8 在放大后安检机机身
+    # x[-6.210,-5.030] 之外不撞它；拖车 spawn scale 0.5 后 y 跨度 0.824，北面
+    # 到 23.356，离 +Y 墙面 23.606 还有 0.25 m。只有 legacy_props 模式才生成。
     pushcart: RigidObjectCfg | None = (
         RigidObjectCfg(
             prim_path="{ENV_REGEX_NS}/Pushcart",
             init_state=RigidObjectCfg.InitialStateCfg(
-                pos=[-6.8, 19.39363, 0.0], rot=[0.0, 0.0, 0.0, 1.0]
+                pos=[-6.8, 22.94363, 0.0], rot=[0.0, 0.0, 0.0, 1.0]
             ),
             spawn=_make_pushcart_spawn_cfg("pushcart"),
         )
@@ -1106,7 +1209,7 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
         RigidObjectCfg(
             prim_path="{ENV_REGEX_NS}/CartBox1",
             init_state=RigidObjectCfg.InitialStateCfg(
-                pos=[-6.8, 19.39363, 0.45], rot=[0.0, 0.0, 0.0, 1.0]
+                pos=[-6.8, 22.94363, 0.45], rot=[0.0, 0.0, 0.0, 1.0]
             ),
             spawn=_make_graspable_cart_box_spawn_cfg("cart_box1"),
         )
@@ -1117,7 +1220,7 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
         RigidObjectCfg(
             prim_path="{ENV_REGEX_NS}/CartBox2",
             init_state=RigidObjectCfg.InitialStateCfg(
-                pos=[-6.8, 19.39363, 0.60], rot=[0.0, 0.0, 0.0, 1.0]
+                pos=[-6.8, 22.94363, 0.60], rot=[0.0, 0.0, 0.0, 1.0]
             ),
             spawn=_make_graspable_cart_box_spawn_cfg("cart_box2"),
         )
@@ -1128,7 +1231,7 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
         RigidObjectCfg(
             prim_path="{ENV_REGEX_NS}/TestBox",
             init_state=RigidObjectCfg.InitialStateCfg(
-                pos=[-6.8, 19.39363, 1.095],
+                pos=[-6.8, 22.94363, 1.095],
                 rot=[0.0, 0.0, 0.0, 1.0],
             ),
             spawn=sim_utils.CuboidCfg(
@@ -1482,10 +1585,13 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
         # blue_sorting_bin_02 运行历史 kinematic 补丁或产生无刚体告警。
         if CONVEYOR_VISUAL_ONLY_ASSET_ENABLED:
             self.events.lock_sorting_bins = None
-        # GUI 开局相机对准流水线工位(默认相机看世界原点,工作区在 (-5,14) 附近,
-        # 打开就是空镜头还得手动飞过去)。
-        self.viewer.eye = (-5.62, 19.0, 2.4)
-        self.viewer.lookat = (-5.62, 14.148, 1.0)
+        # GUI 开局相机对准流水线工位(默认相机看世界原点,北移后工作区在 (-5.6,17.7)
+        # 附近,打开就是空镜头还得手动飞过去)。
+        # ⚠️ 不能把老机位 (-5.62, 19.0) 机械 +Δ：22.55 正好落在安检机机身
+        # y[19.988,23.556] x[-6.210,-5.030] 内部，开局就是机器内部黑屏。改成从
+        # 东北侧斜看：机器人工位在画面中央，安检机在右后方，带体朝镜头流过来。
+        self.viewer.eye = (-3.60, 20.60, 2.40)
+        self.viewer.lookat = (BELT_X_CENTER, ROBOT_WORKSTATION_Y, 1.0)
         if _PERF_AB:
             print(f"[conveyor_env_cfg] ⚠️ 性能 A/B 诊断开关生效: {sorted(_PERF_AB)}")
             if "no_peer" in _PERF_AB:
