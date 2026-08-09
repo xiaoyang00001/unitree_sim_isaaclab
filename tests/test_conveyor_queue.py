@@ -1,6 +1,7 @@
-"""挡停放行队列的判据单测（不启 Kit，只用 torch）。
+"""流水线整带节拍判据的单测（不启 Kit，只用 torch）。
 
-这些用例锁的是纸箱流水线的核心语义：队首停工位、后车排队、抓走后自动补位。
+这些用例锁的是核心语义：队首一到工位整条带一起停、后面的保持间距不再挤上来、
+取走队首后整列一起前进一格，外加一层按各箱半长算的防撞保底。
 ``conveyor_queue`` 刻意不依赖 Isaac Sim 就是为了让这一层能被这样逐条验证。
 """
 
@@ -67,10 +68,6 @@ def _slot_after(lead_y: float, lead_half: float, follow_half: float) -> float:
     return lead_y + lead_half + _GAP + follow_half
 
 
-# 两个 d01 相邻时的中心距（旧版统一 queue_pitch 恰好等于它，行为不变）。
-_PITCH_DD = _HALF_D + _GAP + _HALF_D
-
-
 class OnBeltMaskTest(unittest.TestCase):
     def _mask(self, positions: list[tuple[float, float, float]]) -> list[bool]:
         pos = torch.tensor(positions, dtype=torch.float32).unsqueeze(1)  # (N, 1, 3)
@@ -102,21 +99,13 @@ class OnBeltMaskTest(unittest.TestCase):
 
 
 class QueueDriveMaskTest(unittest.TestCase):
-    def test_lead_box_runs_until_the_workstation_then_stops(self) -> None:
-        """队首只受工位约束：到 y_stop 之前一直走，到了就停。"""
+    """整带节拍：队首一到工位，整条带一起停；取走队首，整列一起前进一格。"""
 
+    def test_lead_box_runs_until_the_workstation_then_stops(self) -> None:
         self.assertEqual(_drive([16.0], [True]), [True])
         self.assertEqual(_drive([_Y_STOP + 0.001], [True]), [True])
         self.assertEqual(_drive([_Y_STOP], [True]), [False])
         self.assertEqual(_drive([_Y_STOP - 0.05], [True]), [False])
-
-    def test_follower_is_blocked_one_gap_behind_the_lead(self) -> None:
-        """队首停在工位后，后车顶在"前车尾部 + 自己半长 + gap"处，不会撞上去。"""
-
-        lead = _Y_STOP
-        self.assertEqual(_drive([lead, lead + _PITCH_DD + 0.2], [True, True]), [False, True])
-        self.assertEqual(_drive([lead, lead + _PITCH_DD - 0.01], [True, True]), [False, False])
-        self.assertEqual(_drive([lead, lead + _PITCH_DD - 0.1], [True, True]), [False, False])
 
     def test_stop_line_is_a_strict_threshold(self) -> None:
         """停止线是严格不等号：正好压在线上就不再驱动，越过一点点才驱动。
@@ -130,139 +119,147 @@ class QueueDriveMaskTest(unittest.TestCase):
         self.assertEqual(_drive([_Y_STOP + 0.01], [True]), [True])
         self.assertEqual(_drive([_Y_STOP - 0.01], [True]), [False])
 
-    def test_full_queue_settles_into_evenly_spaced_slots(self) -> None:
-        """5 个箱子全部停稳后占据 y_stop + k*pitch 这一串槽位。
+    def test_whole_belt_stops_together_when_the_lead_arrives(self) -> None:
+        """核心语义：队首压到工位，后面的**原地停住**，不再往前挤。"""
 
-        每个箱子取比自己停止线低 1 cm 的位置代表"已停稳"（见
-        ``test_stop_line_is_a_strict_threshold`` 关于临界点的说明）。
+        # 队首还没到 → 整带都在走，不管后面隔多远。
+        self.assertEqual(
+            _drive([_Y_STOP + 0.5, 15.5, 16.5], [True] * 3), [True, True, True]
+        )
+        # 队首到位 → 三个一起停，即使后两个离前车还很远。
+        self.assertEqual(
+            _drive([_Y_STOP, 15.5, 16.5], [True] * 3), [False, False, False]
+        )
+
+    def test_followers_keep_their_spacing_instead_of_closing_up(self) -> None:
+        """停下后队列保持原有间距，不会压缩到 queue_gap。
+
+        这正是与"逐个积放"的区别：后车不会因为前面有空档就继续前进。
         """
 
-        settled = [_Y_STOP + index * (_PITCH_DD - 0.01) for index in range(5)]
+        spacing = 0.6
+        settled = [_Y_STOP + index * spacing for index in range(5)]
         self.assertEqual(_drive(settled, [True] * 5), [False] * 5)
 
-        # 任何一个还没到自己的槽位就应该继续走。
-        for index in range(1, 5):
-            nudged = list(settled)
-            nudged[index] += 0.3
-            expected = [False] * 5
-            expected[index] = True
-            self.assertEqual(_drive(nudged, [True] * 5), expected, f"box {index}")
+        # 把某个后车往上游挪远一点，它依然不动——带停了就是停了。
+        nudged = list(settled)
+        nudged[3] += 0.4
+        self.assertEqual(_drive(nudged, [True] * 5), [False] * 5)
 
-    def test_picking_the_workstation_box_releases_the_next_one(self) -> None:
-        """核心语义：拎走工位那个箱子，下一个立刻被放行——不需要任何状态机。"""
+    def test_picking_the_lead_restarts_the_whole_belt(self) -> None:
+        """取走队首 → 整列一起重新起步（不是只放行下一个）。"""
 
-        queued = [_Y_STOP + index * (_PITCH_DD - 0.01) for index in range(3)]
+        spacing = 0.6
+        queued = [_Y_STOP + index * spacing for index in range(5)]
 
-        # 抓取前：三个都停着排队。
-        self.assertEqual(_drive(queued, [True, True, True]), [False, False, False])
+        # 取件前：整带停。
+        self.assertEqual(_drive(queued, [True] * 5), [False] * 5)
 
-        # 队首被拎起（离开带面窗口）后，它不再挡住任何人：第二个恢复行进，
-        # 而第三个仍被第二个挡着——一次只放行一个。
-        self.assertEqual(_drive(queued, [False, True, True]), [False, True, False])
+        # 队首被拎起（离开带面窗口）→ 新队首在 y_stop+0.6，带重启，剩下四个同时走。
+        released = _drive(queued, [False, True, True, True, True])
+        self.assertEqual(released, [False, True, True, True, True])
 
-    def test_a_box_off_the_belt_never_blocks_and_never_drives(self) -> None:
-        """离开带面的箱子既不被驱动，也不该继续充当"前车"。"""
+    def test_belt_stops_again_once_the_new_lead_reaches_the_station(self) -> None:
+        """整列前进一格后，新队首压到工位，再次整带停——节拍循环成立。"""
 
-        # 下游有个箱子，但它已被搬走 → 上游那个按工位停，不按它停。
-        self.assertEqual(_drive([15.0, 16.0], [False, True]), [False, True])
+        spacing = 0.6
+        advanced = [_Y_STOP + index * spacing for index in range(4)]
+        self.assertEqual(_drive(advanced, [True] * 4), [False] * 4)
+
+    def test_a_box_off_the_belt_neither_drives_nor_holds_the_belt(self) -> None:
+        """离开带面的箱子既不被驱动，也不参与"队首是谁"的判定。"""
+
+        # 下游那个已被搬走 → 它不再把带按停，上游那个继续走。
+        self.assertEqual(_drive([13.0, 16.0], [False, True]), [False, True])
+        # 它也不再充当前车挡住后面的箱子。
         self.assertEqual(_drive([15.0, 15.2], [False, True]), [False, True])
 
-    def test_upstream_box_is_unaffected_by_a_downstream_gap(self) -> None:
-        """前车已经远远走开时，后车不受队列约束，只看工位。"""
+    def test_anti_collision_still_holds_a_follower_that_drifts_too_close(self) -> None:
+        """防撞保底：带在跑，但后车已经贴到前车尾部时不再驱动它。
 
-        self.assertEqual(_drive([_Y_STOP, 17.0], [True, True]), [False, True])
+        整带同起同停时相对间距恒定，正常跑不到这一步；它只兜住摩擦/质量差异带来的
+        缓慢漂移。构造法：让队首远在工位上游（带在跑），把后车塞到前车紧后面。
+        """
 
-    def test_loop_mode_drops_the_workstation_line_but_keeps_the_queue(self) -> None:
-        """y_stop=None（循环模式）：没有工位停止线，但后车仍不许撞前车。"""
+        lead = 16.0  # 远大于 y_stop，带处于运行状态
+        too_close = _slot_after(lead, _HALF_D, _HALF_D) - 0.05
+        self.assertEqual(_drive([lead, too_close], [True, True]), [True, False])
+
+        # 拉开到净间隙以外就恢复驱动。
+        far_enough = _slot_after(lead, _HALF_D, _HALF_D) + 0.05
+        self.assertEqual(_drive([lead, far_enough], [True, True]), [True, True])
+
+    def test_anti_collision_uses_each_box_half_length(self) -> None:
+        """两种箱型混排时，兜底净空隙按各自半长算，恒为 queue_gap。"""
+
+        lead = 16.0
+        for lead_half, follow_half in (
+            (_HALF_D, _HALF_C),
+            (_HALF_C, _HALF_D),
+            (_HALF_C, _HALF_C),
+        ):
+            with self.subTest(lead=lead_half, follow=follow_half):
+                slot = _slot_after(lead, lead_half, follow_half)
+                halves = [lead_half, follow_half]
+                self.assertEqual(
+                    _drive([lead, slot - 0.05], [True, True], halves=halves), [True, False]
+                )
+                self.assertEqual(
+                    _drive([lead, slot + 0.05], [True, True], halves=halves), [True, True]
+                )
+                clear = (slot - follow_half) - (lead + lead_half)
+                self.assertAlmostEqual(clear, _GAP, places=6)
+
+    def test_a_big_box_blocks_further_upstream_than_a_small_one(self) -> None:
+        """同一位置上，大箱比小箱把后车顶得更远——半长确实进了防撞判据。
+
+        取一个恰好落在两条兜底线**之间**的位置：小箱前车放行，大箱前车按住。
+        """
+
+        lead = 16.0
+        slot_small = _slot_after(lead, _HALF_D, _HALF_D)
+        slot_big = _slot_after(lead, _HALF_C, _HALF_D)
+        self.assertLess(slot_small, slot_big)
+        follow = (slot_small + slot_big) * 0.5
+
+        # 前车是 d01 时后车已越过兜底线 → 跟着带走。
+        self.assertEqual(
+            _drive([lead, follow], [True, True], halves=[_HALF_D, _HALF_D]), [True, True]
+        )
+        # 同样位置，前车换成更大的 c01 → 兜底线后移，后车被按住。
+        self.assertEqual(
+            _drive([lead, follow], [True, True], halves=[_HALF_C, _HALF_D]), [True, False]
+        )
+
+    def test_loop_mode_never_stops_the_belt(self) -> None:
+        """y_stop=None（循环模式）：没有工位停止线，整带长跑，只剩防撞保底。"""
 
         self.assertEqual(_drive([11.0], [True], y_stop=None), [True])
         self.assertEqual(_drive([_Y_STOP], [True], y_stop=None), [True])
-        # 前车挡着时后车照样停。
+        self.assertEqual(_drive([10.5, 12.0], [True, True], y_stop=None), [True, True])
+        # 贴太近时仍被兜底按住。
         self.assertEqual(_drive([12.0, 12.2], [True, True], y_stop=None), [True, False])
 
     def test_order_of_object_names_does_not_matter(self) -> None:
         """判据只看坐标，不看清单顺序——两端进程排列不同也不会分叉。"""
 
-        # 清单顺序打乱：第 0 个其实是队列第二位（已停在槽位内侧 1 cm），
-        # 第 1 个才是队首，第 2 个还在上游。
-        ys = [_Y_STOP + _PITCH_DD - 0.01, _Y_STOP, 17.0]
-        self.assertEqual(_drive(ys, [True, True, True]), [False, False, True])
+        # 第 1 个才是队首（压在工位），于是整带停。
+        self.assertEqual(_drive([15.0, _Y_STOP, 17.0], [True] * 3), [False, False, False])
+        # 把队首挪到工位上游 → 整带一起走。
+        self.assertEqual(
+            _drive([15.0, _Y_STOP + 0.3, 17.0], [True] * 3), [True, True, True]
+        )
 
     def test_multiple_envs_are_resolved_independently(self) -> None:
-        """(N, E) 的 E 维必须逐 env 独立，不能串味。"""
+        """(N, E) 的 E 维必须逐 env 独立，一个 env 停带不能连累另一个。"""
 
-        ys = torch.tensor(
-            [[_Y_STOP, 16.0], [_Y_STOP + _PITCH_DD - 0.01, 17.0]], dtype=torch.float32
-        )
+        # env 0 的队首压在工位 → 该 env 整带停；env 1 都在上游 → 整带走。
+        ys = torch.tensor([[_Y_STOP, 16.0], [_Y_STOP + 0.6, 16.6]], dtype=torch.float32)
         on_belt = torch.ones_like(ys, dtype=torch.bool)
         halves = torch.full((2, 1), _HALF_D)
         mask = _MODULE.queue_drive_mask(ys, on_belt, halves, y_stop=_Y_STOP, queue_gap=_GAP)
 
-        # env 0：两个都停（队首在工位、后车在槽位）；env 1：两个都还在上游、都走。
         self.assertEqual(mask.tolist(), [[False, True], [False, True]])
-
-    def test_mixed_box_sizes_keep_a_constant_clear_gap(self) -> None:
-        """两种箱型混排时，恒定的是**净空隙**而不是中心距。
-
-        这正是把判据从"统一 queue_pitch"改成"前车尾部 + 自己半长 + gap"的原因：
-        d01(0.38) 和 c01(0.50) 交错时，统一中心距要么让大箱穿模、要么在小箱之间
-        留出突兀的空档。
-        """
-
-        for lead_half, follow_half in (
-            (_HALF_D, _HALF_C),  # 小箱在前、大箱在后
-            (_HALF_C, _HALF_D),  # 大箱在前、小箱在后
-            (_HALF_C, _HALF_C),
-        ):
-            with self.subTest(lead=lead_half, follow=follow_half):
-                lead = _Y_STOP
-                slot = _slot_after(lead, lead_half, follow_half)
-                halves = [lead_half, follow_half]
-                # 恰好停在槽位内侧 → 不驱动；离槽位还有距离 → 继续走。
-                self.assertEqual(
-                    _drive([lead, slot - 0.01], [True, True], halves=halves), [False, False]
-                )
-                self.assertEqual(
-                    _drive([lead, slot + 0.2], [True, True], halves=halves), [False, True]
-                )
-                # 两箱之间的净空隙确实是 gap：后车尾侧边缘 - 前车头侧边缘。
-                clear = (slot - follow_half) - (lead + lead_half)
-                self.assertAlmostEqual(clear, _GAP, places=6)
-
-    def test_default_interleaved_queue_settles_without_overlap(self) -> None:
-        """默认 d01/c01 交错的 5 箱队列停稳后逐个相邻、互不穿模。"""
-
-        halves = [_HALF_D, _HALF_C, _HALF_D, _HALF_C, _HALF_D]
-        settled = [_Y_STOP]
-        for index in range(1, 5):
-            settled.append(_slot_after(settled[-1], halves[index - 1], halves[index]) - 0.01)
-
-        self.assertEqual(_drive(settled, [True] * 5, halves=halves), [False] * 5)
-
-        # 相邻箱子的实体边缘不得重叠。
-        for index in range(4):
-            lead_edge = settled[index] + halves[index]
-            follow_edge = settled[index + 1] - halves[index + 1]
-            self.assertGreater(follow_edge, lead_edge, f"box {index} 与 {index + 1} 穿模")
-
-        # 拎走队首后，第二个（c01）放行、第三个仍被挡住。
-        released = _drive(settled, [False, True, True, True, True], halves=halves)
-        self.assertEqual(released, [False, True, False, False, False])
-
-    def test_a_big_box_blocks_further_upstream_than_a_small_one(self) -> None:
-        """同一位置上，大箱比小箱把后车顶得更远——半长确实进了判据。"""
-
-        lead = _Y_STOP
-        follow = _slot_after(lead, _HALF_D, _HALF_D) + 0.005
-
-        # 前车是 d01 时后车已越过槽位 → 放行。
-        self.assertEqual(
-            _drive([lead, follow], [True, True], halves=[_HALF_D, _HALF_D]), [False, True]
-        )
-        # 同样位置，前车换成更大的 c01 → 槽位后移，后车被挡住。
-        self.assertEqual(
-            _drive([lead, follow], [True, True], halves=[_HALF_C, _HALF_D]), [False, False]
-        )
 
     def test_mask_is_computed_without_host_synchronisation(self) -> None:
         """判据必须全程留在张量里：返回 bool 张量而不是 Python 值。
