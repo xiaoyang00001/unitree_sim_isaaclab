@@ -1,0 +1,39 @@
+#usda 1.0
+(
+    defaultPrim = "InfeedScannerVisual"
+    metersPerUnit = 1
+    upAxis = "Z"
+    doc = """Visual-only tunnel shroud for the conveyor infeed / outfeed port.
+
+    References the NVIDIA DigitalTwin baggage scanner, the only warehouse asset
+    that ships both a tunnel opening and lead-rubber curtains, so the belt reads
+    as if it comes out of (or runs into) a machine instead of ending in mid air.
+
+    Physics: the referenced source was audited offline with pxr and carries
+    zero PhysicsCollisionAPI / PhysicsRigidBodyAPI / Physx* schemas on all 97
+    prims, so this wrapper has nothing to strip and deliberately authors no
+    physics attributes at all.  It is spawned through AssetBaseCfg + UsdFileCfg
+    without collision_props / rigid_props, which keeps it out of PhysX, out of
+    reset, and out of the ZMQ scene-sync inventory.
+
+    Units: like the Tote_B04 wrapper next to this file, the source is authored
+    in centimetre units (its own stage declares metersPerUnit = 0.01 and has no
+    compensating root scale).  This layer keeps metersPerUnit = 1 to match the
+    task stage and lets the task apply the 0.01 authored-unit -> metre factor
+    through UsdFileCfg.scale, so the whole scale budget stays in
+    ``shroud_config.SHROUD_UNIT_SCALE`` / ``SHROUD_DESIGN_SCALE``.
+
+    Measured local geometry after that 0.01 factor (origin = machine centre,
+    sitting on the floor plane):
+        overall   x +/-0.42161  y +/-1.27424  z 0 .. 1.50206
+        roller / belt top surface           z = 0.851355
+        curtain opening                     z 0.855965 .. 1.340204, 0.6316 wide
+        tunnel cabinet (floor standing)     y +/-0.350363
+    """
+)
+
+def Xform "InfeedScannerVisual" (
+    prepend references = @https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/NVIDIA/Assets/DigitalTwin/Assets/Warehouse/Equipment/Security/BaggageScanner_A/SecurityBaggageScanner_A01_01.usd@
+)
+{
+}

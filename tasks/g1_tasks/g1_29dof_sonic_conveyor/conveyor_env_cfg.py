@@ -77,6 +77,12 @@ from .peer_visual_lod import JOINT_NAMES as PEER_VISUAL_LOD_JOINT_NAMES
 from .peer_visual_lod import resolve_peer_robot_mode
 from .scene_layout import resolve_scene_layout
 from .scene_props import resolve_scene_props
+from .shroud_config import (
+    SHROUD_FACE_Y_ENV,
+    SHROUD_MODE_ENV,
+    SHROUD_PRIM_NAME,
+    resolve_conveyor_shroud,
+)
 from .tote_assets import resolve_tote_asset
 from .zmq_scene_sync import ZmqEnvResetSyncActionCfg, ZmqSceneStateSyncActionCfg
 
@@ -146,6 +152,11 @@ def _env_str_tuple(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
 SCENE_LAYOUT = resolve_scene_layout(os.environ)
 TOTES_ON_CONVEYOR = SCENE_LAYOUT.totes_on_conveyor
 SCENE_PROPS = resolve_scene_props(
+    os.environ,
+    totes_on_conveyor=TOTES_ON_CONVEYOR,
+)
+# 端口遮挡罩：纯视觉隧道罩，端口随布局切换（流水线布局贴入料端、推车布局贴末尾）。
+CONVEYOR_SHROUD = resolve_conveyor_shroud(
     os.environ,
     totes_on_conveyor=TOTES_ON_CONVEYOR,
 )
@@ -462,6 +473,40 @@ def _make_conveyor_side_guide_cfg(prim_name: str, x: float) -> AssetBaseCfg:
         ),
     )
 
+
+CONVEYOR_SHROUD_USD_PATH = _ASSETS_DIR / "props" / CONVEYOR_SHROUD.asset_filename
+
+
+def _make_conveyor_shroud_cfg() -> AssetBaseCfg:
+    """端口遮挡罩：隧道式安检机，**纯视觉零物理**。
+
+    刻意不传 ``collision_props`` / ``rigid_props``——``UsdFileCfg`` 不传就不会
+    给 prim 加 CollisionAPI/RigidBodyAPI，被引用的 DigitalTwin 资产本身也是
+    coll=0 / rigid=0（薄层 doc 里有离线审计结论）。同时不登记进 ``scene_props``：
+    ``AssetBaseCfg`` 落到 ``scene.extras`` 的 XformPrimView，天然不进 PhysX、
+    不参与 reset、也不进 zmq_scene_sync 的 RigidObject 清单。
+    """
+
+    if not CONVEYOR_SHROUD_USD_PATH.is_file():
+        raise FileNotFoundError(
+            f"端口遮挡罩资产不存在: {CONVEYOR_SHROUD_USD_PATH}；"
+            f"可用 {SHROUD_MODE_ENV}=off 暂时关闭"
+        )
+    return AssetBaseCfg(
+        prim_path=f"{{ENV_REGEX_NS}}/{SHROUD_PRIM_NAME}",
+        init_state=AssetBaseCfg.InitialStateCfg(
+            pos=list(CONVEYOR_SHROUD.pos),
+            rot=list(CONVEYOR_SHROUD.rot),
+        ),
+        spawn=UsdFileCfg(
+            usd_path=str(CONVEYOR_SHROUD_USD_PATH),
+            # 源资产是 cm 原生（自带 metersPerUnit=0.01 且无补偿缩放），
+            # 与 Tote_B04 同样由任务侧补 0.01 换算因子。
+            scale=CONVEYOR_SHROUD.scale,
+        ),
+    )
+
+
 # 背景里的分拣料箱：bin_02 是动态刚体，开局下沉且会被机器人撞飞，锁成 kinematic。
 BACKGROUND_LOCK_PRIM_NAMES = ("blue_sorting_bin_02",)
 
@@ -510,6 +555,29 @@ def _log_scene_layout() -> None:
         print(
             f"{tag}   筐出生/复位落点 y: tote1={CART2_TOTE1_POS[1]:.3f} tote2={CART2_TOTE2_POS[1]:.3f}"
             f"（整场景复位写回同一位置；碰撞板尽头 y=18.220）"
+        )
+    _shroud_port = "入料端" if CONVEYOR_SHROUD.port == "infeed" else "末尾出料端"
+    if CONVEYOR_SHROUD.enabled:
+        print(
+            f"{tag}   端口遮挡罩: {CONVEYOR_SHROUD.mode}（纯视觉 X 光安检机隧道，{_shroud_port}）"
+            f" [{CONVEYOR_SHROUD.asset_filename}]"
+        )
+        print(
+            f"{tag}     pos=({CONVEYOR_SHROUD.pos[0]:.3f},{CONVEYOR_SHROUD.pos[1]:.5f},"
+            f"{CONVEYOR_SHROUD.pos[2]:.5f}) yaw={CONVEYOR_SHROUD.yaw_degrees:.0f}° "
+            f"scale={CONVEYOR_SHROUD.scale[0]:g} | 迎风面 y={CONVEYOR_SHROUD.face_y:.3f} "
+            f"占位 y[{CONVEYOR_SHROUD.y_span[0]:.3f},{CONVEYOR_SHROUD.y_span[1]:.3f}] "
+            f"x[{CONVEYOR_SHROUD.x_span[0]:.3f},{CONVEYOR_SHROUD.x_span[1]:.3f}] 顶 z={CONVEYOR_SHROUD.top_z:.3f}"
+        )
+        print(
+            f"{tag}     条帘洞口 z[{CONVEYOR_SHROUD.opening_z[0]:.3f},{CONVEYOR_SHROUD.opening_z[1]:.3f}]"
+            f" 宽 {CONVEYOR_SHROUD.opening_width_x:.3f}（带面 z={BELT_TOP_Z:.3f}）"
+            f" | 覆盖 {SHROUD_FACE_Y_ENV} 可整体平移"
+        )
+    else:
+        print(
+            f"{tag}   端口遮挡罩: 关 [{SHROUD_MODE_ENV}=off]"
+            f"（开启时会贴在{_shroud_port}，迎风面 y={CONVEYOR_SHROUD.face_y:.3f}）"
         )
     if not CONVEYOR_DRIVE.requested_enabled:
         drive = "关 [ISAACLAB_CONVEYOR_ENABLED=0]"
@@ -974,6 +1042,12 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
         )
         if CONVEYOR_DRIVE_MODE == "surface_velocity"
         else None
+    )
+
+    # 端口遮挡罩：贴在生效端口外侧的隧道式安检机，只为"料筐有来处/去处"的观感。
+    # 纯视觉 AssetBase，不进 PhysX、不进 scene_props 同步清单，端口随布局切换。
+    conveyor_shroud: AssetBaseCfg | None = (
+        _make_conveyor_shroud_cfg() if CONVEYOR_SHROUD.enabled else None
     )
 
     # 纸箱推车组（外侧位 x=-6.8）：拖车 + 两纸箱 + 顶上的长条测试箱。
