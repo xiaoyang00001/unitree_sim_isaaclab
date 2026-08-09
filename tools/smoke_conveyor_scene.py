@@ -1,23 +1,34 @@
 # Copyright (c) 2025, Unitree Robotics Co., Ltd. All Rights Reserved.
 # License: Apache License, Version 2.0
 
-"""Isaac-G1-29DoF-Sonic-Conveyor 无头冒烟：流水线送筐 +（可选）双进程 ZMQ 同步。
+"""Isaac-G1-29DoF-Sonic-Conveyor 无头冒烟：流水线送箱 +（可选）双进程 ZMQ 同步。
 
 不走 DDS/deploy，直接以默认关节位姿 step 环境，验证场景与同步链路本身。
 
+默认布局是"看不到头的入料端"（endless intake，**西拐**）：5 个箱/包沿入口弯道
+路径出生（队首在主线 y≈18.28 刚拐出弯，队尾在 X 支线 (-7.70, 19.80)），经
+支线 +X → 圆角弧 → 主线 -Y 流到工位 y≈14.148 停住；队首行程 ≈4.13 m（实测带速
+~0.244 m/s ⇒ ~850 步到位），所以默认步数 1600。位移/停位判定都按沿路径距离 s。
+ISAACLAB_CONVEYOR_ENDLESS=off 回退直线带头（旧行为，y 判定）。
+（expected_stop_y 从 env cfg 动态取，改常量自动跟随）
+
 用法（conda env_isaaclab，仓库根目录）：
 
-  # Phase 0 单机场景冒烟（不建 socket）：筐应从入料端 y=17.4/18.0 流到工位 y≈14.148 停住
-  python tools/smoke_conveyor_scene.py --steps 800
+  # Phase 0 单机场景冒烟（不建 socket）
+  python tools/smoke_conveyor_scene.py --steps 1600
+
+  # 节拍验收：第 1000 步取走队首，断言下一个补位到工位
+  python tools/smoke_conveyor_scene.py --steps 1600 --pick-lead-at 1000
 
   # PhysX Surface Velocity 实验 A/B（固定由 ID=1 驱动，默认 50 mm 容差）
+  # ⚠️ surface_velocity 只驱动主线碰撞面，弯道形态未验证（README 已知限制）
   python tools/smoke_conveyor_scene.py --drive-mode surface_velocity --robot-id 1 --steps 800
   # 路线验收的 30 mm 严格口径可另加：--stop-tolerance 0.03
 
   # Phase 2 双进程同步自测（127.0.0.1）：先起 ID=1，再起 ID=2
-  python tools/smoke_conveyor_scene.py --robot-id 1 --sync 1 --steps 1200
-  python tools/smoke_conveyor_scene.py --robot-id 2 --sync 1 --steps 1200
-  # 判定：ID=2 侧筐（本地 kinematic 镜像、驱动关闭）y 仍应下降＝对端状态在写入
+  python tools/smoke_conveyor_scene.py --robot-id 1 --sync 1 --steps 1600
+  python tools/smoke_conveyor_scene.py --robot-id 2 --sync 1 --steps 1600
+  # 判定：ID=2 侧箱（本地 kinematic 镜像、驱动关闭）沿路径仍应前进＝对端状态在写入
 """
 
 import argparse
@@ -26,7 +37,7 @@ from pathlib import Path
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--task", default="Isaac-G1-29DoF-Sonic-Conveyor")
-parser.add_argument("--steps", type=int, default=800)
+parser.add_argument("--steps", type=int, default=1600)
 parser.add_argument("--sync", default="0", choices=["0", "1"], help="ISAACLAB_SCENE_SYNC")
 parser.add_argument("--robot-id", type=int, default=None, choices=[0, 1, 2], help="1/2=对等端, 0=纯镜像 viewer")
 parser.add_argument("--device", default="cpu")
@@ -95,6 +106,17 @@ import torch  # noqa: E402
 
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg  # noqa: E402
 from tasks.g1_tasks.g1_29dof_sonic_conveyor import conveyor_env_cfg  # noqa: E402
+from tasks.g1_tasks.g1_29dof_sonic_conveyor import endless_intake  # noqa: E402
+
+# 弯道形态（endless intake）下位移/停位都换算成沿路径距离 s 来判——
+# 出生在支线/弧段上的箱子 y 几乎不变，用 y 位移判会误报 FAIL。
+ENDLESS = conveyor_env_cfg.ENDLESS_INTAKE.enabled
+
+
+def _progress(x: float, y: float) -> float:
+    """弯道形态给沿路径距离，直线形态给 -y（两者都是"越大越靠下游"）。"""
+
+    return endless_intake.path_s_of_point(x, y) if ENDLESS else -y
 
 
 def main() -> int:
@@ -157,14 +179,14 @@ def main() -> int:
 
         直接写位姿而不是真去抓：本脚本没有操作臂，而队列判据只看"还在不在带面
         窗口内"，抬走与抓走对它是同一件事。搬到 +X 侧、抬高到 1.2 m，正好落在
-        z 窗口与 x 窗口之外。
+        z 窗口与（L 形）平面窗口之外。队首=沿路径最靠下游（弯道形态按 s 判）。
         """
 
-        lead_name, lead_obj = None, None
+        lead_name, lead_obj, lead_p = None, None, None
         for name, obj in watched.items():
-            y = float(obj.data.root_pos_w[0, 1])
-            if lead_obj is None or y < float(lead_obj.data.root_pos_w[0, 1]):
-                lead_name, lead_obj = name, obj
+            p = _progress(float(obj.data.root_pos_w[0, 0]), float(obj.data.root_pos_w[0, 1]))
+            if lead_p is None or p > lead_p:
+                lead_name, lead_obj, lead_p = name, obj, p
         if lead_obj is None:
             return None
 
@@ -177,7 +199,11 @@ def main() -> int:
         return lead_name
 
     snapshot("start")
-    start_y = {name: float(obj.data.root_pos_w[0, 1]) for name, obj in watched.items()}
+    start_xy = {
+        name: (float(obj.data.root_pos_w[0, 0]), float(obj.data.root_pos_w[0, 1]))
+        for name, obj in watched.items()
+    }
+    start_p = {name: _progress(*xy) for name, xy in start_xy.items()}
     picked_name: str | None = None
 
     t0 = monotonic()
@@ -191,7 +217,11 @@ def main() -> int:
             snapshot(f"step={step}")
     elapsed = monotonic() - t0
 
-    end_y = {name: float(obj.data.root_pos_w[0, 1]) for name, obj in watched.items()}
+    end_xy = {
+        name: (float(obj.data.root_pos_w[0, 0]), float(obj.data.root_pos_w[0, 1]))
+        for name, obj in watched.items()
+    }
+    end_p = {name: _progress(*xy) for name, xy in end_xy.items()}
     end_z = {name: float(obj.data.root_pos_w[0, 2]) for name, obj in watched.items()}
     hz = args.steps / max(elapsed, 1e-6)
     print(f"[smoke] {args.steps} steps in {elapsed:.1f}s -> env_hz={hz:.1f}", flush=True)
@@ -199,9 +229,10 @@ def main() -> int:
     # 被取走的那个已经不在带面上，自然退出全部带面判定；剩下的按队列重新编号，
     # 于是"下一个补位到工位"就落在 graded_names[0] 的槽位断言里。
     graded_names = [name for name in watched_names if name != picked_name]
-    moved = {name: start_y[name] - end_y[name] for name in graded_names}
+    moved = {name: round(end_p[name] - start_p[name], 4) for name in graded_names}
     on_belt = {name: abs(end_z[name] - 0.775) < 0.05 for name in graded_names}
-    print(f"[smoke] 位移(-Y) {moved} | 仍在带面 {on_belt}", flush=True)
+    _metric = "沿路径 s" if ENDLESS else "-Y"
+    print(f"[smoke] 位移({_metric}) {moved} | 仍在带面 {on_belt}", flush=True)
 
     sync_on = args.sync == "1"
     authority = os.environ.get("ISAACLAB_LOCAL_ROBOT_ID", "1") == "1"
@@ -227,27 +258,61 @@ def main() -> int:
         and ((not sync_on) or authority)
         and not surface_non_authority_offline
     ):
-        # 整带节拍：队首停在工位，其余保持出生时的相对间距一起停下。取件后整列
-        # 前进一格，于是断言 graded_names[0] 落在工位上就等于验证"整带重启并再次停位"。
-        lead_spawn = start_y[graded_names[0]] if belt_box_mode else 0.0
-        expected_slots = {
-            name: expected_stop_y + ((start_y[name] - lead_spawn) if belt_box_mode else 0.0)
-            for name in graded_names
-        }
-        stop_errors = {
-            name: abs(end_y[name] - expected_slots[name]) for name in graded_names
-        }
-        stop_ok = all(error <= args.stop_tolerance for error in stop_errors.values())
-        slots_text = ", ".join(f"{name}={y:.3f}" for name, y in expected_slots.items())
-        print(
-            f"[smoke] 停止目标 [{slots_text}] | 误差 {stop_errors} "
-            f"| 容差={args.stop_tolerance:.3f} | {'PASS' if stop_ok else 'FAIL'}",
-            flush=True,
+        # 整带节拍：队首停在工位；取件后整列前进一格，于是断言 graded_names[0]
+        # 落在工位上就等于验证"整带重启并再次停位"。
+        stop_p = (
+            endless_intake.path_s_of_main_y(expected_stop_y) if ENDLESS else -expected_stop_y
         )
+        if ENDLESS and belt_box_mode:
+            # 弯道形态：弧段拖滑速度（~0.218 m/s）低于直线段（~0.244），箱子过弯
+            # 时相对间距被拉伸（pitch 0.75 实测停稳 ~0.80-0.86）。"槽位 = 出生间距
+            # 整体平移"对拖滑物理不成立，判据改为：
+            #   ① 队首停在工位（这是节拍的硬语义）；
+            #   ② 其余仍按下游序排列，且相邻间距落在 [0.45, 出生间距+0.25] 内
+            #     （下界≈最大箱对的半长和+净间隙，上界给弧段拉伸留余量）。
+            lead = graded_names[0]
+            lead_error = abs(end_p[lead] - stop_p)
+            spacing = [
+                round(end_p[graded_names[i]] - end_p[graded_names[i + 1]], 4)
+                for i in range(len(graded_names) - 1)
+            ]
+            spawn_pitch = (
+                start_p[graded_names[0]] - start_p[graded_names[1]]
+                if len(graded_names) > 1
+                else 0.75
+            )
+            spacing_ok = all(0.45 <= gap <= spawn_pitch + 0.25 for gap in spacing)
+            stop_ok = lead_error <= args.stop_tolerance and spacing_ok
+            print(
+                f"[smoke] 停止目标 队首 s={stop_p:.3f}（y={expected_stop_y:.3f}）| "
+                f"队首误差 {lead_error:.4f}（容差 {args.stop_tolerance:.3f}）| "
+                f"停稳间距 {spacing}（界 [0.45,{spawn_pitch + 0.25:.2f}]，出生 {spawn_pitch:.2f}；"
+                f"弧段拖滑拉伸属预期）| {'PASS' if stop_ok else 'FAIL'}",
+                flush=True,
+            )
+        else:
+            lead_spawn_p = start_p[graded_names[0]] if belt_box_mode else stop_p
+            expected_slots = {
+                name: stop_p - (lead_spawn_p - start_p[name]) if belt_box_mode else stop_p
+                for name in graded_names
+            }
+            stop_errors = {
+                name: round(abs(end_xy[name][1] - (-expected_slots[name])), 4)
+                for name in graded_names
+            }
+            slots_text = ", ".join(
+                f"{name}={-p:.3f}" for name, p in expected_slots.items()
+            )
+            stop_ok = all(error <= args.stop_tolerance for error in stop_errors.values())
+            print(
+                f"[smoke] 停止目标 [{slots_text}] | 误差 {stop_errors} "
+                f"| 容差={args.stop_tolerance:.3f} | {'PASS' if stop_ok else 'FAIL'}",
+                flush=True,
+            )
         if picked_name is not None:
             print(
                 f"[smoke] 节拍验收：取走 {picked_name} 后 {graded_names[0]} 应补位到工位 "
-                f"y={expected_stop_y:.3f}，实测 y={end_y[graded_names[0]]:.3f}",
+                f"y={expected_stop_y:.3f}，实测 y={end_xy[graded_names[0]][1]:.3f}",
                 flush=True,
             )
         ok = ok and stop_ok

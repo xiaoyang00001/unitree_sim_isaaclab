@@ -38,6 +38,7 @@ from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.sensors import ContactSensorCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
 from isaaclab.utils import configclass
+from isaaclab.utils.assets import NVIDIA_NUCLEUS_DIR
 
 from tasks.common_observations.dex3_state import get_robot_dex3_joint_states
 from tasks.common_observations.g1_29dof_state import get_robot_boy_joint_states
@@ -75,6 +76,8 @@ from .conveyor_drive import (
     BELT_Y_MIN,
     resolve_conveyor_drive,
 )
+from . import endless_intake
+from .endless_intake import resolve_endless_intake
 from .peer_visual_lod import JOINT_NAMES as PEER_VISUAL_LOD_JOINT_NAMES
 from .peer_visual_lod import resolve_peer_robot_mode
 from .scene_layout import resolve_scene_layout
@@ -152,6 +155,15 @@ SCENE_PROPS = resolve_scene_props(
     os.environ,
     totes_on_conveyor=TOTES_ON_CONVEYOR,
     belt_box_names=BELT_BOX_NAMES,
+)
+# 看不到头的入料端：西拐弯道 + X 支线（纯视觉资产 + kinematic 托面延伸 + 沿路径
+# 距离的两段式驱动；**不新增货架**，遮挡依赖背景既有结构——洞见 endless_intake
+# docstring 与 README 已知限制）。只在流水线布局且道具策略为 layout 时生成——
+# =0 拖车组与 legacy_props 空车都落在弯道占位内（几何依据见 endless_intake）。
+ENDLESS_INTAKE = resolve_endless_intake(
+    os.environ,
+    totes_on_conveyor=TOTES_ON_CONVEYOR,
+    props_mode=SCENE_PROPS.mode,
 )
 
 
@@ -515,6 +527,95 @@ def _make_conveyor_side_guide_cfg(prim_name: str, x: float) -> AssetBaseCfg:
     )
 
 
+# ==================================================================
+# 看不到头的入料端：A02 西拐弯道 + A05×3 X 支线（全部 AssetBaseCfg →
+# scene.extras，不进 scene_props/同步清单）+ 两块 kinematic 托面延伸。
+# 不新增货架——遮挡依赖背景既有结构（洞已记录在 README 已知限制）。
+# ==================================================================
+
+
+def _make_endless_visual_cfg(
+    prim_name: str,
+    usd_url: str,
+    pos: tuple[float, float, float],
+    yaw_deg: float = 0.0,
+    scale: tuple[float, float, float] | None = None,
+) -> AssetBaseCfg:
+    """入口弯道视觉件：DigitalTwin 资产离线审计 coll=0/rigid=0（纯视觉），
+    一律不传 rigid_props/collision_props；裸厘米 ⇒ 由调用方传 scale=0.01
+    （不在薄层里写 xformOp:scale，会被 spawner 重写挤掉）。"""
+
+    spawn = UsdFileCfg(usd_path=usd_url)
+    if scale is not None:
+        spawn.scale = scale
+    return AssetBaseCfg(
+        prim_path=f"{{ENV_REGEX_NS}}/{prim_name}",
+        init_state=AssetBaseCfg.InitialStateCfg(
+            pos=list(pos),
+            rot=list(endless_intake.yaw_quat(yaw_deg)),
+        ),
+        spawn=spawn,
+    )
+
+
+def _make_endless_plate_cfg(
+    prim_name: str,
+    x_range: tuple[float, float],
+    y_range: tuple[float, float],
+) -> AssetBaseCfg:
+    """弯道/支线的 kinematic 托面（与主线 conveyor_collider 同 z 同摩擦同做法）。
+
+    托面是**静止**的：legacy 后端按固定周期覆写箱子的 root 速度（沿路径航向），
+    托面只负责承重与摩擦停靠；不需要 SurfaceVelocityAPI。
+    """
+
+    return AssetBaseCfg(
+        prim_path=f"{{ENV_REGEX_NS}}/{prim_name}",
+        init_state=AssetBaseCfg.InitialStateCfg(
+            pos=[
+                (x_range[0] + x_range[1]) * 0.5,
+                (y_range[0] + y_range[1]) * 0.5,
+                BELT_TOP_Z - BELT_COLLIDER_THICKNESS * 0.5,
+            ],
+            rot=[1.0, 0.0, 0.0, 0.0],
+        ),
+        spawn=sim_utils.CuboidCfg(
+            size=(
+                x_range[1] - x_range[0],
+                y_range[1] - y_range[0],
+                BELT_COLLIDER_THICKNESS,
+            ),
+            visible=False,  # 视觉由 A02/A05 资产提供，托面只管碰撞
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+            collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.003, rest_offset=0.0),
+            physics_material=sim_utils.RigidBodyMaterialCfg(
+                static_friction=0.8,
+                dynamic_friction=0.6,
+                restitution=0.0,
+            ),
+        ),
+    )
+
+
+_ENDLESS_CURVE_USD = f"{NVIDIA_NUCLEUS_DIR}/{endless_intake.CURVE_ASSET_NVIDIA_RELPATH}"
+_ENDLESS_XLEG_USD = f"{NVIDIA_NUCLEUS_DIR}/{endless_intake.XLEG_ASSET_NVIDIA_RELPATH}"
+_ENDLESS_UNIT_SCALE = (
+    endless_intake.CONVEYOR_UNIT_SCALE,
+    endless_intake.CONVEYOR_UNIT_SCALE,
+    endless_intake.CONVEYOR_UNIT_SCALE,
+)
+
+
+def _make_endless_xleg_cfg(index: int) -> AssetBaseCfg:
+    return _make_endless_visual_cfg(
+        f"ConveyorXLeg{index + 1}",
+        _ENDLESS_XLEG_USD,
+        endless_intake.XLEG_POSITIONS[index],
+        endless_intake.XLEG_YAW_DEG,
+        _ENDLESS_UNIT_SCALE,
+    )
+
+
 # 背景里的分拣料箱：bin_02 是动态刚体，开局下沉且会被机器人撞飞，锁成 kinematic。
 BACKGROUND_LOCK_PRIM_NAMES = ("blue_sorting_bin_02",)
 
@@ -567,19 +668,71 @@ def _log_scene_layout() -> None:
             f"{tag}   筐出生/复位落点 y: tote1={CART2_TOTE1_POS[1]:.3f} tote2={CART2_TOTE2_POS[1]:.3f}"
             f"（整场景复位写回同一位置；碰撞板 y[{BELT_Y_MIN:.3f},{BELT_Y_MAX:.3f}]）"
         )
-    if CONVEYOR_BELT_BOX_NAMES:
-        _spawn = ", ".join(
-            f"{kind.key}@{pos[1]:.3f}"
-            for kind, pos in zip(BELT_BOX_KINDS, BELT_BOX_POSITIONS)
+    if ENDLESS_INTAKE.enabled:
+        print(
+            f"{tag}   入口形态: 看不到头（A02 西拐弯道 + A05×{endless_intake.XLEG_COUNT} X 支线，"
+            "复用背景货架、零新增遮挡件）"
+            f" [ISAACLAB_CONVEYOR_ENDLESS={ENDLESS_INTAKE.mode}]"
         )
+        print(
+            f"{tag}     弯道 pos=({endless_intake.CURVE_POS[0]:.4f},{endless_intake.CURVE_POS[1]:.4f}) "
+            f"yaw={endless_intake.CURVE_YAW_DEG:.0f}° "
+            f"占位 x[{endless_intake.CURVE_AABB[0][0]:.3f},{endless_intake.CURVE_AABB[0][1]:.3f}] "
+            f"y[{endless_intake.CURVE_AABB[1][0]:.3f},{endless_intake.CURVE_AABB[1][1]:.3f}]"
+            f"（南向母口套带头公头 {endless_intake.PLUG_DEPTH*1000:.0f}mm）"
+            f" | 支线中线 y={endless_intake.BRANCH_LANE_Y:.4f} 端头 x={endless_intake.XLEG_AABBS[-1][0][0]:.3f}"
+            f"（距排B护板 {endless_intake.XLEG_AABBS[-1][0][0] - endless_intake.RACK_B_GUARD_EAST_X:.3f}）"
+        )
+        print(
+            f"{tag}     托面延伸: 拐角 x[{endless_intake.CORNER_PLATE_X_RANGE[0]:.2f},"
+            f"{endless_intake.CORNER_PLATE_X_RANGE[1]:.2f}]"
+            f"y[{endless_intake.CORNER_PLATE_Y_RANGE[0]:.2f},{endless_intake.CORNER_PLATE_Y_RANGE[1]:.2f}]"
+            f" + 支线 x[{endless_intake.BRANCH_PLATE_X_RANGE[0]:.3f},"
+            f"{endless_intake.BRANCH_PLATE_X_RANGE[1]:.2f}]"
+            f" | 驱动路径: 支线 +X → R={endless_intake.CORNER_RADIUS:.1f} 圆角弧 → 主线 -Y"
+            "（沿路径距离 s 排队，箱子不旋转）"
+        )
+        print(
+            f"{tag}     回生点 ({endless_intake.RESPAWN_XY[0]:.2f},{endless_intake.RESPAWN_XY[1]:.4f})"
+            "（支线最深处；⚠️ 零新增遮挡下无全遮窗，出生/回生远距可见——README 已知限制）"
+        )
+        if CONVEYOR_DRIVE_MODE == "surface_velocity":
+            print(
+                f"{tag}     ⚠️ surface_velocity 只驱动主线碰撞面（-Y），"
+                "支线/弧段上的箱子不会被接触驱动——该组合未验证，建议 legacy 后端"
+            )
+    else:
+        print(
+            f"{tag}   入口形态: 直线带头（弯道/支线不生成）"
+            f" [ISAACLAB_CONVEYOR_ENDLESS={ENDLESS_INTAKE.mode}"
+            + (f"; {ENDLESS_INTAKE.disabled_reason}" if ENDLESS_INTAKE.disabled_reason else "")
+            + "]"
+        )
+    if CONVEYOR_BELT_BOX_NAMES:
+        if ENDLESS_INTAKE.enabled:
+            _spawn = ", ".join(
+                f"{kind.key}@({pos[0]:.2f},{pos[1]:.2f})"
+                for kind, pos in zip(BELT_BOX_KINDS, BELT_BOX_POSITIONS)
+            )
+        else:
+            _spawn = ", ".join(
+                f"{kind.key}@{pos[1]:.3f}"
+                for kind, pos in zip(BELT_BOX_KINDS, BELT_BOX_POSITIONS)
+            )
         _sizes = " | ".join(
             f"{kind.key}: {kind.length_y}x{kind.width_x}x{kind.height_z} m, {kind.mass} kg"
             for kind in dict.fromkeys(BELT_BOX_KINDS)
         )
-        print(
-            f"{tag}   纸箱出生/复位落点（队首→上游）: {_spawn}"
-            f" | 车道 x={BELT_BOX_POSITIONS[0][0]:.3f} z={BELT_BOX_POSITIONS[0][2]:.3f}"
-        )
+        if ENDLESS_INTAKE.enabled:
+            print(
+                f"{tag}   纸箱出生/复位落点（队首→上游，沿弯道路径）: {_spawn}"
+                f" | z={BELT_BOX_POSITIONS[0][2]:.3f}"
+            )
+        else:
+            print(
+                f"{tag}   纸箱出生/复位落点（队首→上游）: {_spawn}"
+                f" | 车道 x={BELT_BOX_POSITIONS[0][0]:.3f} z={BELT_BOX_POSITIONS[0][2]:.3f}"
+            )
         print(f"{tag}   箱型: {_sizes}")
         print(
             f"{tag}   排队净间隙 queue_gap={BELT_BOX_QUEUE_GAP:.3f} m"
@@ -1094,8 +1247,55 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
         else None
     )
 
+    # ------------------------------------------------------------------
+    # 看不到头的入料端（=1 且 layout 道具时生成；开关/几何见 endless_intake）：
+    # A02 弯道套住带头公头向西拐 90°，三段 A05 短直段接成 X 支线伸向背景货架
+    # 排 B 方向。全部 AssetBaseCfg（scene.extras），输送机件纯视觉（coll=0/
+    # rigid=0，裸厘米 ⇒ scale=0.01）；另加两块 kinematic 托面接住弧段/支线上的
+    # 箱子。**零新增货架/遮挡件**（用户要求）。
+    # ------------------------------------------------------------------
+    conveyor_curve: AssetBaseCfg | None = (
+        _make_endless_visual_cfg(
+            "ConveyorCurve",
+            _ENDLESS_CURVE_USD,
+            endless_intake.CURVE_POS,
+            endless_intake.CURVE_YAW_DEG,
+            _ENDLESS_UNIT_SCALE,
+        )
+        if ENDLESS_INTAKE.enabled
+        else None
+    )
+    conveyor_xleg_1: AssetBaseCfg | None = (
+        _make_endless_xleg_cfg(0) if ENDLESS_INTAKE.enabled else None
+    )
+    conveyor_xleg_2: AssetBaseCfg | None = (
+        _make_endless_xleg_cfg(1) if ENDLESS_INTAKE.enabled else None
+    )
+    conveyor_xleg_3: AssetBaseCfg | None = (
+        _make_endless_xleg_cfg(2) if ENDLESS_INTAKE.enabled else None
+    )
+    conveyor_corner_plate: AssetBaseCfg | None = (
+        _make_endless_plate_cfg(
+            "ConveyorCornerPlate",
+            endless_intake.CORNER_PLATE_X_RANGE,
+            endless_intake.CORNER_PLATE_Y_RANGE,
+        )
+        if ENDLESS_INTAKE.enabled
+        else None
+    )
+    conveyor_branch_plate: AssetBaseCfg | None = (
+        _make_endless_plate_cfg(
+            "ConveyorBranchPlate",
+            endless_intake.BRANCH_PLATE_X_RANGE,
+            endless_intake.BRANCH_PLATE_Y_RANGE,
+        )
+        if ENDLESS_INTAKE.enabled
+        else None
+    )
+
     # 纸箱推车组（外侧位 x=-6.8）：拖车 + 两纸箱 + 顶上的长条测试箱。
-    # y=19.39363（01cdfaf 原注释口径）。只有 legacy_props 模式才生成。
+    # y=19.39363（01cdfaf 原注释口径）。只有 legacy_props 模式才生成
+    # （该模式下弯道组被 endless_intake 布局门拦下，不会与空车同场）。
     pushcart: RigidObjectCfg | None = (
         RigidObjectCfg(
             prim_path="{ENV_REGEX_NS}/Pushcart",
@@ -1390,6 +1590,8 @@ class ConveyorEventsCfg:
     # 纸箱队列走带挡停的驱动：队首停在工位等抓取，后面的按 queue_pitch 排队，
     # 工位那个被拎走后下一个自动补位（判据全在当前帧位置里，无状态机）。
     # surface_velocity 后端不需要它——那边队列是后车撞前车物理涌现出来的。
+    # 入口弯道生效时切两段式路径驱动（西拐）：支线 +X → 圆角弧 → 主线 -Y，排队
+    # 坐标是沿路径距离 s，带面判据是主线矩形 ∪ 拐角/支线附加矩形；箱子不旋转。
     drive_belt_boxes = EventTerm(
         func=conveyor_events.drive_belt_boxes_on_conveyor,
         mode="interval",
@@ -1402,9 +1604,17 @@ class ConveyorEventsCfg:
             "queue_gap": BELT_BOX_QUEUE_GAP,
             # 两种箱型尺寸不同，排队按各自半长算净间隙，不能用统一中心距。
             "half_lengths": CONVEYOR_BELT_BOX_HALF_LENGTHS,
+            "path_enabled": ENDLESS_INTAKE.enabled,
+            "path_corner_center": endless_intake.CORNER_CENTER,
+            "path_radius": endless_intake.CORNER_RADIUS,
+            "path_s_origin_x": endless_intake.S_ORIGIN_X,
+            "extra_rects": endless_intake.ON_BELT_EXTRA_RECTS,
         },
     )
 
+    # 循环模式的回生点：弯道生效时搬到 X 支线最深处 (-12.61, 19.8034)——观感上
+    # 离双机眼位 8~9.6 m、背景是排 B 满货+叉车（零新增遮挡下几何上仍可见，
+    # README 已知限制）；直线形态维持主线 y_respawn。
     recycle_surface_totes = EventTerm(
         func=conveyor_events.recycle_totes_on_surface_conveyor,
         mode="interval",
@@ -1413,7 +1623,12 @@ class ConveyorEventsCfg:
             "object_names": (*CONVEYOR_TOTE_NAMES, *CONVEYOR_BELT_BOX_NAMES),
             "enabled": CONVEYOR_RECYCLE_ENABLED,
             "y_recycle": CONVEYOR_Y_RECYCLE,
-            "y_respawn": CONVEYOR_Y_RESPAWN,
+            "y_respawn": (
+                endless_intake.RESPAWN_XY[1] if ENDLESS_INTAKE.enabled else CONVEYOR_Y_RESPAWN
+            ),
+            "respawn_x": (
+                endless_intake.RESPAWN_XY[0] if ENDLESS_INTAKE.enabled else None
+            ),
         },
     )
 
@@ -1490,7 +1705,8 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
         # GUI 开局相机对准流水线工位(默认相机看世界原点,工作区在 (-5.6,14.1)
         # 附近,打开就是空镜头还得手动飞过去)。机位在入料端上方俯视工位，带体朝
         # 镜头下方流过来。lookat 用动态常量，Δ/工位变了自动跟随。
-        # ⚠️ 西拐弯道落地后复核过：弯道顶约世界 z=1.75，低于 eye 高 2.4，俯视无碍。
+        # ⚠️ 西拐弯道落地后复核过：弯道顶（南口门柱）世界 z≈1.169，低于 eye 高
+        # 2.4，且机位在弯道东南、视线朝西南下方——俯视无碍。
         self.viewer.eye = (-5.62, 19.0, 2.4)
         self.viewer.lookat = (BELT_X_CENTER, ROBOT_WORKSTATION_Y, 1.0)
         if _PERF_AB:

@@ -7,13 +7,15 @@
 拉起 carb/Kit，普通 unittest 跑不起来。把判据抽到这一层之后，"谁在带上""谁该被
 驱动""挡停放行"全都能在不启 Kit 的情况下逐条验证，事件函数只剩读写场景状态。
 
-⚠️ 两个函数都在每个物理步被调用，**不允许任何 GPU→CPU 同步**
+⚠️ 本模块的函数都在每个物理步被调用，**不允许任何 GPU→CPU 同步**
 （``.item()`` / ``.any()`` / ``if tensor``）。历史教训见 ``conveyor_events``
 里 ``drive_totes_on_conveyor`` 的性能注释：早期版本用 ``if not on_belt.any()``
 提前返回，两个筐每步最多 6 次同步，实测让 env.step 从 ~120 ms 涨到 ~160 ms。
 """
 
 from __future__ import annotations
+
+import math
 
 import torch
 
@@ -25,21 +27,101 @@ def on_belt_mask(
     z_tolerance: float,
     x_range: tuple[float, float],
     y_range: tuple[float, float],
+    extra_rects: tuple[tuple[float, float, float, float], ...] = (),
 ) -> torch.Tensor:
     """"确实还躺在滚轮面上"的判定；输出形状是 ``pos_local`` 去掉最后一维。
 
     * ``belt_top_z ± z_tolerance``：物体原点在底面，静置时 z≈0.775。被机器人拎起
       或掉到地上就落出窗口 → 立即停止驱动，不会把抓在手里的东西硬拖走。
     * ``x_range`` / ``y_range``：可用带面（略放宽于碰撞板）。
+    * ``extra_rects``：与主矩形取**并集**的附加矩形（每项 ``(x0, x1, y0, y1)``）。
+      入口弯道方案的 L 形带面 = 主线矩形 ∪ 拐角补块 ∪ X 支线条带；矩形个数是
+      Python 常量，循环展开不引入张量同步。
     """
 
+    x = pos_local[..., 0]
+    y = pos_local[..., 1]
+    in_plane = (
+        (x >= x_range[0])
+        & (x <= x_range[1])
+        & (y >= y_range[0])
+        & (y <= y_range[1])
+    )
+    for x0, x1, y0, y1 in extra_rects:
+        in_plane = in_plane | ((x >= x0) & (x <= x1) & (y >= y0) & (y <= y1))
     return (
         (pos_local[..., 2] >= belt_top_z - z_tolerance)
         & (pos_local[..., 2] <= belt_top_z + z_tolerance)
-        & (pos_local[..., 0] >= x_range[0])
-        & (pos_local[..., 0] <= x_range[1])
-        & (pos_local[..., 1] >= y_range[0])
-        & (pos_local[..., 1] <= y_range[1])
+        & in_plane
+    )
+
+
+def path_progress(
+    pos_local: torch.Tensor,
+    *,
+    corner_center: tuple[float, float],
+    radius: float,
+    s_origin_x: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """L 形车道的沿路径距离 s 与下游航向 (hx, hy)——**西拐版**。
+
+    路径三段（世界系；与 endless_intake.path_point / path_s_of_point 同一分段，
+    与东拐存档 f3995f1 镜像——x 分量与航向符号全部反转）：
+
+    * 支线段（y > cy 且 x < cx）：s = x − s_origin_x，航向 (+1, 0)；
+    * 圆角弧（y > cy 且 x ≥ cx）：θ = atan2(x−cx, y−cy)∈[0,π/2]，
+      s = (cx−s_origin_x) + R·θ，航向 (cosθ, −sinθ)；
+    * 主线段（y ≤ cy）：s = 弧段末端 + (cy − y)，航向 (0, -1)。
+
+    返回三个与输入去掉最后一维同形的张量。全程无分支/无 GPU→CPU 同步；
+    ``atan2`` 的两参数在弧段区域内都非负（clamp 兜住轻微出格的箱子），
+    (0,0) 时 torch.atan2 返回 0，不产生 NaN。s 对箱子的**实际位置**取值：
+    偏离车道中线的箱子按它自己的极角/坐标算进度，判据仍然连续。
+    """
+
+    x = pos_local[..., 0]
+    y = pos_local[..., 1]
+    cx, cy = corner_center
+    s_arc_start = cx - s_origin_x
+    s_arc_end = s_arc_start + radius * math.pi / 2.0
+
+    main = y <= cy
+    branch = (~main) & (x < cx)
+    theta = torch.atan2((x - cx).clamp(min=0.0), (y - cy).clamp(min=0.0))
+
+    s = torch.where(
+        main,
+        s_arc_end + (cy - y),
+        torch.where(branch, x - s_origin_x, s_arc_start + radius * theta),
+    )
+    zeros = torch.zeros_like(x)
+    ones = torch.ones_like(x)
+    hx = torch.where(main, zeros, torch.where(branch, ones, torch.cos(theta)))
+    hy = torch.where(main, -ones, torch.where(branch, zeros, -torch.sin(theta)))
+    return s, hx, hy
+
+
+def queue_drive_mask_along_path(
+    ss: torch.Tensor,
+    on_belt: torch.Tensor,
+    half_lengths: torch.Tensor,
+    *,
+    s_stop: float | None,
+    queue_gap: float,
+) -> torch.Tensor:
+    """沿路径距离 s 的整带节拍判据；语义与 ``queue_drive_mask`` 逐项镜像。
+
+    s 向下游**递增**（y 版里下游是 y 递减），直接复用 y 版实现：喂入 ``-s``
+    之后"下游=更小"恰好翻转为"下游=更大"——队首判定、整带启停、按各箱半长
+    算的防撞兜底全部逐项对应，无需第二份实现。
+    """
+
+    return queue_drive_mask(
+        -ss,
+        on_belt,
+        half_lengths,
+        y_stop=None if s_stop is None else -s_stop,
+        queue_gap=queue_gap,
     )
 
 

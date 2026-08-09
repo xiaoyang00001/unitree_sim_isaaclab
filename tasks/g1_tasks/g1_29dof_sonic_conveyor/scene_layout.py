@@ -6,6 +6,7 @@ tests verify the environment-variable switch without importing Isaac Lab.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Mapping
 
@@ -134,6 +135,67 @@ BELT_BOX_BELT_WIDTH = 0.90
 # 有硬上限。调大必须同时在 conveyor_env_cfg.G129SonicConveyorSceneCfg 里补字段。
 BELT_BOX_MAX_COUNT = 5
 
+# ------------------------------------------------------------------
+# 入口弯道（endless intake，**西拐**）出生路径：真源是 endless_intake.py 的路径
+# 常量，本模块零相对 import（测试用单文件加载）所以抄一份最小集；
+# tests/test_conveyor_scene_layout.py 交叉断言出生点 = endless_intake.path_point。
+#
+#   s=0 锚点 x=-12.76（支线车道中线 y=19.8034）；支线段 s∈[-0.30, 5.74] 沿 +X；
+#   圆角弧 s∈[5.74, ~7.939]（圆心 (-5.62-1.4, 19.8034-1.4)、R=1.4）；
+#   主线段 s>~7.939 沿 -Y（工位/停止线都在这段上）。
+# ------------------------------------------------------------------
+BELT_BOX_BRANCH_LANE_Y = 19.8034
+BELT_BOX_CORNER_RADIUS = 1.40
+BELT_BOX_PATH_S_ORIGIN_X = -12.76
+# 支线滚筒可用端（段 3 西端 x=-13.0640 ⇒ s=-0.3040，取 -0.30）：队尾不得越过。
+BELT_BOX_PATH_S_MIN = -0.30
+# 默认队首 s=8.06：队首刚拐出弯 0.121 m、落在主线 y≈18.283（整箱上主线），
+# 5 箱（pitch 0.75）分布 = 主线 1 + 弧上 3 + 支线 1，开局即"绕弯而来"。
+# ⚠️ 西侧没有全遮窗（离线射线核算：排 B 货架阴影区 x≤-14.36/-14.22 不可达，
+# 支线端头只到 -13.07）——出生/回生可见是记录在 README 的已知限制，不是漏遮。
+BELT_BOX_DEFAULT_S_LEAD = 8.06
+
+
+def _endless_intake_active(environ: Mapping[str, str], totes_on_conveyor: bool) -> bool:
+    """弯道出生路径是否生效——判据抄 endless_intake.resolve_endless_intake。
+
+    合法值校验以 endless_intake 为准（env cfg 在 import 时先解析它，非法值先在
+    那边 ValueError）；这里对未知值宽松按 auto 处理，避免两处各自报错口径分叉。
+    """
+
+    mode = str(environ.get("ISAACLAB_CONVEYOR_ENDLESS", "auto")).strip().lower() or "auto"
+    if mode == "off" or not totes_on_conveyor:
+        return False
+    props = str(environ.get("ISAACLAB_CONVEYOR_PROPS", "layout")).strip().lower() or "layout"
+    return props != "legacy_props"
+
+
+def _path_point(s: float) -> tuple[float, float]:
+    """沿路径距离 s → 世界 (x, y)。与 endless_intake.path_point 同式（测试交叉断言）。"""
+
+    corner_x = BELT_BOX_LANE_X - BELT_BOX_CORNER_RADIUS
+    corner_y = BELT_BOX_BRANCH_LANE_Y - BELT_BOX_CORNER_RADIUS
+    s_arc_start = corner_x - BELT_BOX_PATH_S_ORIGIN_X
+    s_arc_end = s_arc_start + BELT_BOX_CORNER_RADIUS * math.pi / 2.0
+    if s <= s_arc_start:
+        return (BELT_BOX_PATH_S_ORIGIN_X + s, BELT_BOX_BRANCH_LANE_Y)
+    if s >= s_arc_end:
+        return (BELT_BOX_LANE_X, corner_y - (s - s_arc_end))
+    theta = (s - s_arc_start) / BELT_BOX_CORNER_RADIUS
+    return (
+        corner_x + BELT_BOX_CORNER_RADIUS * math.sin(theta),
+        corner_y + BELT_BOX_CORNER_RADIUS * math.cos(theta),
+    )
+
+
+def _path_s_of_main_y(y: float) -> float:
+    """主线段世界 y → s（工位换算用）。"""
+
+    corner_x = BELT_BOX_LANE_X - BELT_BOX_CORNER_RADIUS
+    corner_y = BELT_BOX_BRANCH_LANE_Y - BELT_BOX_CORNER_RADIUS
+    s_arc_start = corner_x - BELT_BOX_PATH_S_ORIGIN_X
+    return s_arc_start + BELT_BOX_CORNER_RADIUS * math.pi / 2.0 + (corner_y - y)
+
 
 @dataclass(frozen=True)
 class ConveyorSceneLayout:
@@ -195,20 +257,28 @@ def resolve_belt_box_positions(
     *,
     y_stop: float,
 ) -> tuple[int, tuple[tuple[float, float, float], ...], tuple[BeltBoxKind, ...], float]:
-    """把 N 个纸箱排在工位**上游**那一段带面上（"流水线前段"）。
+    """把 N 个纸箱排在工位**上游**（默认沿西拐入口弯道路径，退化态沿主线直排）。
 
-    机器人工位 ``y_stop`` 把带面切成两段：上游 (y_stop, 18.22] 是来料段，下游
-    [10.19, y_stop) 是出料段。箱子只出生在上游，这样一次整场景复位 = 重新完整
-    流一遍（与两塑料筐时代的落点约定一致，见 conveyor_env_cfg 的出生 y 注释）。
-
-    ``belt_box_1`` 是队首（y 最小、最先到工位），编号递增向上游排。箱型按
+    ``belt_box_1`` 是队首（最靠下游、最先到工位），编号递增向上游排。箱型按
     ``ISAACLAB_BELT_BOX_PATTERN`` 循环（默认两种交错）。出生间距 ``spawn_pitch``
     只决定初始队形；停下来后的实际队距由**每个箱子自己的半长**加净间隙
     ``queue_gap`` 决定——两种箱型尺寸不同，统一的"中心距"要么让大箱穿模、要么让
     小箱之间留出突兀的空档。
 
-    非法配置一律 fail-fast：箱子排到带面外、相邻箱子出生就互穿、停稳后的队列
-    伸出带尾，都会在启动时暴露，而不是等到运行时看见箱子悬空/穿模再回头猜。
+    **弯道形态（endless intake 生效，默认）**：出生点排在沿路径距离
+    ``s_lead − k·pitch`` 上，队首默认刚拐出弯（s=8.06 → 主线 y≈18.283）、队尾
+    落到 X 支线上，pitch 语义从"y 间距"变为"沿路径距离间距"。
+    队首覆盖优先级：``ISAACLAB_BELT_BOX_SPAWN_S_LEAD``（路径距离）>
+    ``ISAACLAB_BELT_BOX_SPAWN_Y_LEAD``（仅接受主线段 y，自动换算成 s）> 默认。
+    ``ISAACLAB_BELT_BOX_LANE_X`` 在弯道形态下**不生效**（x 由路径决定）。
+
+    **直线形态（``ISAACLAB_CONVEYOR_ENDLESS=off`` / legacy_props）**：维持历史
+    行为——工位 ``y_stop`` 把带面切成两段，箱子沿主车道直排在上游来料段。
+
+    两种形态下出生位同时是**复位落点**（整场景复位写回 init_state），一次复位 =
+    重新完整流一遍。非法配置一律 fail-fast：箱子排到带面/支线外、相邻箱子出生
+    就互穿、队首压在工位上，都会在启动时暴露，而不是等到运行时看见箱子悬空/
+    穿模再回头猜。
     """
 
     count = _env_int(environ, "ISAACLAB_BELT_BOX_COUNT", BELT_BOX_MAX_COUNT)
@@ -223,15 +293,9 @@ def resolve_belt_box_positions(
 
     lane_x = _env_float(environ, "ISAACLAB_BELT_BOX_LANE_X", BELT_BOX_LANE_X)
     spawn_z = _env_float(environ, "ISAACLAB_BELT_BOX_SPAWN_Z", BELT_BOX_SPAWN_Z)
-    # ⚠️ 出生间距同时**就是**停稳后的队列间距（整带节拍：所有箱子同起同停，相对
-    # 位置恒定）。工位上游只有 18.22-14.148 ≈ 4.07 m，因此
-    #     队列长度 (count-1)*pitch + 端部半长  +  队首行程 (y_lead - y_stop)  ≤ 4.07
-    # 间距、行程、数量三者此消彼长；调大 pitch 必须同时下调 y_lead 或 count，
-    # 否则下面的两条 fail-fast 会拦住。y_lead 是世界 y，走 _shifted 管线（Δ 非零
-    # 时自动跟随，忘了会让队首出生在工位下游、启动即触发 fail-fast）。
-    y_lead = _env_float(environ, "ISAACLAB_BELT_BOX_SPAWN_Y_LEAD", _shifted(14.95))
     spawn_pitch = _env_float(environ, "ISAACLAB_BELT_BOX_SPAWN_PITCH", 0.75)
     queue_gap = _env_float(environ, "ISAACLAB_BELT_BOX_QUEUE_GAP", 0.07)
+    endless = _endless_intake_active(environ, totes_on_conveyor=True)
 
     kinds = resolve_belt_box_pattern(environ, count)
     if count == 0:
@@ -242,7 +306,9 @@ def resolve_belt_box_positions(
 
     halves = [kind.half_length_y for kind in kinds]
 
-    # 相邻箱子出生就不能互穿：中心距至少是两个半长之和。
+    # 相邻箱子出生就不能互穿：中心距至少是两个半长之和（直线/弯道形态同判据，
+    # 弯道形态下 pitch 是沿路径距离，弧段上的弦距略小于弧距，仍然安全——最小
+    # 间距余量 0.75-0.4163=0.33 远大于 R=1.4、θ≤0.54rad 下的弦弧差 <0.01）。
     for index in range(count - 1):
         need = halves[index] + halves[index + 1]
         if spawn_pitch < need:
@@ -250,6 +316,67 @@ def resolve_belt_box_positions(
                 f"ISAACLAB_BELT_BOX_SPAWN_PITCH={spawn_pitch} 放不下相邻的 "
                 f"{kinds[index].key}/{kinds[index + 1].key}：至少要 {need:.3f}"
             )
+
+    # 最宽的箱型也要放得进带面宽度。
+    half_width = BELT_BOX_BELT_WIDTH * 0.5
+    for kind in kinds:
+        if kind.width_x * 0.5 > half_width:
+            raise ValueError(
+                f"箱型 {kind.key} 宽 {kind.width_x} 放不进带面宽度 {BELT_BOX_BELT_WIDTH}"
+            )
+
+    if endless:
+        # —— 弯道形态：沿路径距离 s 排队 ——
+        corner_y = BELT_BOX_BRANCH_LANE_Y - BELT_BOX_CORNER_RADIUS
+        if y_stop >= corner_y:
+            raise ValueError(
+                f"弯道形态要求工位在主线段上：y_stop={y_stop} 必须 < 拐角切线 {corner_y:.4f}"
+            )
+        s_stop = _path_s_of_main_y(y_stop)
+        raw_s_lead = str(environ.get("ISAACLAB_BELT_BOX_SPAWN_S_LEAD", "")).strip()
+        raw_y_lead = str(environ.get("ISAACLAB_BELT_BOX_SPAWN_Y_LEAD", "")).strip()
+        if raw_s_lead:
+            s_lead = _env_float(environ, "ISAACLAB_BELT_BOX_SPAWN_S_LEAD", BELT_BOX_DEFAULT_S_LEAD)
+        elif raw_y_lead:
+            y_lead = _env_float(environ, "ISAACLAB_BELT_BOX_SPAWN_Y_LEAD", 0.0)
+            if y_lead >= corner_y:
+                raise ValueError(
+                    f"ISAACLAB_BELT_BOX_SPAWN_Y_LEAD={y_lead} 不在主线段上（须 < {corner_y:.4f}）；"
+                    "要把队首排上弧段/支线请改用 ISAACLAB_BELT_BOX_SPAWN_S_LEAD（沿路径距离）"
+                )
+            s_lead = _path_s_of_main_y(y_lead)
+        else:
+            s_lead = BELT_BOX_DEFAULT_S_LEAD
+
+        # 队首必须整体落在工位上游（s 向下游递增），队尾不能越过支线滚筒可用端。
+        if s_lead + halves[0] >= s_stop:
+            raise ValueError(
+                f"队首出生 s={s_lead:.3f} 压在工位 s_stop={s_stop:.3f} 上；"
+                f"最多到 {s_stop - halves[0]:.3f}"
+            )
+        s_tail = s_lead - spawn_pitch * (count - 1)
+        if s_tail - halves[-1] < BELT_BOX_PATH_S_MIN:
+            raise ValueError(
+                f"{count} 个纸箱按 pitch={spawn_pitch} 从 s={s_lead:.3f} 排到 s={s_tail:.3f}，"
+                f"队尾（{kinds[-1].key}）悬出支线带面（s_min={BELT_BOX_PATH_S_MIN}）；"
+                "调小 pitch/count，或把 ISAACLAB_BELT_BOX_SPAWN_S_LEAD 往工位方向调大"
+            )
+        # 停稳后的队列不需要单独校验：整带节拍保持出生间距整体向下游平移，
+        # 停稳队尾（s_stop − (count-1)·pitch）一定比出生队尾更靠下游。
+        positions = tuple(
+            (*_path_point(s_lead - spawn_pitch * index), spawn_z)
+            for index in range(count)
+        )
+        return count, positions, kinds, queue_gap
+
+    # —— 直线形态（endless off / legacy_props）：沿主车道 y 直排 ——
+    # ⚠️ 出生间距同时**就是**停稳后的队列间距（整带节拍：所有箱子同起同停，相对
+    # 位置恒定）。工位上游只有 18.22-14.148 ≈ 4.07 m，因此
+    #     队列长度 (count-1)*pitch + 端部半长  +  队首行程 (y_lead - y_stop)  ≤ 4.07
+    # 间距、行程、数量三者此消彼长；调大 pitch 必须同时下调 y_lead 或 count，
+    # 否则下面的两条 fail-fast 会拦住。y_lead 是世界 y，走 _shifted 管线（Δ 非零
+    # 时自动跟随，忘了会让队首出生在工位下游、启动即触发 fail-fast）。
+    y_lead = _env_float(environ, "ISAACLAB_BELT_BOX_SPAWN_Y_LEAD", _shifted(14.95))
 
     # 队首必须整体落在工位上游，队尾不能悬出带尾。
     if y_lead - halves[0] <= y_stop:
@@ -267,14 +394,6 @@ def resolve_belt_box_positions(
     # 停稳后的队列不需要单独校验：整带节拍保持出生间距整体**向下游**平移（队首从
     # y_lead 走到 y_stop < y_lead），所以停稳队尾一定比出生队尾更靠下游，上面这条
     # 出生位校验已经覆盖了它。
-
-    # 最宽的箱型也要放得进带面宽度。
-    half_width = BELT_BOX_BELT_WIDTH * 0.5
-    for kind in kinds:
-        if kind.width_x * 0.5 > half_width:
-            raise ValueError(
-                f"箱型 {kind.key} 宽 {kind.width_x} 放不进带面宽度 {BELT_BOX_BELT_WIDTH}"
-            )
 
     positions = tuple(
         (lane_x, y_lead + spawn_pitch * index, spawn_z) for index in range(count)

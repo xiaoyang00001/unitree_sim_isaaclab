@@ -239,13 +239,27 @@ def drive_belt_boxes_on_conveyor(
     y_stop: float | None = None,
     queue_gap: float = 0.07,
     half_lengths: tuple[float, ...] = (),
+    # —— 入口弯道（endless intake）两段式驱动 ——
+    # path_enabled=True 时按 L 形路径驱动（西拐）：支线 +X → 圆角弧 → 主线 -Y；
+    # 排队坐标从裸 y 换成沿路径距离 s，on_belt 判据换成主线矩形 ∪ extra_rects 并集。
+    # 参数由 env cfg 从 endless_intake 常量取值传入；默认值维持纯 -Y 直线行为。
+    path_enabled: bool = False,
+    path_corner_center: tuple[float, float] = (0.0, 0.0),
+    path_radius: float = 1.40,
+    path_s_origin_x: float = 0.0,
+    extra_rects: tuple[tuple[float, float, float, float], ...] = (),
 ):
-    """把纸箱队列沿 -Y 送到工位，一次只放行一个，后面的排队等着。
+    """把纸箱队列沿带面送到工位，一次只放行一个，后面的排队等着。
 
     与 ``drive_totes_on_conveyor``（每个筐各自独立判断 ``y > y_stop``）的差别只在
     停止线怎么算：队首停在工位，后车被前车顶住排队，工位那个被拎走后下一个自动
-    补位。判据本身在 ``conveyor_queue.queue_drive_mask``（无 Isaac 依赖、有单测），
-    完整推导见该函数的 docstring。本函数只负责读位置、写速度。
+    补位。判据本身在 ``conveyor_queue``（无 Isaac 依赖、有单测）：直线形态用
+    ``queue_drive_mask``（裸 y），弯道形态用 ``path_progress`` +
+    ``queue_drive_mask_along_path``（沿路径距离 s），完整推导见各自 docstring。
+    本函数只负责读位置、写速度。
+
+    弯道形态下箱子**不旋转**（保持世界朝向）：速度矢量沿路径航向逐步更新，
+    姿态不动——双机同步/镜像端零改动，观感是箱子"平移着拐弯"。
 
     ``y_stop=None``（``ISAACLAB_CONVEYOR_Y_STOP<=0`` 的循环模式）下退化为只受前车
     约束、一路流到带尾。本函数**不做回收**——与塑料筐的 ``drive_totes_on_conveyor``
@@ -256,6 +270,7 @@ def drive_belt_boxes_on_conveyor(
 
     性能注意：与 ``drive_totes_on_conveyor`` 同一条铁律——本函数每个物理步都跑，
     **不允许任何 GPU→CPU 同步**（``.item()`` / ``.any()`` / ``if tensor``）。
+    ``path_enabled`` 是 Python 布尔，分支不引入同步。
     """
 
     if not enabled or abs(velocity_y) < 1e-8 or not object_names:
@@ -284,24 +299,50 @@ def drive_belt_boxes_on_conveyor(
         z_tolerance=z_tolerance,
         x_range=x_range,
         y_range=y_range,
+        extra_rects=extra_rects if path_enabled else (),
     )  # (N, E)
     # (N, 1)：广播到 (N, E)。每步重建一个 5 元素张量的成本可忽略，换来事件层无状态。
     half_len = pos_local.new_tensor(half_lengths).unsqueeze(-1)
-    drive = conveyor_queue.queue_drive_mask(
-        pos_local[..., 1],
-        on_belt,
-        half_len,
-        y_stop=y_stop,
-        queue_gap=queue_gap,
-    )  # (N, E)
+    speed = -velocity_y  # velocity_y 约定为负（-Y 方向）；沿路径恒速取其模。
+
+    if path_enabled:
+        ss, hx, hy = conveyor_queue.path_progress(
+            pos_local,
+            corner_center=path_corner_center,
+            radius=path_radius,
+            s_origin_x=path_s_origin_x,
+        )
+        # 工位在主线段上：y_stop → s_stop 是标量换算，不进张量。
+        # ⚠️ 西拐口径：s_arc_start = cx − s_origin_x（东拐是 s_origin_x − cx）。
+        if y_stop is None:
+            s_stop = None
+        else:
+            s_arc_end = (path_corner_center[0] - path_s_origin_x) + path_radius * 1.5707963267948966
+            s_stop = s_arc_end + (path_corner_center[1] - y_stop)
+        drive = conveyor_queue.queue_drive_mask_along_path(
+            ss, on_belt, half_len, s_stop=s_stop, queue_gap=queue_gap
+        )  # (N, E)
+    else:
+        hx = hy = None
+        drive = conveyor_queue.queue_drive_mask(
+            pos_local[..., 1],
+            on_belt,
+            half_len,
+            y_stop=y_stop,
+            queue_gap=queue_gap,
+        )  # (N, E)
 
     for index, obj in enumerate(objects):
         # 只覆写水平速度，Z 留给重力/接触——与 drive_totes_on_conveyor 一致，
         # 避免把箱子按进碰撞板里。
         vel = obj.data.root_vel_w[env_ids].clone()
         drive_i = drive[index]
-        vel[:, 0] = torch.where(drive_i, torch.zeros_like(vel[:, 0]), vel[:, 0])
-        vel[:, 1] = torch.where(drive_i, torch.full_like(vel[:, 1], velocity_y), vel[:, 1])
+        if path_enabled:
+            vel[:, 0] = torch.where(drive_i, speed * hx[index], vel[:, 0])
+            vel[:, 1] = torch.where(drive_i, speed * hy[index], vel[:, 1])
+        else:
+            vel[:, 0] = torch.where(drive_i, torch.zeros_like(vel[:, 0]), vel[:, 0])
+            vel[:, 1] = torch.where(drive_i, torch.full_like(vel[:, 1], velocity_y), vel[:, 1])
         obj.write_root_velocity_to_sim(vel, env_ids=env_ids)
 
 
@@ -403,6 +444,7 @@ def recycle_totes_on_surface_conveyor(
     y_recycle: float = DEFAULT_Y_RECYCLE,
     y_respawn: float = DEFAULT_Y_RESPAWN,
     respawn_z: float = 0.775,
+    respawn_x: float | None = None,
 ):
     """Recycle totes in full-length surface-velocity loop mode without driving them.
 
@@ -410,6 +452,10 @@ def recycle_totes_on_surface_conveyor(
     event.  When ``ISAACLAB_CONVEYOR_Y_STOP<=0`` selects loop mode, PhysX contact
     motion remains the only drive; this event merely teleports a tote that
     reaches the outfeed back to the infeed and clears its velocity.
+
+    ``respawn_x``: 默认 None 保持各自 X 车道（历史行为）。入口弯道（endless
+    intake）方案把回生点搬到 X 支线最深处（世界 (-12.61, 19.8034)），x 必须
+    跟着写，否则箱子会回生在主车道北端的弯道体内部。
 
     Only environments selected by the recycle mask are written.  Objects still
     travelling on the belt are left entirely to PhysX contact motion instead of
@@ -442,6 +488,8 @@ def recycle_totes_on_surface_conveyor(
             continue
 
         pose = obj.data.root_state_w[recycle_env_ids, :7].clone()
+        if respawn_x is not None:
+            pose[:, 0] = origins[recycle, 0] + respawn_x
         pose[:, 1] = origins[recycle, 1] + y_respawn
         pose[:, 2] = origins[recycle, 2] + respawn_z
         obj.write_root_pose_to_sim(pose, env_ids=recycle_env_ids)
