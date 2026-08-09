@@ -58,8 +58,11 @@ class BeltBoxKind:
         return self.length_y * 0.5
 
 
-# 两种箱型都是 v61 背景自带的：`ConveyorBelt_Box_XX` 引 SM_CardBoxD_01、
-# `KLT_Bin_XX` 引 SM_CardBoxC_01。尺寸差近一倍，交错排布一眼能区分。
+# 纸箱两种取自 v61 背景（`ConveyorBelt_Box_XX` 引 SM_CardBoxD_01、`KLT_Bin_XX` 引
+# SM_CardBoxC_01）；软包裹三种取自 IsaacLab 分叉 feat/pickplace-parcel-assets 的
+# 程序化快递袋资产（塑料袋装衣服：枕形鼓包+热封边+顶面白色面单）。⚠️ 软包裹是
+# **刚体不是软体**——"软"只是视觉造型，物理上与纸箱同一套约定（根挂 RigidBody+Mass、
+# convexHull 碰撞、原点在袋底），所以能直接进队列/同步/镜像分流，CPU pipeline 可用。
 BELT_BOX_KINDS = {
     "d01": BeltBoxKind(
         key="d01",
@@ -77,8 +80,35 @@ BELT_BOX_KINDS = {
         height_z=0.25,
         mass=1.5,
     ),
+    # 尺寸取实测组合包围盒（生成器标称 40×30 / 45×35 / 32×24 cm，鼓包略溢出）。
+    "parcel_a01": BeltBoxKind(
+        key="parcel_a01",
+        asset="parcel_soft_a01.usda",
+        length_y=0.4017,
+        width_x=0.3013,
+        height_z=0.0801,
+        mass=0.35,
+    ),
+    "parcel_a02": BeltBoxKind(
+        key="parcel_a02",
+        asset="parcel_soft_a02.usda",
+        length_y=0.4526,
+        width_x=0.3520,
+        height_z=0.0968,
+        mass=0.5,
+    ),
+    "parcel_a03": BeltBoxKind(
+        key="parcel_a03",
+        asset="parcel_soft_a03.usda",
+        length_y=0.3218,
+        width_x=0.2414,
+        height_z=0.0603,
+        mass=0.22,
+    ),
 }
-DEFAULT_BELT_BOX_PATTERN = ("d01", "c01")
+# 默认交错：小纸箱 + 白色软包裹（软包裹替换掉原来的大纸箱 c01；
+# ISAACLAB_BELT_BOX_PATTERN=d01,c01 可随时切回两种纸箱）。
+DEFAULT_BELT_BOX_PATTERN = ("d01", "parcel_a02")
 
 # 带面几何与 conveyor_drive 的常量保持一致（那边是驱动/分段的真源，这里只用来
 # 定位出生点；两处数值若要改必须同时改）。

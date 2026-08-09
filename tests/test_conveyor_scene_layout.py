@@ -77,10 +77,10 @@ class BeltBoxLayoutTest(unittest.TestCase):
             layout.belt_box_names,
             ("belt_box_1", "belt_box_2", "belt_box_3", "belt_box_4", "belt_box_5"),
         )
-        # 默认 pattern d01,c01 循环 → 交错排布。
+        # 默认 pattern d01,parcel_a02 循环 → 小纸箱与白色软包裹交错。
         self.assertEqual(
             [kind.key for kind in layout.belt_box_kinds],
-            ["d01", "c01", "d01", "c01", "d01"],
+            ["d01", "parcel_a02", "d01", "parcel_a02", "d01"],
         )
         self.assertEqual(layout.belt_box_queue_gap, 0.07)
         self.assertEqual(
@@ -93,7 +93,7 @@ class BeltBoxLayoutTest(unittest.TestCase):
                 (-5.62, 17.95, 0.775),
             ),
         )
-        self.assertEqual(layout.belt_box_half_lengths, (0.19, 0.25, 0.19, 0.25, 0.19))
+        self.assertEqual(layout.belt_box_half_lengths, (0.19, 0.2263, 0.19, 0.2263, 0.19))
 
     def test_both_kinds_come_from_the_v61_background_assets(self) -> None:
         """两种箱型就是 v61 背景里 ConveyorBelt_Box / KLT_Bin 引的那两个视觉资产。"""
@@ -117,6 +117,24 @@ class BeltBoxLayoutTest(unittest.TestCase):
         flipped = resolve_scene_layout({"ISAACLAB_BELT_BOX_PATTERN": " C01 , D01 "})
         self.assertEqual(
             [k.key for k in flipped.belt_box_kinds], ["c01", "d01", "c01", "d01", "c01"]
+        )
+
+    def test_two_cardbox_rollback_pattern_still_works(self) -> None:
+        """软包裹只是默认 pattern 的替换项：d01,c01 双纸箱形态必须随时能切回。"""
+
+        layout = resolve_scene_layout({"ISAACLAB_BELT_BOX_PATTERN": "d01,c01"})
+        self.assertEqual(
+            [k.key for k in layout.belt_box_kinds], ["d01", "c01", "d01", "c01", "d01"]
+        )
+        self.assertEqual(layout.belt_box_half_lengths, (0.19, 0.25, 0.19, 0.25, 0.19))
+
+    def test_all_three_parcel_variants_are_registered(self) -> None:
+        layout = resolve_scene_layout(
+            {"ISAACLAB_BELT_BOX_PATTERN": "parcel_a01,parcel_a02,parcel_a03"}
+        )
+        self.assertEqual(
+            [k.key for k in layout.belt_box_kinds],
+            ["parcel_a01", "parcel_a02", "parcel_a03", "parcel_a01", "parcel_a02"],
         )
 
     def test_unknown_pattern_key_fails_fast(self) -> None:
@@ -222,10 +240,10 @@ class BeltBoxLayoutTest(unittest.TestCase):
     def test_spawn_pitch_too_small_for_the_actual_pair_fails_fast(self) -> None:
         """出生间距按**相邻两箱各自的半长**校验，而不是一个统一箱长。"""
 
-        with self.assertRaisesRegex(ValueError, "放不下相邻的 d01/c01"):
+        with self.assertRaisesRegex(ValueError, "放不下相邻的 d01/parcel_a02"):
             resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_PITCH": "0.3"})
 
-        # 全 d01 时 0.40 够（0.19+0.19=0.38），但交错时放不下 d01/c01（要 0.44）。
+        # 全 d01 时 0.40 够（0.19+0.19=0.38），但混排时放不下 d01/parcel_a02（要 0.4163）。
         resolve_scene_layout(
             {"ISAACLAB_BELT_BOX_PATTERN": "d01", "ISAACLAB_BELT_BOX_SPAWN_PITCH": "0.40"}
         )

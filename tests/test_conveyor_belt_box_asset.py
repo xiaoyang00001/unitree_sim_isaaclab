@@ -37,13 +37,22 @@ _EXPECTED = {
     "c01": ("CartBoxC01", "SM_CardBoxC_01", 0.25, 0.25, 0.25),
 }
 
+# 软包裹是自包含的程序化资产（IsaacLab 分叉 feat/pickplace-parcel-assets 生成），
+# 不走"引用官方视觉 + 外挂碰撞盒"的 wrapper 结构：视觉网格 Bag 自己带 convexHull
+# 碰撞。key -> defaultPrim。
+_PARCEL_EXPECTED = {
+    "parcel_a01": "ParcelSoftA01",
+    "parcel_a02": "ParcelSoftA02",
+    "parcel_a03": "ParcelSoftA03",
+}
+
 
 class BeltBoxPhysicsAssetTest(unittest.TestCase):
     def _text(self, key: str) -> str:
         return (_PROPS_DIR / _LAYOUT.BELT_BOX_KINDS[key].asset).read_text(encoding="utf-8")
 
-    def test_every_kind_in_the_table_has_a_physics_wrapper(self) -> None:
-        self.assertEqual(set(_LAYOUT.BELT_BOX_KINDS), set(_EXPECTED))
+    def test_every_kind_in_the_table_has_a_physics_asset(self) -> None:
+        self.assertEqual(set(_LAYOUT.BELT_BOX_KINDS), set(_EXPECTED) | set(_PARCEL_EXPECTED))
         for key, kind in _LAYOUT.BELT_BOX_KINDS.items():
             with self.subTest(key):
                 self.assertTrue((_PROPS_DIR / kind.asset).is_file(), kind.asset)
@@ -146,6 +155,57 @@ class BeltBoxPhysicsAssetTest(unittest.TestCase):
         c01 = _LAYOUT.BELT_BOX_KINDS["c01"]
         self.assertGreater(c01.length_y - d01.length_y, 0.1)
         self.assertGreater(c01.height_z - d01.height_z, 0.05)
+
+    def test_parcel_assets_are_self_contained_rigid_bodies(self) -> None:
+        """软包裹：刚体 + convexHull + 自包含，物理约定与纸箱一致。
+
+        ⚠️ "软"只是视觉造型（枕形鼓包+褶皱），物理必须是刚体——CPU pipeline 不支持
+        deformable，而 conveyor 场景固定跑 --device cpu。这条钉住"没人把它换成真软体"。
+        """
+
+        for key, default_prim in _PARCEL_EXPECTED.items():
+            with self.subTest(key):
+                text = self._text(key)
+                self.assertTrue(text.startswith("#usda 1.0\n"))
+                self.assertIn(f'defaultPrim = "{default_prim}"', text)
+                self.assertIn("metersPerUnit = 1", text)
+                self.assertIn('upAxis = "Z"', text)
+                # 根是动态刚体（无 kinematic、无 deformable）。
+                self.assertIn('"PhysicsRigidBodyAPI"', text)
+                self.assertNotIn("Deformable", text)
+                # 碰撞是平底"雪橇"盒（SledCollider），不是枕形 Bag 自身的凸包：
+                # 枕形凸包滑动时轻微摇晃耗能，实测比平底纸箱慢 ~3%/程，混排时
+                # 队列间距逐程漂移。Bag 的碰撞被显式禁用。
+                self.assertIn('def Mesh "SledCollider"', text)
+                self.assertIn('uniform token physics:approximation = "convexHull"', text)
+                self.assertIn("bool physics:collisionEnabled = 0", text)
+                self.assertNotIn("convexDecomposition", text)
+                # 自包含：无任何外部 references/payload。
+                self.assertNotIn("references = @", text)
+                self.assertNotIn("payload", text)
+                # 抓取摩擦已归一到纸箱同一套约定。源分支的 1.6/1.2 combine=max 会
+                # 压过带面摩擦（pair 取 max），legacy 驱动每 20ms 写一次速度、写入
+                # 间隙靠摩擦减速，μd 近两倍 ⇒ 包裹比纸箱慢 ~35%，整带停时短停
+                # 0.24~0.28 m（2026-08-09 实测）。multiply 下 pair 与纸箱逐值一致。
+                self.assertIn("float physics:staticFriction = 1.4", text)
+                self.assertIn("float physics:dynamicFriction = 1.1", text)
+                self.assertIn('frictionCombineMode = "multiply"', text)
+                self.assertNotIn('frictionCombineMode = "max"', text)
+
+    def test_parcel_dimensions_agree_with_the_layout_kind_table(self) -> None:
+        """箱型表里软包裹的尺寸必须与资产实测包围盒一致（排队半长靠它算）。"""
+
+        expected_dims = {
+            "parcel_a01": (0.4017, 0.3013, 0.0801),
+            "parcel_a02": (0.4526, 0.3520, 0.0968),
+            "parcel_a03": (0.3218, 0.2414, 0.0603),
+        }
+        for key, (length, width, height) in expected_dims.items():
+            with self.subTest(key):
+                kind = _LAYOUT.BELT_BOX_KINDS[key]
+                self.assertAlmostEqual(kind.length_y, length, places=4)
+                self.assertAlmostEqual(kind.width_x, width, places=4)
+                self.assertAlmostEqual(kind.height_z, height, places=4)
 
     def test_grasp_friction_material_is_bound_to_the_collider(self) -> None:
         for key, (default_prim, *_rest) in _EXPECTED.items():

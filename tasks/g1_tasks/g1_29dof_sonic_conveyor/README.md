@@ -112,16 +112,27 @@ NavMesh、Render 设置、额外 PhysicsScene、货架、纸箱堆、推车与�
 
 ### 纸箱队列的整带节拍启停
 
-流水线布局的作业对象是 5 个纸箱，**两种箱型交错排布**——两者都是 v61 背景自带的视觉
-资产，尺寸差近一倍，一眼能区分：
+流水线布局的作业对象是 5 个箱/包，**两种交错排布**（默认小纸箱 + 白色软包裹）：
 
-| key | 视觉资产 | v61 里的用处 | 尺寸（沿带 × 横向 × 高） | 质量 | 物理封装 |
-|---|---|---|---|---|---|
-| `d01` | `SM_CardBoxD_01` | `ConveyorBelt_Box_XX` | 0.38 × 0.25 × 0.1487 m | 1.0 kg | `props/cart_box_d01_physics.usda` |
-| `c01` | `SM_CardBoxC_01` | `KLT_Bin_XX` | 0.50 × 0.50 × 0.25 m | 1.5 kg | `props/cart_box_c01_physics.usda` |
+| key | 来源 | 尺寸（沿带 × 横向 × 高） | 质量 | 资产 |
+|---|---|---|---|---|
+| `d01` | v61 背景 `ConveyorBelt_Box_XX` 同款纸箱 | 0.38 × 0.25 × 0.1487 m | 1.0 kg | `props/cart_box_d01_physics.usda` |
+| `c01` | v61 背景 `KLT_Bin_XX` 同款大纸箱 | 0.50 × 0.50 × 0.25 m | 1.5 kg | `props/cart_box_c01_physics.usda` |
+| `parcel_a01` | 程序化快递软包裹（灰） | 0.402 × 0.301 × 0.080 m | 0.35 kg | `props/parcel_soft_a01.usda` |
+| `parcel_a02` | 程序化快递软包裹（白，面单朝上） | 0.453 × 0.352 × 0.097 m | 0.5 kg | `props/parcel_soft_a02.usda` |
+| `parcel_a03` | 程序化快递软包裹（粉） | 0.322 × 0.241 × 0.060 m | 0.22 kg | `props/parcel_soft_a03.usda` |
 
-默认排布是 `d01, c01, d01, c01, d01`（`ISAACLAB_BELT_BOX_PATTERN` 循环，写单个 key 就是
-全用一种）。箱子只排在工位 `y_stop=14.148` **上游**那一段带面上，默认出生 y 为
+⚠️ 软包裹是**刚体不是软体**：枕形鼓包、热封边、褶皱、顶面白色面单都只是视觉造型，物理
+上与纸箱同一套约定（根挂 RigidBody+Mass、凸包碰撞、原点在袋底）——CPU pipeline 不支持
+deformable，本场景固定 `--device cpu`。资产取自 IsaacLab 分叉 `feat/pickplace-parcel-assets`
+的程序化生成器，入本仓库时做了两处流水线适配：①抓取摩擦从 1.6/1.2 `combine=max` 归一为
+纸箱同款 1.4/1.1 `multiply`（max 会压过带面摩擦，legacy 驱动的写入间隙靠摩擦减速，μd 近
+两倍 ⇒ 包裹比纸箱慢 ~35%、整带停时短停 0.24~0.28 m）；②碰撞从枕形 Bag 凸包换成平底
+"雪橇"盒（枕形凸包滑动时轻微摇晃耗能，仍慢 ~3%/程，混排时纸箱逐程追上包裹）。两处
+适配后实测五件位移 0.809~0.817 m/程，差 <1%。
+
+默认排布是 `d01, parcel_a02, d01, parcel_a02, d01`（`ISAACLAB_BELT_BOX_PATTERN` 循环，
+写单个 key 就是全用一种；`d01,c01` 切回双纸箱形态）。箱子只排在工位 `y_stop=14.148` **上游**那一段带面上，默认出生 y 为
 `14.95 / 15.70 / 16.45 / 17.20 / 17.95`（间距 0.75，相邻箱子净空隙 0.31 m），车道
 `x=-5.62`、`z=0.775`。`belt_box_1` 是队首。
 
@@ -183,13 +194,13 @@ drive[i]     = on_belt[i] & belt_running & 没顶到前车
 
 | 环境变量 | 默认 | 说明 |
 |---|---|---|
-| `ISAACLAB_BELT_BOX_PATTERN` | `d01,c01` | 箱型循环序列；未知 key 直接报错 |
+| `ISAACLAB_BELT_BOX_PATTERN` | `d01,parcel_a02` | 箱型循环序列（5 种可选）；未知 key 直接报错 |
 | `ISAACLAB_BELT_BOX_COUNT` | `5` | 纸箱数量；上限 5（SceneCfg 字段是显式声明的，超限 fail-fast） |
 | `ISAACLAB_BELT_BOX_SPAWN_Y_LEAD` | `14.95` | 队首出生 y，同时是复位落点；决定队首行程 |
 | `ISAACLAB_BELT_BOX_SPAWN_PITCH` | `0.75` | 箱间距；整带节拍下**也就是**停稳后的队列间距 |
 | `ISAACLAB_BELT_BOX_QUEUE_GAP` | `0.07` | 防撞保底的**净空隙**（不是中心距）；整带节拍下正常不触发 |
 | `ISAACLAB_BELT_BOX_LANE_X` / `_SPAWN_Z` | `-5.62` / `0.775` | 车道与出生高度 |
-| `ISAACLAB_BELT_BOX_MASS_D01` / `_C01` | `1.0` / `1.5` | 按箱型分别覆写质量（kg） |
+| `ISAACLAB_BELT_BOX_MASS_<KEY>` | 各箱型默认 | 按箱型覆写质量（kg），如 `_D01` / `_PARCEL_A02` |
 | `ISAACLAB_CONVEYOR_SPEED` / `_Y_STOP` / `_ENABLED` | `0.3` / `14.148` / `1` | 速度、工位、总开关 |
 
 下列非法组合都会在启动时报错，不会等到运行时才看见箱子悬空或互相穿模：出生位排到带面
@@ -340,5 +351,6 @@ HandCmd 默认超时为 `0.20 s`；超时后保持最后安全的 `q/kp/kd`、�
 | props/cart_box_d05_physics.usda | 分叉 git-LFS tip 版 | 已含关 CCD 修复（ae9118a2e） |
 | props/cart_box_d01_physics.usda | 本仓库任务专用物理层 | 流水线纸箱队列的第一种箱型；与 d05 同构但引用 `SM_CardBoxD_01`（= v61 `ConveyorBelt_Box_XX` 的视觉源），删掉原资产的 triangle-mesh 碰撞、另挂 0.38×0.25×0.149 m 的 convexHull，原点在箱底面 |
 | props/cart_box_c01_physics.usda | 本仓库任务专用物理层 | 第二种箱型；同构，引用 `SM_CardBoxC_01`（= v61 `KLT_Bin_XX` 的视觉源），convexHull 0.50×0.50×0.25 m |
+| props/parcel_soft_a01/a02/a03.usda | IsaacLab 分叉 `feat/pickplace-parcel-assets`（LFS）拷入 | 程序化快递软包裹（刚体），自包含无外部引用；入库时摩擦归一 1.4/1.1 multiply、碰撞换平底雪橇盒（原枕形凸包滑动摇晃耗能，混排时比纸箱慢） |
 | props/tote_b04_compound_physics.usda | 本仓库任务专用物理层 | 默认料筐碰撞；复用 SimReady 视觉，以底板+四壁 5-box compound 保持开口语义 |
 | props/tote_b04_physics.usda | 分叉 git-LFS | 历史 convex decomposition 回退；内嵌 2.0/1.6 combine=min 高摩擦材质 |
