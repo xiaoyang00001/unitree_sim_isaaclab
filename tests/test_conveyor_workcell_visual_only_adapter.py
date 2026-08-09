@@ -396,10 +396,9 @@ class WorkcellVisualOnlyComposedStageTest(unittest.TestCase):
         # 比较生效的本地变换而不是属性作者值：xformOpOrder 被覆盖时
         # translate 属性仍可读到旧值但已不生效，输送机会错位。
         #
-        # clean wrapper 现在**刻意**覆盖 v61 的这个位移：整条流水线北移
-        # CONVEYOR_NORTH_SHIFT_Y=3.55（世界 y +Δ ≡ 背景局部 x +Δ），让入料端插进
-        # 靠 +Y 墙的安检机隧道。所以判据从"与 v61 逐值相等"改成"恰好是 v61 值
-        # 加上 Δ（且只加在局部 x 上，抬升量 z 原样保留）"。
+        # clean wrapper 已不再覆盖 v61 的这个位移（安检机时代的整体北移已回退，
+        # CONVEYOR_NORTH_SHIFT_Y=0）。断言保持"= v61 值 + Δ"的形式：Δ=0 时与
+        # 直接等值等价，若日后恢复平移会自动跟随常量。
         belt = self.stage.GetPrimAtPath("/Root/ConveyorBelt")
         belt_transform = UsdGeom.Xformable(belt).GetLocalTransformation()
         shifted = Gf.Vec3d(

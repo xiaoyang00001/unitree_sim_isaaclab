@@ -11,11 +11,10 @@ from typing import Mapping
 
 
 # 流水线整体北移量（世界 +Y，m）。真源是 conveyor_drive.CONVEYOR_NORTH_SHIFT_Y，
-# 那里写着完整推导：安检机靠 +Y 落地墙（南面 23.606）、放大 SHROUD_INFEED_DESIGN_SCALE=1.40
-# 后机身中心落在 21.772064，让流水线入料端（实测 18.2223）正好推进机身中心 ⇒ 3.55。
+# 当前 Δ=0（安检机时代的北移已回退，带体回世界 y[10.188, 18.222]）。
 # 本模块刻意零相对 import（测试用单文件加载），所以抄一份；
 # tests/test_conveyor_scene_layout.py 交叉断言两边一致，别只改一边。
-CONVEYOR_NORTH_SHIFT_Y = 3.55
+CONVEYOR_NORTH_SHIFT_Y = 0.0
 
 
 def _shifted(base_y: float) -> float:
@@ -125,8 +124,8 @@ BELT_BOX_KINDS = {
 DEFAULT_BELT_BOX_PATTERN = ("d01", "parcel_a02")
 
 # 带面几何与 conveyor_drive 的常量保持一致（那边是驱动/分段的真源，这里只用来
-# 定位出生点；两处数值若要改必须同时改）。y 值必须过 _shifted：流水线整体北移后
-# 带面入料端在 21.77，忘了平移会让队尾校验按旧带端算、箱子全部出生在带外。
+# 定位出生点；两处数值若要改必须同时改）。y 值必须过 _shifted（Δ 非零时自动
+# 跟随）：当前 Δ=0，带面入料端在 18.22。
 BELT_BOX_LANE_X = -5.62
 BELT_BOX_SPAWN_Z = 0.775
 BELT_BOX_BELT_Y_MAX = _shifted(18.22)
@@ -225,12 +224,11 @@ def resolve_belt_box_positions(
     lane_x = _env_float(environ, "ISAACLAB_BELT_BOX_LANE_X", BELT_BOX_LANE_X)
     spawn_z = _env_float(environ, "ISAACLAB_BELT_BOX_SPAWN_Z", BELT_BOX_SPAWN_Z)
     # ⚠️ 出生间距同时**就是**停稳后的队列间距（整带节拍：所有箱子同起同停，相对
-    # 位置恒定）。工位上游只有 21.77-17.698 ≈ 4.07 m（北移前 18.22-14.148，跨度
-    # 不变），因此
+    # 位置恒定）。工位上游只有 18.22-14.148 ≈ 4.07 m，因此
     #     队列长度 (count-1)*pitch + 端部半长  +  队首行程 (y_lead - y_stop)  ≤ 4.07
     # 间距、行程、数量三者此消彼长；调大 pitch 必须同时下调 y_lead 或 count，
-    # 否则下面的两条 fail-fast 会拦住。y_lead 是世界 y，必须过 _shifted，
-    # 否则北移后队首出生在工位下游、启动即触发 fail-fast。
+    # 否则下面的两条 fail-fast 会拦住。y_lead 是世界 y，走 _shifted 管线（Δ 非零
+    # 时自动跟随，忘了会让队首出生在工位下游、启动即触发 fail-fast）。
     y_lead = _env_float(environ, "ISAACLAB_BELT_BOX_SPAWN_Y_LEAD", _shifted(14.95))
     spawn_pitch = _env_float(environ, "ISAACLAB_BELT_BOX_SPAWN_PITCH", 0.75)
     queue_gap = _env_float(environ, "ISAACLAB_BELT_BOX_QUEUE_GAP", 0.07)
@@ -290,9 +288,11 @@ def resolve_scene_layout(environ: Mapping[str, str]) -> ConveyorSceneLayout:
     totes_on_conveyor = _env_bool(environ, "ISAACLAB_TOTES_ON_CONVEYOR", True)
     cart_group_x = _env_float(environ, "ISAACLAB_CART_GROUP_X", -5.62)
     # =0 布局的作业组（拖车 + 叠筐 + 两台机器人）站在入料端之北，与流水线同轴。
-    # 整条线北移 Δ 后它跟着 +Δ 即可：拖车实测占位 y 跨度 0.824（spawn scale 0.5），
-    # 北移后 y[21.888, 22.712]，离带端 21.772 仍是原来的 0.116 m，离 +Y 墙面
-    # 23.606 还有 0.894 m —— 墙给的上限（Δ0<=4.24）远大于 3.55，=0 无需另选位。
+    # Δ=0 下拖车组回 (-5.62, 18.75)：拖车实测占位 y 跨度 0.824（spawn scale 0.5）
+    # ⇒ y[17.93, 19.57]，离带端 18.222 仍是 0.118 m、离 +Y 墙面 23.606 有 4.444 m。
+    # ⚠️ 该占位与西拐弯道 footprint x[-7.113,-5.042] y[18.207,20.308] 大面积重叠
+    #    （离线实测约 83% 被吞没），弯道组必须只在 =1 流水线布局生成（见
+    #    endless_intake 的生成门与 conveyor_env_cfg 的门控断言）。
     cart_group_y = _env_float(environ, "ISAACLAB_CART_GROUP_Y", _shifted(18.75))
     robot_side_offset = _env_float(environ, "ISAACLAB_ROBOT_SIDE_OFFSET", 0.80)
 
@@ -315,9 +315,8 @@ def resolve_scene_layout(environ: Mapping[str, str]) -> ConveyorSceneLayout:
         -6.7 if totes_on_conveyor else cart_group_x - robot_side_offset,
     )
 
-    # 北移后两个出生点落在 20.95 / 21.55，两者都进了安检机机身 y[19.988, 23.556]，
-    # 其中 tote2 已落进不透明机柜 y[21.2816, 22.2626]（出生瞬间真正被遮住），
-    # tote1 还差 0.33 m 未进机柜——README「未真正遮住出生瞬间」那条限制由此收窄一半。
+    # Δ=0 下两个出生点回到 17.4 / 18.0（贴着入料端）。出生瞬间可见是已知限制
+    # （见 README「已知限制」；西拐弯道方案的遮挡评估属提交②/endless_intake）。
     tote_spawn_y_lead = _env_float(
         environ, "ISAACLAB_TOTE_SPAWN_Y_LEAD", _shifted(17.4)
     )

@@ -27,7 +27,7 @@ resolve_conveyor_drive = _MODULE.resolve_conveyor_drive
 class ConveyorDriveConfigTest(unittest.TestCase):
     def test_legacy_is_default_and_preserves_authority_offline_behavior(self) -> None:
         config = resolve_conveyor_drive(
-            {}, object_authority=False, mirror_objects=False, default_y_stop=17.698
+            {}, object_authority=False, mirror_objects=False, default_y_stop=14.148
         )
 
         self.assertEqual(config.mode, "legacy")
@@ -40,13 +40,13 @@ class ConveyorDriveConfigTest(unittest.TestCase):
         environ = {"ISAACLAB_CONVEYOR_DRIVE_MODE": "surface_velocity"}
 
         authority = resolve_conveyor_drive(
-            environ, object_authority=True, mirror_objects=False, default_y_stop=17.698
+            environ, object_authority=True, mirror_objects=False, default_y_stop=14.148
         )
         standalone_id2 = resolve_conveyor_drive(
-            environ, object_authority=False, mirror_objects=False, default_y_stop=17.698
+            environ, object_authority=False, mirror_objects=False, default_y_stop=14.148
         )
         mirrored_id2 = resolve_conveyor_drive(
-            environ, object_authority=False, mirror_objects=True, default_y_stop=17.698
+            environ, object_authority=False, mirror_objects=True, default_y_stop=14.148
         )
 
         self.assertTrue(authority.surface_velocity_enabled)
@@ -68,7 +68,7 @@ class ConveyorDriveConfigTest(unittest.TestCase):
                     environ,
                     object_authority=authority,
                     mirror_objects=mirror,
-                    default_y_stop=17.698,
+                    default_y_stop=14.148,
                 )
                 self.assertFalse(
                     config.legacy_enabled and config.surface_velocity_enabled
@@ -79,14 +79,14 @@ class ConveyorDriveConfigTest(unittest.TestCase):
             {"ISAACLAB_CONVEYOR_DRIVE_MODE": "surface_velocity"},
             object_authority=True,
             mirror_objects=False,
-            default_y_stop=17.698,
+            default_y_stop=14.148,
         )
 
         self.assertIsNotNone(config.stop_segment)
         assert config.stop_segment is not None
         self.assertAlmostEqual(config.stop_segment.y_min, BELT_Y_MIN)
-        self.assertAlmostEqual(config.stop_segment.y_max, 17.798)
-        self.assertAlmostEqual(config.drive_segment.y_min, 17.798)
+        self.assertAlmostEqual(config.stop_segment.y_max, 14.248)
+        self.assertAlmostEqual(config.drive_segment.y_min, 14.248)
         self.assertAlmostEqual(config.drive_segment.y_max, BELT_Y_MAX)
         self.assertAlmostEqual(
             config.stop_segment.length + config.drive_segment.length,
@@ -101,7 +101,7 @@ class ConveyorDriveConfigTest(unittest.TestCase):
             },
             object_authority=True,
             mirror_objects=False,
-            default_y_stop=17.698,
+            default_y_stop=14.148,
         )
 
         self.assertIsNone(config.y_stop)
@@ -115,12 +115,12 @@ class ConveyorDriveConfigTest(unittest.TestCase):
             {},
             object_authority=True,
             mirror_objects=False,
-            default_y_stop=15.05,
+            default_y_stop=11.5,
             default_handoff_offset=0.20,
         )
 
         self.assertEqual(config.handoff_offset, 0.20)
-        self.assertAlmostEqual(config.drive_segment.y_min, 15.25)
+        self.assertAlmostEqual(config.drive_segment.y_min, 11.70)
 
     def test_invalid_mode_and_out_of_range_partition_fail_fast(self) -> None:
         with self.assertRaisesRegex(ValueError, "legacy\\|surface_velocity"):
@@ -128,14 +128,14 @@ class ConveyorDriveConfigTest(unittest.TestCase):
                 {"ISAACLAB_CONVEYOR_DRIVE_MODE": "warp"},
                 object_authority=True,
                 mirror_objects=False,
-                default_y_stop=17.698,
+                default_y_stop=14.148,
             )
         with self.assertRaisesRegex(ValueError, "停止分区超出"):
             resolve_conveyor_drive(
-                {"ISAACLAB_CONVEYOR_Y_STOP": "21.75"},
+                {"ISAACLAB_CONVEYOR_Y_STOP": "18.2"},
                 object_authority=True,
                 mirror_objects=False,
-                default_y_stop=17.698,
+                default_y_stop=14.148,
             )
 
     def test_non_finite_drive_geometry_values_fail_fast(self) -> None:
@@ -152,26 +152,23 @@ class ConveyorDriveConfigTest(unittest.TestCase):
                         {name: value},
                         object_authority=True,
                         mirror_objects=False,
-                        default_y_stop=17.698,
+                        default_y_stop=14.148,
                     )
 
 
 class ConveyorNorthShiftTest(unittest.TestCase):
-    """流水线整体北移 Δ 的真源断言（几何位移写在背景 clean wrapper 里）。"""
+    """流水线整体北移 Δ 已回退为 0；常量与 _shifted 管线保留备日后平移。"""
 
-    def test_delta_matches_the_wall_anchored_scanner_derivation(self) -> None:
-        # 墙面 23.606 − 墙缝 0.05 − 放大后半长 1.27424*1.40 = 机身中心 21.772064；
-        # 北移前带体实测到 18.2223 ⇒ Δ = 3.54966，取 3.55。
-        self.assertAlmostEqual(CONVEYOR_NORTH_SHIFT_Y, 3.55, places=6)
-        machine_centre_y = 23.606 - 0.05 - 1.27424 * 1.40
-        self.assertAlmostEqual(machine_centre_y, 21.772064, places=6)
-        self.assertLess(abs((18.2223 + CONVEYOR_NORTH_SHIFT_Y) - machine_centre_y), 0.001)
+    def test_delta_is_zero_after_the_scanner_rollback(self) -> None:
+        # 安检机方案（Δ=3.55 插隧道口）已回退：挡边只比带面高 29mm，箱子露顶，
+        # "藏进机柜"不成立。Δ=0 下带体回实测世界 y[10.188, 18.222]。
+        self.assertAlmostEqual(CONVEYOR_NORTH_SHIFT_Y, 0.0, places=6)
 
     def test_belt_constants_are_the_measured_base_plus_delta(self) -> None:
         self.assertAlmostEqual(_MODULE.BELT_Y_MIN_BASE, 10.19, places=6)
         self.assertAlmostEqual(_MODULE.BELT_Y_MAX_BASE, 18.22, places=6)
-        self.assertAlmostEqual(BELT_Y_MIN, 13.74, places=6)
-        self.assertAlmostEqual(BELT_Y_MAX, 21.77, places=6)
+        self.assertAlmostEqual(BELT_Y_MIN, 10.19, places=6)
+        self.assertAlmostEqual(BELT_Y_MAX, 18.22, places=6)
         # 带长不随整体平移改变。
         self.assertAlmostEqual(BELT_Y_MAX - BELT_Y_MIN, 8.03, places=6)
 
@@ -180,19 +177,19 @@ class ConveyorNorthShiftTest(unittest.TestCase):
             {"ISAACLAB_CONVEYOR_Y_STOP": "0"},
             object_authority=True,
             mirror_objects=False,
-            default_y_stop=17.698,
+            default_y_stop=14.148,
         )
 
-        self.assertAlmostEqual(config.y_recycle, 14.15, places=6)
-        self.assertAlmostEqual(config.y_respawn, 21.55, places=6)
+        self.assertAlmostEqual(config.y_recycle, 10.6, places=6)
+        self.assertAlmostEqual(config.y_respawn, 18.0, places=6)
         self.assertGreater(config.y_recycle, BELT_Y_MIN)
         self.assertLess(config.y_respawn, BELT_Y_MAX)
 
-    def test_the_background_layer_authors_the_same_delta(self) -> None:
-        """位移写在 clean wrapper 的 over "ConveyorBelt"；数值必须与常量一致。
+    def test_the_background_layer_authors_no_belt_shift(self) -> None:
+        """Δ=0 下 clean wrapper 不得再覆盖 v61 的 ConveyorBelt 组变换。
 
-        ⚠️ 世界 y +Δ ≡ 背景局部 x +Δ（背景挂载时绕 Z 转 +90°），且 z=0.58 是整组
-        既有抬升量，写丢会让整条线连同工位家具下沉。
+        位移若要恢复必须同时改 conveyor_drive 常量与 wrapper（世界 y +Δ ≡ 背景
+        局部 x +Δ），这里守住"wrapper 无位移 override"的回退基线。
         """
 
         layer = (
@@ -201,22 +198,18 @@ class ConveyorNorthShiftTest(unittest.TestCase):
             / "warehouse-simple6_v61_visual_only.usda"
         ).read_text(encoding="utf-8")
 
-        self.assertIn(
-            f"double3 xformOp:translate = ({CONVEYOR_NORTH_SHIFT_Y:g}, 0, 0.58)", layer
-        )
-        self.assertIn(
-            'uniform token[] xformOpOrder = ["xformOp:translate", '
-            '"xformOp:orient", "xformOp:scale"]',
+        import re
+
+        # 只看 over "ConveyorBelt" 自身的直接属性区（到第一个嵌套 over 为止）：
+        # 组内子 prim（打包桌/桌面板修正等）本来就合法地 author 各自的 translate。
+        head = re.search(
+            r'over "ConveyorBelt"\n    \{\n(.*?)(?=        over "|    \})',
             layer,
+            flags=re.S,
         )
-        # 地贴是 ConveyorBelt 的兄弟，不会被组平移带走，必须各自 +Δ。
-        self.assertIn(
-            f'over "FloorZone_KeepClear"\n    {{\n        double3 xformOp:translate '
-            f'= ({CONVEYOR_NORTH_SHIFT_Y:g}, 0.94, 0.01)',
-            layer,
-        )
-        self.assertIn(f"({4.5 + CONVEYOR_NORTH_SHIFT_Y:g}, 1.5, 0.01)", layer)
-        self.assertIn(f"({1.0 + CONVEYOR_NORTH_SHIFT_Y:g}, 2, 0.01)", layer)
+        if head is not None:
+            self.assertNotIn("xformOp:translate", head.group(1))
+            self.assertNotIn("xformOpOrder", head.group(1))
 
 
 if __name__ == "__main__":

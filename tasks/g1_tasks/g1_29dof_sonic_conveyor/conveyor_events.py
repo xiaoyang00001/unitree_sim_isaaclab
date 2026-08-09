@@ -32,8 +32,8 @@ from . import conveyor_queue
 
 # 带面判据的默认参数直接取自 conveyor_drive 的常量，避免第二处真源。
 # ⚠️ ConveyorEventsCfg 只显式传 y_stop / y_recycle / y_respawn，**不传 y_range**，
-#    所以下面的默认值就是运行时真正生效的判据；流水线北移后漏改会让筐一进新带段
-#    就被判"不在带上"，整段驱动静默失效。
+#    所以下面的默认值就是运行时真正生效的判据；改 conveyor_drive 常量会自动跟随，
+#    别在这里另写字面量造第二真源。
 from .conveyor_drive import (
     BELT_TOP_Z,
     BELT_Y_MAX,
@@ -234,8 +234,7 @@ def drive_belt_boxes_on_conveyor(
     belt_top_z: float = BELT_TOP_Z,
     z_tolerance: float = 0.15,
     x_range: tuple[float, float] = (-6.17, -5.07),
-    # 北移后带面判据必须跟 conveyor_drive 的常量走（scanner 合并语义点：
-    # 这个函数是 belt-boxes 线新增的，git 自动合并不会替它换常量）。
+    # 带面判据跟 conveyor_drive 常量走，避免第二真源。
     y_range: tuple[float, float] = (BELT_Y_MIN, BELT_Y_MAX),
     y_stop: float | None = None,
     queue_gap: float = 0.07,

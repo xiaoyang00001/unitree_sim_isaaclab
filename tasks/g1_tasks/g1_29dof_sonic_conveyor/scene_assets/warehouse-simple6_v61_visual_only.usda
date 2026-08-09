@@ -26,21 +26,6 @@
 #      scene_assets/props/cart_box_d01_physics.usda），沿带面精确贴合并参与
 #      scene-sync。留着这批装饰物会和真箱子在同一条中线上视觉打架。
 # 物理清理保留在原地而不是直接删掉整段：既是双保险，也保留了 active=true 时的可回退性。
-#
-# ── 流水线整体北移 Δ = 3.55 m ─────────────────────────────────────────────
-# 真源常量是 conveyor_drive.CONVEYOR_NORTH_SHIFT_Y（推导写在那里），本层是它唯一的
-# 几何落地处。⚠️ **世界 y +Δ ≡ 背景局部 x +Δ**：背景挂载时绕 Z 转了 +90°
-# （世界x = -4.68 − 局部y，世界y = 14.39363 + 局部x），所以下面所有覆盖都加在
-# translate 的**第一个分量**上。
-#
-# 位移要写两处，缺一不可：
-#   1) over "ConveyorBelt" 的组变换 —— 带走三段带体 + 两张打包桌 +
-#      blue_sorting_bin_01/02/03 + warehouse_extras_01（见文件末尾附近）；
-#   2) /Root 下的**兄弟** prim 各自 +Δ —— 即下面 ConveyorBelt_Box_00..09 与
-#      KLT_Bin_00..04 这 15 件"摆在带面上的装饰货物"（已 active=false 摘除，但
-#      平移仍写上：保住 active=true 回退路径时它们仍贴在北移后的带面上），
-#      以及文件末尾的 FloorZone_KeepClear / FloorZone_Robot / Stripe_Conv1
-#      三条地面标线。
 over "Root"
 {
     over "ConveyorBelt_Box_00" (
@@ -48,9 +33,6 @@ over "Root"
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
-        # 北移 3.55（局部 x）：见文件头「流水线整体北移」。
-        double3 xformOp:translate = (1.05, 0.937, 0.633)
-
         bool physics:collisionEnabled = 0
         bool physics:rigidBodyEnabled = 0
 
@@ -68,9 +50,6 @@ over "Root"
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
-        # 北移 3.55（局部 x）：见文件头「流水线整体北移」。
-        double3 xformOp:translate = (1.564285714286, 0.937, 0.633)
-
         bool physics:collisionEnabled = 0
         bool physics:rigidBodyEnabled = 0
 
@@ -88,9 +67,6 @@ over "Root"
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
-        # 北移 3.55（局部 x）：见文件头「流水线整体北移」。
-        double3 xformOp:translate = (2.592857142857, 0.937, 0.633)
-
         bool physics:collisionEnabled = 0
         bool physics:rigidBodyEnabled = 0
 
@@ -108,9 +84,6 @@ over "Root"
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
-        # 北移 3.55（局部 x）：见文件头「流水线整体北移」。
-        double3 xformOp:translate = (2.908733852967, 0.937, 0.633)
-
         bool physics:collisionEnabled = 0
         bool physics:rigidBodyEnabled = 0
 
@@ -128,9 +101,6 @@ over "Root"
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
-        # 北移 3.55（局部 x）：见文件头「流水线整体北移」。
-        double3 xformOp:translate = (4.135714285714, 0.937, 0.633)
-
         bool physics:collisionEnabled = 0
         bool physics:rigidBodyEnabled = 0
 
@@ -148,9 +118,6 @@ over "Root"
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
-        # 北移 3.55（局部 x）：见文件头「流水线整体北移」。
-        double3 xformOp:translate = (4.65, 0.937, 0.633)
-
         bool physics:collisionEnabled = 0
         bool physics:rigidBodyEnabled = 0
 
@@ -168,9 +135,6 @@ over "Root"
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
-        # 北移 3.55（局部 x）：见文件头「流水线整体北移」。
-        double3 xformOp:translate = (5.678571428571, 0.937, 0.633)
-
         bool physics:collisionEnabled = 0
         bool physics:rigidBodyEnabled = 0
 
@@ -188,9 +152,6 @@ over "Root"
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
-        # 北移 3.55（局部 x）：见文件头「流水线整体北移」。
-        double3 xformOp:translate = (6.192857142857, 0.937, 0.633)
-
         bool physics:collisionEnabled = 0
         bool physics:rigidBodyEnabled = 0
 
@@ -208,9 +169,6 @@ over "Root"
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
-        # 北移 3.55（局部 x）：见文件头「流水线整体北移」。
-        double3 xformOp:translate = (7.221428571429, 0.937, 0.633)
-
         bool physics:collisionEnabled = 0
         bool physics:rigidBodyEnabled = 0
 
@@ -228,9 +186,6 @@ over "Root"
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
-        # 北移 3.55（局部 x）：见文件头「流水线整体北移」。
-        double3 xformOp:translate = (7.74, 0.937, 0.633)
-
         bool physics:collisionEnabled = 0
         bool physics:rigidBodyEnabled = 0
 
@@ -248,9 +203,6 @@ over "Root"
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
-        # 北移 3.55（局部 x）：见文件头「流水线整体北移」。
-        double3 xformOp:translate = (0.867391130219, 0.937, 0.9898129693970195)
-
         bool physics:collisionEnabled = 0
         bool physics:rigidBodyEnabled = 0
 
@@ -268,9 +220,6 @@ over "Root"
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
-        # 北移 3.55（局部 x）：见文件头「流水线整体北移」。
-        double3 xformOp:translate = (2.36772714952, 0.937, 0.9369737655438586)
-
         bool physics:collisionEnabled = 0
         bool physics:rigidBodyEnabled = 0
 
@@ -288,9 +237,6 @@ over "Root"
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
-        # 北移 3.55（局部 x）：见文件头「流水线整体北移」。
-        double3 xformOp:translate = (4.031533333326, 0.937, 0.8890492680741335)
-
         bool physics:collisionEnabled = 0
         bool physics:rigidBodyEnabled = 0
 
@@ -308,9 +254,6 @@ over "Root"
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
-        # 北移 3.55（局部 x）：见文件头「流水线整体北移」。
-        double3 xformOp:translate = (5.075978138724, 0.937, 0.9546873685802767)
-
         bool physics:collisionEnabled = 0
         bool physics:rigidBodyEnabled = 0
 
@@ -328,9 +271,6 @@ over "Root"
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
-        # 北移 3.55（局部 x）：见文件头「流水线整体北移」。
-        double3 xformOp:translate = (6.293551992872, 0.937, 0.9110274494428436)
-
         bool physics:collisionEnabled = 0
         bool physics:rigidBodyEnabled = 0
 
@@ -824,32 +764,8 @@ over "Root"
     # payload ConveyorBelt02.usd，而 v48 曾用 matrix4d 形式覆盖过它们。因此这里按
     # 各自在 v48 中的原始 op 形式回写，并显式重写 xformOpOrder：TRS 与 matrix 两种
     # 写法不能混，只改值不改 order 会让 matrix 覆盖被 payload 的 TRS 顺序忽略。
-    # ── 流水线整体北移 3.55 m ──────────────────────────────────────────
-    # 安检机改为靠 +Y 落地墙 SM_WallA_6M16（实测南面 y=23.6055）摆放并放大 1.40 倍，
-    # 机身中心落在世界 y=21.772064；让流水线入料端（实测 18.2223）正好推进机身中心
-    # ⇒ Δ=3.55。真源常量是 conveyor_drive.CONVEYOR_NORTH_SHIFT_Y，改这里必须同改它。
-    #
-    # ⚠️ 世界 y +Δ ≡ 背景**局部 x** +Δ：背景挂载时绕 Z 转了 +90°
-    #    （世界x = -4.68 − 局部y，世界y = 14.39363 + 局部x）。
-    # ⚠️ /Root/ConveyorBelt 的四个变换属性全部定义在 subLayer
-    #    warehouse-simple6_v61.usd（payload ConveyorBelt02.usd 对 /Root 一个变换属性
-    #    都没写），op 形式是 TRS-with-orient。这里按同一形式回写并显式重述
-    #    xformOpOrder：TRS 与 matrix 两种写法不能混——只写 matrix4d xformOp:transform
-    #    而不改 xformOpOrder，覆盖会被弱层的 [translate, orient, scale] 顺序完全忽略，
-    #    而且**静默无效**（实测世界 Δy 恒为 0，无任何报错）。
-    # ⚠️ z=0.58 是整组流水线的既有抬升量，必须原样带上；只写 (Δ,0,0) 会让整条线连同
-    #    工位家具下沉 0.58 m。
-    #
-    # 跟着这一层走的子 Prim（实测刚体平移，Δy 误差 <1e-6、Δz 精确为 0）：三段带体、
-    # 两张打包桌、blue_sorting_bin_01/02/03、warehouse_extras_01。工位内部相对几何
-    # 零变化，机器人只要同样 +Δ 就与家具逐毫米对齐。
     over "ConveyorBelt"
     {
-        double3 xformOp:translate = (3.55, 0, 0.58)
-        quatf xformOp:orient = (1, 0, 0, 0)
-        float3 xformOp:scale = (1, 1, 1)
-        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
-
         over "SM_HeavyDutyPackingTable_C02_01"
         {
             matrix4d xformOp:transform = ( (0.004394829989768472, 0.0, 0.0, 0.0), (0.0, 0.01365120615810155, 0.0, 0.0), (0.0, 0.0, 0.004308692179620263, 0.0), (1.0265775455502195, -0.2067073031074571, -0.5770295507331438, 1.0) )
@@ -897,22 +813,4 @@ over "Root"
             uniform token[] xformOpOrder = ["xformOp:transform"]
         }
     }
-
-    # 地面标线：/Root 下 ConveyorBelt 的**兄弟**，不会跟着组平移，必须单独 +3.55。
-    # 三者都指向 S3 远程资产，离线取不到包围盒，只能按 translate 值判断，Kit 里目视复核。
-    over "FloorZone_KeepClear"
-    {
-        double3 xformOp:translate = (3.55, 0.94, 0.01)
-    }
-
-    over "FloorZone_Robot"
-    {
-        double3 xformOp:translate = (8.05, 1.5, 0.01)
-    }
-
-    over "Stripe_Conv1"
-    {
-        double3 xformOp:translate = (4.55, 2, 0.01)
-    }
-
 }

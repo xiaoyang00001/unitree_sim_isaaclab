@@ -7,8 +7,7 @@
 
 用法（conda env_isaaclab，仓库根目录）：
 
-  # Phase 0 单机场景冒烟（不建 socket）：筐应从入料端 y=20.95/21.55 流到工位 y≈17.698 停住
-  # （坐标已含流水线整体北移 Δ=3.55；expected_stop_y 是从 env cfg 动态取的，改常量即自动跟随）
+  # Phase 0 单机场景冒烟（不建 socket）：筐应从入料端 y=17.4/18.0 流到工位 y≈14.148 停住
   python tools/smoke_conveyor_scene.py --steps 800
 
   # PhysX Surface Velocity 实验 A/B（固定由 ID=1 驱动，默认 50 mm 容差）
