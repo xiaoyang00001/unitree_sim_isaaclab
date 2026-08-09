@@ -112,13 +112,21 @@ NavMesh、Render 设置、额外 PhysicsScene、货架、纸箱堆、推车与�
 
 ### 纸箱队列的挡停放行
 
-流水线布局的作业对象是 5 个纸箱（`SM_CardBoxD_01`，0.38×0.25×0.1487 m，与 v61 背景
-`ConveyorBelt_Box_XX` 同款视觉，物理封装见 `props/cart_box_d01_physics.usda`）。它们只
-排在工位 `y_stop=14.148` **上游**那一段带面上，默认出生 y 为
-`15.6 / 16.2 / 16.8 / 17.4 / 18.0`，车道 `x=-5.62`、`z=0.775`。`belt_box_1` 是队首。
+流水线布局的作业对象是 5 个纸箱，**两种箱型交错排布**——两者都是 v61 背景自带的视觉
+资产，尺寸差近一倍，一眼能区分：
 
-每个箱子的停止线是 `max(y_stop, 前车 y + queue_pitch)`，"前车"取下游方向上**仍在带面**
-的最近一个箱子（默认 `queue_pitch=0.45`，即箱长 0.38 + 7 cm 间隙）。于是：
+| key | 视觉资产 | v61 里的用处 | 尺寸（沿带 × 横向 × 高） | 质量 | 物理封装 |
+|---|---|---|---|---|---|
+| `d01` | `SM_CardBoxD_01` | `ConveyorBelt_Box_XX` | 0.38 × 0.25 × 0.1487 m | 1.0 kg | `props/cart_box_d01_physics.usda` |
+| `c01` | `SM_CardBoxC_01` | `KLT_Bin_XX` | 0.50 × 0.50 × 0.25 m | 1.5 kg | `props/cart_box_c01_physics.usda` |
+
+默认排布是 `d01, c01, d01, c01, d01`（`ISAACLAB_BELT_BOX_PATTERN` 循环，写单个 key 就是
+全用一种）。箱子只排在工位 `y_stop=14.148` **上游**那一段带面上，默认出生 y 为
+`15.5 / 16.1 / 16.7 / 17.3 / 17.9`，车道 `x=-5.62`、`z=0.775`。`belt_box_1` 是队首。
+
+每个箱子的停止线是 `max(y_stop, 前车尾部 + 自己半长 + queue_gap)`，"前车"取下游方向上
+**仍在带面**的最近一个箱子（默认 `queue_gap=0.07`）。⚠️ 恒定的是**净空隙**而不是中心距：
+两种箱型尺寸不同，统一中心距要么让大箱互相穿模、要么在小箱之间留出突兀的空档。于是：
 
 * 队首没有前车 → 流到工位停住等抓取；
 * 后车被前车顶住 → 在上游排队，一次只有一个箱子在工位；
@@ -143,16 +151,18 @@ NavMesh、Render 设置、额外 PhysicsScene、货架、纸箱堆、推车与�
 
 | 环境变量 | 默认 | 说明 |
 |---|---|---|
+| `ISAACLAB_BELT_BOX_PATTERN` | `d01,c01` | 箱型循环序列；未知 key 直接报错 |
 | `ISAACLAB_BELT_BOX_COUNT` | `5` | 纸箱数量；上限 5（SceneCfg 字段是显式声明的，超限 fail-fast） |
-| `ISAACLAB_BELT_BOX_SPAWN_Y_LEAD` | `15.6` | 队首出生 y，同时是复位落点 |
+| `ISAACLAB_BELT_BOX_SPAWN_Y_LEAD` | `15.5` | 队首出生 y，同时是复位落点 |
 | `ISAACLAB_BELT_BOX_SPAWN_PITCH` | `0.6` | 出生间距（只决定初始队形） |
-| `ISAACLAB_BELT_BOX_QUEUE_PITCH` | `0.45` | 停稳后的队列中心距，不得小于箱长 |
+| `ISAACLAB_BELT_BOX_QUEUE_GAP` | `0.07` | 停稳后相邻箱子之间的**净空隙**（不是中心距） |
 | `ISAACLAB_BELT_BOX_LANE_X` / `_SPAWN_Z` | `-5.62` / `0.775` | 车道与出生高度 |
-| `ISAACLAB_BELT_BOX_MASS` | `1.0` | 单箱质量（kg） |
+| `ISAACLAB_BELT_BOX_MASS_D01` / `_C01` | `1.0` / `1.5` | 按箱型分别覆写质量（kg） |
 | `ISAACLAB_CONVEYOR_SPEED` / `_Y_STOP` / `_ENABLED` | `0.3` / `14.148` / `1` | 速度、工位、总开关 |
 
-排到带面外、队距小于箱长、队首压在工位上等非法组合都会在启动时报错，不会等到运行时
-才看见箱子悬空或互相穿模。
+下列非法组合都会在启动时报错，不会等到运行时才看见箱子悬空或互相穿模：出生位排到带面
+外、**相邻两箱按各自半长算放不下**、队首压在工位上、**停稳后的队列伸出带尾**、箱型比带面
+还宽、未知箱型 key。
 
 验收（`--pick-lead-at` 会在指定步把队首搬离带面，模拟机器人取件）：
 
@@ -269,10 +279,12 @@ HandCmd 默认超时为 `0.20 s`；超时后保持最后安全的 `q/kp/kd`、�
   镜像物体会静默冻结（启动时有告警）。
 - 物体在带上被拖拽滑行（碰撞板静止 + μd=0.6），实测平均速度 ≈0.25 m/s 而不是设定的
   0.3 m/s，且会缓慢自转（源分支已知）。
-- 纸箱停位比理论槽位各偏小 8~33 mm（越线后驱动关闭、靠摩擦停住），队列越靠上游累计偏差
-  越大；smoke 的容差取 50 mm。需要更准的节距就调 `queue_pitch`，不要指望停在整数槽位上。
+- 纸箱停位比理论槽位各偏小 6~39 mm（越线后驱动关闭、靠摩擦停住），队列越靠上游累计偏差
+  越大；smoke 的容差取 50 mm。相邻箱子的实测净空隙约 0.062~0.063 m（设定 0.07），不要指望
+  停在精确槽位上。
 - **纸箱队列尚未做机器人实抓验收**：`--pick-lead-at` 是把队首直接搬离带面来模拟取件，
-  验的是"队列会不会正确放行下一个"，不等于 Dex3 真能抓起 1.0 kg 的纸箱。
+  验的是"队列会不会正确放行下一个"，不等于 Dex3 真能抓起箱子。尤其 `c01` 是
+  0.5×0.5×0.25 m / 1.5 kg，跨度和重量都明显大于 `d01`，能否抓取完全未验。
 - 流水线布局的 robot_2 仍是偏展示的站位，离带面较远，实际可达性尚未完全收口。
 - 原布局（`ISAACLAB_TOTES_ON_CONVEYOR=0`）的作业闭环在源分支就未实跑过。
 - `surface_velocity` 后端下纸箱队列靠"后车撞前车"物理涌现，没有走
@@ -292,6 +304,7 @@ HandCmd 默认超时为 `0.20 s`；超时后保持最后安全的 `q/kp/kd`、�
 | nolo_label.png | 分叉 git | warehouse USD 相对引用的地面贴花 |
 | props/pushcart_physics.usda | 分叉工作区手拷（未入 git） | 引用 Nucleus 5.1 SM_PushcartA_02 |
 | props/cart_box_d05_physics.usda | 分叉 git-LFS tip 版 | 已含关 CCD 修复（ae9118a2e） |
-| props/cart_box_d01_physics.usda | 本仓库任务专用物理层 | 流水线纸箱队列用；与 d05 同构但引用 `SM_CardBoxD_01`（= v61 `ConveyorBelt_Box_XX` 的视觉源），删掉原资产的 triangle-mesh 碰撞、另挂 0.38×0.25×0.149 m 的 convexHull，原点在箱底面 |
+| props/cart_box_d01_physics.usda | 本仓库任务专用物理层 | 流水线纸箱队列的第一种箱型；与 d05 同构但引用 `SM_CardBoxD_01`（= v61 `ConveyorBelt_Box_XX` 的视觉源），删掉原资产的 triangle-mesh 碰撞、另挂 0.38×0.25×0.149 m 的 convexHull，原点在箱底面 |
+| props/cart_box_c01_physics.usda | 本仓库任务专用物理层 | 第二种箱型；同构，引用 `SM_CardBoxC_01`（= v61 `KLT_Bin_XX` 的视觉源），convexHull 0.50×0.50×0.25 m |
 | props/tote_b04_compound_physics.usda | 本仓库任务专用物理层 | 默认料筐碰撞；复用 SimReady 视觉，以底板+四壁 5-box compound 保持开口语义 |
 | props/tote_b04_physics.usda | 分叉 git-LFS | 历史 convex decomposition 回退；内嵌 2.0/1.6 combine=min 高摩擦材质 |

@@ -125,13 +125,15 @@ def main() -> int:
         env.close()
         return 1
     watched = {name: env.scene[name] for name in watched_names}
-    # 纸箱是排队停的：队首停在工位，第 k 个被前车顶在 y_stop + k*queue_pitch。
-    # 塑料筐没有队列语义，两个筐都各自直接停在工位。
-    queue_pitch = (
-        conveyor_env_cfg.BELT_BOX_QUEUE_PITCH
-        if conveyor_env_cfg.CONVEYOR_BELT_BOX_NAMES
-        else 0.0
-    )
+    # 纸箱是排队停的：队首停在工位，后面每个顶在"前车尾部 + 自己半长 + queue_gap"。
+    # 两种箱型尺寸不同，槽位并不等距，必须按各自半长逐个累加。
+    # 塑料筐没有队列语义，两个筐各自直接停在工位（half=0、gap=0 即退化成这种）。
+    if conveyor_env_cfg.CONVEYOR_BELT_BOX_NAMES:
+        queue_gap = conveyor_env_cfg.BELT_BOX_QUEUE_GAP
+        halves = list(conveyor_env_cfg.CONVEYOR_BELT_BOX_HALF_LENGTHS)
+    else:
+        queue_gap = 0.0
+        halves = [0.0] * len(watched_names)
     peer = env.scene["peer_robot"]
 
     # 方案 b（主循环挂载）：apply_actions 是 no-op，宿主要自己 pump。
@@ -230,13 +232,19 @@ def main() -> int:
         and ((not sync_on) or authority)
         and not surface_non_authority_offline
     ):
-        # 队列语义：第 k 个物体的目标停位是 y_stop + k*queue_pitch（队列 pitch 为 0
-        # 时退化成"全都停在工位"，即塑料筐的历史行为）。取件后队列整体前移一格，
-        # 断言 graded_names[0] 落在工位上 = 验证"抓走后下一个自动补位"。
-        expected_slots = {
-            name: expected_stop_y + index * queue_pitch
-            for index, name in enumerate(graded_names)
-        }
+        # 队列语义：队首停在工位，第 k 个顶在"前车尾部 + 自己半长 + queue_gap"。
+        # 取件后队列整体前移一格，于是断言 graded_names[0] 落在工位上就等于验证
+        # "抓走后下一个自动补位"。半长按剩下的箱子重新对齐（被取走那个已剔除）。
+        graded_halves = [
+            halves[watched_names.index(name)] if name in watched_names else 0.0
+            for name in graded_names
+        ]
+        expected_slots = {}
+        slot_y = expected_stop_y
+        for index, name in enumerate(graded_names):
+            if index > 0:
+                slot_y += graded_halves[index - 1] + queue_gap + graded_halves[index]
+            expected_slots[name] = slot_y
         stop_errors = {
             name: abs(end_y[name] - expected_slots[name]) for name in graded_names
         }

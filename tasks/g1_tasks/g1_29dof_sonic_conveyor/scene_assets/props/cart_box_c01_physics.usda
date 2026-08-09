@@ -1,0 +1,88 @@
+#usda 1.0
+(
+    defaultPrim = "CartBoxC01"
+    metersPerUnit = 1
+    upAxis = "Z"
+    doc = """Physics wrapper for SM_CardBoxC_01 — the second belt box type.
+
+    与 cart_box_d01_physics.usda 同构，只换视觉资产。这两个型号都是 v61 背景自带的：
+    `ConveyorBelt_Box_XX` 引 SM_CardBoxD_01（0.38x0.25x0.1487），`KLT_Bin_XX` 引
+    SM_CardBoxC_01（0.5x0.5x0.25）。流水线上两种交错排布，靠尺寸差一眼能区分。
+
+    原资产结构与 D_01 逐项一致：单 Mesh、scale 0.01、原点在底面、自带
+    triangle-mesh 碰撞（对动态刚体只能退化成凸包 fallback，故删掉另挂凸包）。"""
+)
+
+def Xform "CartBoxC01" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "PhysxRigidBodyAPI"]
+)
+{
+    bool physics:rigidBodyEnabled = 1
+    bool physics:kinematicEnabled = 0
+    float physics:mass = 1.5
+    float physxRigidBody:angularDamping = 0.1
+    bool physxRigidBody:disableGravity = 0
+    bool physxRigidBody:enableCCD = 0
+    bool physxRigidBody:enableGyroscopicForces = 1
+    float physxRigidBody:linearDamping = 0.1
+    float physxRigidBody:maxDepenetrationVelocity = 0.5
+    int physxRigidBody:solverPositionIterationCount = 8
+    int physxRigidBody:solverVelocityIterationCount = 2
+
+    def Xform "Visual" (
+        prepend references = @https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Environments/Simple_Warehouse/Props/SM_CardBoxC_01.usd@
+    )
+    {
+        over "SM_CardBoxC_01" (
+            delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+        )
+        {
+        }
+    }
+
+    def Material "GraspPhysicsMaterial" (
+        prepend apiSchemas = ["PhysicsMaterialAPI", "PhysxMaterialAPI"]
+    )
+    {
+        float physics:dynamicFriction = 1.1
+        float physics:restitution = 0
+        float physics:staticFriction = 1.4
+        token physxMaterial:frictionCombineMode = "multiply"
+        token physxMaterial:restitutionCombineMode = "min"
+    }
+
+    def Mesh "ConvexHullCollider" (
+        prepend apiSchemas = ["MaterialBindingAPI", "PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "PhysxCollisionAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+        int[] faceVertexIndices = [
+            0, 1, 2, 3,
+            4, 7, 6, 5,
+            0, 4, 5, 1,
+            1, 5, 6, 2,
+            2, 6, 7, 3,
+            3, 7, 4, 0,
+        ]
+        # 碰撞体尺寸必须与视觉资产 SM_CardBoxC_01 的缩放后尺寸一致。
+        # 视觉 mesh extent = (-25,-25,0)~(25,25,25)，xformOp:scale=(0.01,0.01,0.01)
+        # → 实际尺寸 = 0.50 × 0.50 × 0.25 m。
+        point3f[] points = [
+            (-0.25, -0.25, 0),
+            (0.25, -0.25, 0),
+            (0.25, 0.25, 0),
+            (-0.25, 0.25, 0),
+            (-0.25, -0.25, 0.25),
+            (0.25, -0.25, 0.25),
+            (0.25, 0.25, 0.25),
+            (-0.25, 0.25, 0.25),
+        ]
+        bool physics:collisionEnabled = 1
+        uniform token physics:approximation = "convexHull"
+        float physxCollision:contactOffset = 0.005
+        float physxCollision:restOffset = 0
+        rel material:binding:physics = </CartBoxC01/GraspPhysicsMaterial>
+        uniform token subdivisionScheme = "none"
+        token visibility = "invisible"
+    }
+}

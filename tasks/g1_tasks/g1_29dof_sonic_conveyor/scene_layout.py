@@ -37,16 +37,55 @@ def _env_int(environ: Mapping[str, str], name: str, default: int) -> int:
         return default
 
 
-# 流水线纸箱（SM_CardBoxD_01，与 v61 背景 ``ConveyorBelt_Box_XX`` 同一视觉资产）
-# 缩放后的世界尺寸。箱子绕 Z 转 90° 摆放，长边沿输送方向 Y。
-BELT_BOX_LENGTH_Y = 0.38
-BELT_BOX_WIDTH_X = 0.25
-BELT_BOX_HEIGHT_Z = 0.1487
+@dataclass(frozen=True)
+class BeltBoxKind:
+    """一种流水线箱型：视觉资产 + 缩放后的世界尺寸 + 质量。
+
+    ``length_y`` 是**摆上带面后沿输送方向 Y 的长度**。两种箱型都绕 Z 转 90° 摆放
+    （与 v61 背景装饰箱朝向一致），所以 ``length_y`` 取的是视觉资产的 X 尺寸、
+    ``width_x`` 取 Y 尺寸。原点都在箱底面，出生 z 因此可以直接用带面高度。
+    """
+
+    key: str
+    asset: str
+    length_y: float
+    width_x: float
+    height_z: float
+    mass: float
+
+    @property
+    def half_length_y(self) -> float:
+        return self.length_y * 0.5
+
+
+# 两种箱型都是 v61 背景自带的：`ConveyorBelt_Box_XX` 引 SM_CardBoxD_01、
+# `KLT_Bin_XX` 引 SM_CardBoxC_01。尺寸差近一倍，交错排布一眼能区分。
+BELT_BOX_KINDS = {
+    "d01": BeltBoxKind(
+        key="d01",
+        asset="cart_box_d01_physics.usda",
+        length_y=0.38,
+        width_x=0.25,
+        height_z=0.1487,
+        mass=1.0,
+    ),
+    "c01": BeltBoxKind(
+        key="c01",
+        asset="cart_box_c01_physics.usda",
+        length_y=0.50,
+        width_x=0.50,
+        height_z=0.25,
+        mass=1.5,
+    ),
+}
+DEFAULT_BELT_BOX_PATTERN = ("d01", "c01")
+
 # 带面几何与 conveyor_drive 的常量保持一致（那边是驱动/分段的真源，这里只用来
 # 定位出生点；两处数值若要改必须同时改）。
 BELT_BOX_LANE_X = -5.62
 BELT_BOX_SPAWN_Z = 0.775
 BELT_BOX_BELT_Y_MAX = 18.22
+BELT_BOX_BELT_WIDTH = 0.90
 # SceneCfg 里的 belt_box_N 字段是显式声明的（configclass 需要类属性），所以数量
 # 有硬上限。调大必须同时在 conveyor_env_cfg.G129SonicConveyorSceneCfg 里补字段。
 BELT_BOX_MAX_COUNT = 5
@@ -70,29 +109,62 @@ class ConveyorSceneLayout:
     conveyor_y_stop: float
     belt_box_count: int
     belt_box_positions: tuple[tuple[float, float, float], ...]
-    belt_box_queue_pitch: float
+    belt_box_kinds: tuple[BeltBoxKind, ...]
+    belt_box_queue_gap: float
 
     @property
     def belt_box_names(self) -> tuple[str, ...]:
         return tuple(f"belt_box_{index + 1}" for index in range(self.belt_box_count))
+
+    @property
+    def belt_box_half_lengths(self) -> tuple[float, ...]:
+        """每个箱子沿输送方向的半长——排队判据按它算净间隙。"""
+
+        return tuple(kind.half_length_y for kind in self.belt_box_kinds)
+
+
+def resolve_belt_box_pattern(environ: Mapping[str, str], count: int) -> tuple[BeltBoxKind, ...]:
+    """按 ``ISAACLAB_BELT_BOX_PATTERN`` 循环出每个位置的箱型。
+
+    默认 ``d01,c01`` ⇒ 交错排布 d01/c01/d01/c01/d01。写单个 key（如 ``d01``）就是
+    全用一种。未知 key 一律 fail-fast，不静默回退——否则场景里会悄悄少一种箱型。
+    """
+
+    raw = environ.get("ISAACLAB_BELT_BOX_PATTERN")
+    if raw is None or not str(raw).strip():
+        pattern = DEFAULT_BELT_BOX_PATTERN
+    else:
+        pattern = tuple(item.strip().lower() for item in str(raw).split(",") if item.strip())
+    if not pattern:
+        raise ValueError("ISAACLAB_BELT_BOX_PATTERN 不能为空")
+
+    unknown = [key for key in pattern if key not in BELT_BOX_KINDS]
+    if unknown:
+        choices = ", ".join(sorted(BELT_BOX_KINDS))
+        raise ValueError(f"ISAACLAB_BELT_BOX_PATTERN 含未知箱型 {unknown}；可选值: {choices}")
+
+    return tuple(BELT_BOX_KINDS[pattern[index % len(pattern)]] for index in range(count))
 
 
 def resolve_belt_box_positions(
     environ: Mapping[str, str],
     *,
     y_stop: float,
-) -> tuple[int, tuple[tuple[float, float, float], ...], float]:
+) -> tuple[int, tuple[tuple[float, float, float], ...], tuple[BeltBoxKind, ...], float]:
     """把 N 个纸箱排在工位**上游**那一段带面上（"流水线前段"）。
 
     机器人工位 ``y_stop`` 把带面切成两段：上游 (y_stop, 18.22] 是来料段，下游
     [10.19, y_stop) 是出料段。箱子只出生在上游，这样一次整场景复位 = 重新完整
     流一遍（与两塑料筐时代的落点约定一致，见 conveyor_env_cfg 的出生 y 注释）。
 
-    ``belt_box_1`` 是队首（y 最小、最先到工位），编号递增向上游排。出生间距
-    ``spawn_pitch`` 只决定初始队形；停下来后的实际队距由 ``queue_pitch`` 决定。
+    ``belt_box_1`` 是队首（y 最小、最先到工位），编号递增向上游排。箱型按
+    ``ISAACLAB_BELT_BOX_PATTERN`` 循环（默认两种交错）。出生间距 ``spawn_pitch``
+    只决定初始队形；停下来后的实际队距由**每个箱子自己的半长**加净间隙
+    ``queue_gap`` 决定——两种箱型尺寸不同，统一的"中心距"要么让大箱穿模、要么让
+    小箱之间留出突兀的空档。
 
-    非法配置一律 fail-fast：箱子排到带面外或队距小于箱长，都会在启动时就暴露，
-    而不是等到运行时看见箱子悬空/互相穿模再回头猜。
+    非法配置一律 fail-fast：箱子排到带面外、相邻箱子出生就互穿、停稳后的队列
+    伸出带尾，都会在启动时暴露，而不是等到运行时看见箱子悬空/穿模再回头猜。
     """
 
     count = _env_int(environ, "ISAACLAB_BELT_BOX_COUNT", BELT_BOX_MAX_COUNT)
@@ -107,42 +179,63 @@ def resolve_belt_box_positions(
 
     lane_x = _env_float(environ, "ISAACLAB_BELT_BOX_LANE_X", BELT_BOX_LANE_X)
     spawn_z = _env_float(environ, "ISAACLAB_BELT_BOX_SPAWN_Z", BELT_BOX_SPAWN_Z)
-    y_lead = _env_float(environ, "ISAACLAB_BELT_BOX_SPAWN_Y_LEAD", 15.6)
+    y_lead = _env_float(environ, "ISAACLAB_BELT_BOX_SPAWN_Y_LEAD", 15.5)
     spawn_pitch = _env_float(environ, "ISAACLAB_BELT_BOX_SPAWN_PITCH", 0.6)
-    queue_pitch = _env_float(environ, "ISAACLAB_BELT_BOX_QUEUE_PITCH", 0.45)
+    queue_gap = _env_float(environ, "ISAACLAB_BELT_BOX_QUEUE_GAP", 0.07)
 
+    kinds = resolve_belt_box_pattern(environ, count)
     if count == 0:
-        return 0, (), queue_pitch
+        return 0, (), (), queue_gap
 
-    if queue_pitch < BELT_BOX_LENGTH_Y:
-        raise ValueError(
-            "ISAACLAB_BELT_BOX_QUEUE_PITCH 不能小于箱长 "
-            f"{BELT_BOX_LENGTH_Y}，当前 {queue_pitch}"
-        )
-    if spawn_pitch < queue_pitch:
-        raise ValueError(
-            "ISAACLAB_BELT_BOX_SPAWN_PITCH 不能小于排队间距 "
-            f"{queue_pitch}，当前 {spawn_pitch}"
-        )
+    if queue_gap < 0.0:
+        raise ValueError(f"ISAACLAB_BELT_BOX_QUEUE_GAP 不能为负，当前 {queue_gap}")
 
-    half_len = BELT_BOX_LENGTH_Y * 0.5
+    halves = [kind.half_length_y for kind in kinds]
+
+    # 相邻箱子出生就不能互穿：中心距至少是两个半长之和。
+    for index in range(count - 1):
+        need = halves[index] + halves[index + 1]
+        if spawn_pitch < need:
+            raise ValueError(
+                f"ISAACLAB_BELT_BOX_SPAWN_PITCH={spawn_pitch} 放不下相邻的 "
+                f"{kinds[index].key}/{kinds[index + 1].key}：至少要 {need:.3f}"
+            )
+
     # 队首必须整体落在工位上游，队尾不能悬出带尾。
-    if y_lead - half_len <= y_stop:
+    if y_lead - halves[0] <= y_stop:
         raise ValueError(
             f"ISAACLAB_BELT_BOX_SPAWN_Y_LEAD={y_lead} 让队首压在工位 y_stop={y_stop} 上；"
-            f"至少要 {y_stop + half_len:.3f}"
+            f"至少要 {y_stop + halves[0]:.3f}"
         )
     y_tail = y_lead + spawn_pitch * (count - 1)
-    if y_tail + half_len > BELT_BOX_BELT_Y_MAX:
+    if y_tail + halves[-1] > BELT_BOX_BELT_Y_MAX:
         raise ValueError(
             f"{count} 个纸箱按 pitch={spawn_pitch} 从 y={y_lead} 排到 y={y_tail}，"
-            f"队尾悬出带面 y_max={BELT_BOX_BELT_Y_MAX}"
+            f"队尾（{kinds[-1].key}）悬出带面 y_max={BELT_BOX_BELT_Y_MAX}"
         )
+
+    # 停稳后的队列也必须装得下：队首压在工位，其余逐个顶在前车尾部 + 自身半长 + 间隙。
+    settled = y_stop + halves[0]
+    for index in range(1, count):
+        settled += queue_gap + halves[index] * 2
+    if settled > BELT_BOX_BELT_Y_MAX:
+        raise ValueError(
+            f"停稳后的队列尾端到 y={settled:.3f}，超出带面 y_max={BELT_BOX_BELT_Y_MAX}；"
+            f"减少 ISAACLAB_BELT_BOX_COUNT 或 ISAACLAB_BELT_BOX_QUEUE_GAP"
+        )
+
+    # 最宽的箱型也要放得进带面宽度。
+    half_width = BELT_BOX_BELT_WIDTH * 0.5
+    for kind in kinds:
+        if kind.width_x * 0.5 > half_width:
+            raise ValueError(
+                f"箱型 {kind.key} 宽 {kind.width_x} 放不进带面宽度 {BELT_BOX_BELT_WIDTH}"
+            )
 
     positions = tuple(
         (lane_x, y_lead + spawn_pitch * index, spawn_z) for index in range(count)
     )
-    return count, positions, queue_pitch
+    return count, positions, kinds, queue_gap
 
 
 def resolve_scene_layout(environ: Mapping[str, str]) -> ConveyorSceneLayout:
@@ -188,11 +281,14 @@ def resolve_scene_layout(environ: Mapping[str, str]) -> ConveyorSceneLayout:
     conveyor_y_stop = _env_float(environ, "ISAACLAB_CONVEYOR_Y_STOP", default_y_stop)
     # 纸箱只在流水线布局下存在：推车布局的作业闭环仍是两塑料筐。
     if totes_on_conveyor:
-        belt_box_count, belt_box_positions, belt_box_queue_pitch = (
-            resolve_belt_box_positions(environ, y_stop=conveyor_y_stop)
-        )
+        (
+            belt_box_count,
+            belt_box_positions,
+            belt_box_kinds,
+            belt_box_queue_gap,
+        ) = resolve_belt_box_positions(environ, y_stop=conveyor_y_stop)
     else:
-        belt_box_count, belt_box_positions, belt_box_queue_pitch = 0, (), 0.45
+        belt_box_count, belt_box_positions, belt_box_kinds, belt_box_queue_gap = 0, (), (), 0.07
 
     return ConveyorSceneLayout(
         totes_on_conveyor=totes_on_conveyor,
@@ -209,5 +305,6 @@ def resolve_scene_layout(environ: Mapping[str, str]) -> ConveyorSceneLayout:
         conveyor_y_stop=conveyor_y_stop,
         belt_box_count=belt_box_count,
         belt_box_positions=belt_box_positions,
-        belt_box_queue_pitch=belt_box_queue_pitch,
+        belt_box_kinds=belt_box_kinds,
+        belt_box_queue_gap=belt_box_queue_gap,
     )

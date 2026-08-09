@@ -67,9 +67,9 @@ class ConveyorSceneLayoutTest(unittest.TestCase):
 
 
 class BeltBoxLayoutTest(unittest.TestCase):
-    """纸箱队列只排在工位上游那一段带面上（"流水线前段"）。"""
+    """纸箱队列只排在工位上游那一段带面上（"流水线前段"），两种箱型交错。"""
 
-    def test_default_conveyor_layout_spawns_five_boxes_upstream(self) -> None:
+    def test_default_conveyor_layout_spawns_five_interleaved_boxes(self) -> None:
         layout = resolve_scene_layout({})
 
         self.assertEqual(layout.belt_box_count, 5)
@@ -77,47 +77,85 @@ class BeltBoxLayoutTest(unittest.TestCase):
             layout.belt_box_names,
             ("belt_box_1", "belt_box_2", "belt_box_3", "belt_box_4", "belt_box_5"),
         )
-        self.assertEqual(layout.belt_box_queue_pitch, 0.45)
+        # 默认 pattern d01,c01 循环 → 交错排布。
+        self.assertEqual(
+            [kind.key for kind in layout.belt_box_kinds],
+            ["d01", "c01", "d01", "c01", "d01"],
+        )
+        self.assertEqual(layout.belt_box_queue_gap, 0.07)
         self.assertEqual(
             layout.belt_box_positions,
             (
-                (-5.62, 15.6, 0.775),
-                (-5.62, 16.2, 0.775),
-                (-5.62, 16.8, 0.775),
-                (-5.62, 17.4, 0.775),
-                (-5.62, 18.0, 0.775),
+                (-5.62, 15.5, 0.775),
+                (-5.62, 16.1, 0.775),
+                (-5.62, 16.7, 0.775),
+                (-5.62, 17.3, 0.775),
+                (-5.62, 17.9, 0.775),
             ),
         )
+        self.assertEqual(layout.belt_box_half_lengths, (0.19, 0.25, 0.19, 0.25, 0.19))
+
+    def test_both_kinds_come_from_the_v61_background_assets(self) -> None:
+        """两种箱型就是 v61 背景里 ConveyorBelt_Box / KLT_Bin 引的那两个视觉资产。"""
+
+        kinds = _LAYOUT_MODULE.BELT_BOX_KINDS
+        self.assertEqual(kinds["d01"].asset, "cart_box_d01_physics.usda")
+        self.assertEqual(kinds["c01"].asset, "cart_box_c01_physics.usda")
+        self.assertEqual(
+            (kinds["d01"].length_y, kinds["d01"].width_x, kinds["d01"].height_z),
+            (0.38, 0.25, 0.1487),
+        )
+        self.assertEqual(
+            (kinds["c01"].length_y, kinds["c01"].width_x, kinds["c01"].height_z),
+            (0.50, 0.50, 0.25),
+        )
+
+    def test_pattern_is_configurable_and_cycles(self) -> None:
+        single = resolve_scene_layout({"ISAACLAB_BELT_BOX_PATTERN": "c01"})
+        self.assertEqual([k.key for k in single.belt_box_kinds], ["c01"] * 5)
+
+        flipped = resolve_scene_layout({"ISAACLAB_BELT_BOX_PATTERN": " C01 , D01 "})
+        self.assertEqual(
+            [k.key for k in flipped.belt_box_kinds], ["c01", "d01", "c01", "d01", "c01"]
+        )
+
+    def test_unknown_pattern_key_fails_fast(self) -> None:
+        with self.assertRaisesRegex(ValueError, "未知箱型"):
+            resolve_scene_layout({"ISAACLAB_BELT_BOX_PATTERN": "d01,nope"})
 
     def test_every_box_sits_fully_upstream_of_the_workstation_and_on_the_belt(self) -> None:
         layout = resolve_scene_layout({})
-        half_len = _LAYOUT_MODULE.BELT_BOX_LENGTH_Y * 0.5
 
-        for name, (_x, y, _z) in zip(layout.belt_box_names, layout.belt_box_positions):
+        for name, kind, (_x, y, _z) in zip(
+            layout.belt_box_names, layout.belt_box_kinds, layout.belt_box_positions
+        ):
             with self.subTest(name):
-                self.assertGreater(y - half_len, layout.conveyor_y_stop, "压到工位下游了")
-                self.assertLessEqual(y + half_len, _LAYOUT_MODULE.BELT_BOX_BELT_Y_MAX)
+                half = kind.half_length_y
+                self.assertGreater(y - half, layout.conveyor_y_stop, "压到工位下游了")
+                self.assertLessEqual(y + half, _LAYOUT_MODULE.BELT_BOX_BELT_Y_MAX)
 
-    def test_boxes_are_ordered_lead_first_and_never_overlap(self) -> None:
-        """belt_box_1 是队首（y 最小、最先到工位），相邻箱子不得重叠。"""
+    def test_boxes_are_ordered_lead_first_and_never_overlap_at_spawn(self) -> None:
+        """belt_box_1 是队首（y 最小、最先到工位），相邻箱子出生就不得互穿。"""
 
         layout = resolve_scene_layout({})
         ys = [pos[1] for pos in layout.belt_box_positions]
+        halves = layout.belt_box_half_lengths
 
         self.assertEqual(ys, sorted(ys))
-        for lead, follow in zip(ys, ys[1:]):
-            self.assertGreaterEqual(follow - lead, _LAYOUT_MODULE.BELT_BOX_LENGTH_Y)
+        for index in range(len(ys) - 1):
+            gap = (ys[index + 1] - halves[index + 1]) - (ys[index] + halves[index])
+            self.assertGreaterEqual(gap, 0.0, f"box {index} 与 {index + 1} 出生就互穿")
 
     def test_settled_queue_still_fits_on_the_belt(self) -> None:
-        """停稳后队列占据 y_stop + k*queue_pitch，最后一个不能悬出带尾。"""
+        """停稳后队列逐个顶在前车尾部 + 自身半长 + gap，最后一个不能悬出带尾。"""
 
         layout = resolve_scene_layout({})
-        tail = layout.conveyor_y_stop + layout.belt_box_queue_pitch * (layout.belt_box_count - 1)
+        halves = layout.belt_box_half_lengths
+        y = layout.conveyor_y_stop
+        for index in range(1, layout.belt_box_count):
+            y += halves[index - 1] + layout.belt_box_queue_gap + halves[index]
 
-        self.assertLessEqual(
-            tail + _LAYOUT_MODULE.BELT_BOX_LENGTH_Y * 0.5,
-            _LAYOUT_MODULE.BELT_BOX_BELT_Y_MAX,
-        )
+        self.assertLessEqual(y + halves[-1], _LAYOUT_MODULE.BELT_BOX_BELT_Y_MAX)
 
     def test_count_and_geometry_are_overridable(self) -> None:
         layout = resolve_scene_layout(
@@ -125,13 +163,13 @@ class BeltBoxLayoutTest(unittest.TestCase):
                 "ISAACLAB_BELT_BOX_COUNT": "3",
                 "ISAACLAB_BELT_BOX_SPAWN_Y_LEAD": "16.0",
                 "ISAACLAB_BELT_BOX_SPAWN_PITCH": "0.7",
-                "ISAACLAB_BELT_BOX_QUEUE_PITCH": "0.5",
+                "ISAACLAB_BELT_BOX_QUEUE_GAP": "0.1",
                 "ISAACLAB_BELT_BOX_LANE_X": "-5.617",
             }
         )
 
         self.assertEqual(layout.belt_box_count, 3)
-        self.assertEqual(layout.belt_box_queue_pitch, 0.5)
+        self.assertEqual(layout.belt_box_queue_gap, 0.1)
         self.assertEqual(
             layout.belt_box_positions,
             ((-5.617, 16.0, 0.775), (-5.617, 16.7, 0.775), (-5.617, 17.4, 0.775)),
@@ -142,6 +180,7 @@ class BeltBoxLayoutTest(unittest.TestCase):
 
         self.assertEqual(layout.belt_box_count, 0)
         self.assertEqual(layout.belt_box_positions, ())
+        self.assertEqual(layout.belt_box_kinds, ())
         self.assertEqual(layout.belt_box_names, ())
 
     def test_pushcart_layout_spawns_no_belt_boxes(self) -> None:
@@ -151,6 +190,7 @@ class BeltBoxLayoutTest(unittest.TestCase):
 
         self.assertEqual(layout.belt_box_count, 0)
         self.assertEqual(layout.belt_box_names, ())
+        self.assertEqual(layout.belt_box_kinds, ())
 
     def test_count_above_the_scene_cfg_limit_fails_fast(self) -> None:
         with self.assertRaisesRegex(ValueError, "超过上限"):
@@ -160,23 +200,38 @@ class BeltBoxLayoutTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "必须非负"):
             resolve_scene_layout({"ISAACLAB_BELT_BOX_COUNT": "-1"})
 
-    def test_queue_pitch_below_box_length_fails_fast(self) -> None:
-        """排队间距小于箱长 = 队列自穿模，必须启动时就拦住。"""
+    def test_negative_queue_gap_fails_fast(self) -> None:
+        with self.assertRaisesRegex(ValueError, "不能为负"):
+            resolve_scene_layout({"ISAACLAB_BELT_BOX_QUEUE_GAP": "-0.01"})
 
-        with self.assertRaisesRegex(ValueError, "不能小于箱长"):
-            resolve_scene_layout({"ISAACLAB_BELT_BOX_QUEUE_PITCH": "0.2"})
+    def test_spawn_pitch_too_small_for_the_actual_pair_fails_fast(self) -> None:
+        """出生间距按**相邻两箱各自的半长**校验，而不是一个统一箱长。"""
 
-    def test_spawn_pitch_below_queue_pitch_fails_fast(self) -> None:
-        with self.assertRaisesRegex(ValueError, "不能小于排队间距"):
+        with self.assertRaisesRegex(ValueError, "放不下相邻的 d01/c01"):
             resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_PITCH": "0.3"})
+
+        # 全 d01 时 0.40 够（0.19+0.19=0.38），但交错时放不下 d01/c01（要 0.44）。
+        resolve_scene_layout(
+            {"ISAACLAB_BELT_BOX_PATTERN": "d01", "ISAACLAB_BELT_BOX_SPAWN_PITCH": "0.40"}
+        )
+        with self.assertRaisesRegex(ValueError, "放不下相邻的"):
+            resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_PITCH": "0.40"})
 
     def test_lead_box_on_the_workstation_fails_fast(self) -> None:
         with self.assertRaisesRegex(ValueError, "队首压在工位"):
             resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_Y_LEAD": "14.2"})
 
     def test_queue_running_off_the_belt_tail_fails_fast(self) -> None:
-        with self.assertRaisesRegex(ValueError, "队尾悬出带面"):
+        with self.assertRaisesRegex(ValueError, "悬出带面"):
             resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_Y_LEAD": "17.0"})
+
+    def test_settled_queue_overflowing_the_belt_fails_fast(self) -> None:
+        """出生位合法但停稳后排不下，也必须启动时就拦住。"""
+
+        with self.assertRaisesRegex(ValueError, "停稳后的队列尾端"):
+            resolve_scene_layout(
+                {"ISAACLAB_BELT_BOX_PATTERN": "c01", "ISAACLAB_BELT_BOX_QUEUE_GAP": "0.6"}
+            )
 
     def test_lead_bound_follows_a_custom_workstation(self) -> None:
         """y_stop 被覆盖时，队首下界跟着走——不能拿默认 14.148 硬判。"""

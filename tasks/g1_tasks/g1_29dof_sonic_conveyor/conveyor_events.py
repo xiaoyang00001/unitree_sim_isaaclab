@@ -224,7 +224,8 @@ def drive_belt_boxes_on_conveyor(
     x_range: tuple[float, float] = (-6.17, -5.07),
     y_range: tuple[float, float] = (10.19, 18.22),
     y_stop: float | None = 14.148,
-    queue_pitch: float = 0.45,
+    queue_gap: float = 0.07,
+    half_lengths: tuple[float, ...] = (),
 ):
     """把纸箱队列沿 -Y 送到工位，一次只放行一个，后面的排队等着。
 
@@ -246,6 +247,11 @@ def drive_belt_boxes_on_conveyor(
 
     if not enabled or abs(velocity_y) < 1e-8 or not object_names:
         return
+    if len(half_lengths) != len(object_names):
+        raise ValueError(
+            "half_lengths 必须与 object_names 一一对应："
+            f"{len(half_lengths)} vs {len(object_names)}"
+        )
 
     if env_ids is None:
         env_ids = torch.arange(env.scene.num_envs, device=env.device, dtype=torch.long)
@@ -266,11 +272,14 @@ def drive_belt_boxes_on_conveyor(
         x_range=x_range,
         y_range=y_range,
     )  # (N, E)
+    # (N, 1)：广播到 (N, E)。每步重建一个 5 元素张量的成本可忽略，换来事件层无状态。
+    half_len = pos_local.new_tensor(half_lengths).unsqueeze(-1)
     drive = conveyor_queue.queue_drive_mask(
         pos_local[..., 1],
         on_belt,
+        half_len,
         y_stop=y_stop,
-        queue_pitch=queue_pitch,
+        queue_gap=queue_gap,
     )  # (N, E)
 
     for index, obj in enumerate(objects):

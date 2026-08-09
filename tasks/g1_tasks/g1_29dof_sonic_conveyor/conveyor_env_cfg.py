@@ -75,7 +75,7 @@ from .conveyor_drive import (
 )
 from .peer_visual_lod import JOINT_NAMES as PEER_VISUAL_LOD_JOINT_NAMES
 from .peer_visual_lod import resolve_peer_robot_mode
-from .scene_layout import BELT_BOX_LENGTH_Y, resolve_scene_layout
+from .scene_layout import resolve_scene_layout
 from .scene_props import resolve_scene_props
 from .tote_assets import resolve_tote_asset
 from .zmq_scene_sync import ZmqEnvResetSyncActionCfg, ZmqSceneStateSyncActionCfg
@@ -357,8 +357,10 @@ CART2_TOTE2_POS = list(SCENE_LAYOUT.cart2_tote2_pos)
 # （warehouse-simple6_v61_visual_only.usda 里 active=false）：它们的 v48→v61 换版
 # 遗留坐标让箱底 0.633 对带面 0.772（陷 14 cm），留着会和这里的真箱子视觉打架。
 BELT_BOX_POSITIONS = [list(pos) for pos in SCENE_LAYOUT.belt_box_positions]
-BELT_BOX_QUEUE_PITCH = SCENE_LAYOUT.belt_box_queue_pitch
-# 箱子长边（0.38 m）沿输送方向 Y，所以绕 Z 转 90°——与 v61 背景装饰箱的朝向一致。
+BELT_BOX_KINDS = SCENE_LAYOUT.belt_box_kinds
+BELT_BOX_HALF_LENGTHS = SCENE_LAYOUT.belt_box_half_lengths
+BELT_BOX_QUEUE_GAP = SCENE_LAYOUT.belt_box_queue_gap
+# 箱子长边沿输送方向 Y，所以绕 Z 转 90°——与 v61 背景装饰箱的朝向一致。
 BELT_BOX_ROT = [0.70710678, 0.0, 0.0, 0.70710678]
 
 # 双机站位（面对面）：robot_1 在 +X 侧朝 -X（yaw 180°），robot_2 在 -X 侧朝 +X（identity）。
@@ -399,14 +401,25 @@ CONVEYOR_TOTE_NAMES = tuple(
     name for name in ("cart2_tote1", "cart2_tote2") if SCENE_PROPS.spawns(name)
 )
 CONVEYOR_BELT_BOX_NAMES = tuple(name for name in BELT_BOX_NAMES if SCENE_PROPS.spawns(name))
+# 与 CONVEYOR_BELT_BOX_NAMES 严格同序同长——驱动事件按下标一一对应地取半长。
+CONVEYOR_BELT_BOX_HALF_LENGTHS = tuple(
+    half
+    for name, half in zip(BELT_BOX_NAMES, BELT_BOX_HALF_LENGTHS)
+    if SCENE_PROPS.spawns(name)
+)
 CONVEYOR_DRIVE = resolve_conveyor_drive(
     os.environ,
     object_authority=OBJECT_AUTHORITY,
     mirror_objects=MIRROR_OBJECTS,
     default_y_stop=SCENE_LAYOUT.conveyor_y_stop,
-    # 移动带面在期望停位上游 handoff_offset 处结束，取作业对象沿带方向的半长：
-    # 流水线布局是纸箱（0.38/2），推车布局仍是原尺寸塑料筐（0.20）。
-    default_handoff_offset=BELT_BOX_LENGTH_Y * 0.5 if TOTES_ON_CONVEYOR else 0.20,
+    # 移动带面在期望停位上游 handoff_offset 处结束，取作业对象沿带方向的半长。
+    # 流水线布局有两种箱型，取**队首**那个（它才是停在工位上的那个）；推车布局
+    # 仍是原尺寸塑料筐（0.20）。
+    default_handoff_offset=(
+        (BELT_BOX_HALF_LENGTHS[0] if BELT_BOX_HALF_LENGTHS else 0.19)
+        if TOTES_ON_CONVEYOR
+        else 0.20
+    ),
 )
 CONVEYOR_DRIVE_MODE = CONVEYOR_DRIVE.mode
 CONVEYOR_SPEED = CONVEYOR_DRIVE.speed
@@ -550,14 +563,22 @@ def _log_scene_layout() -> None:
             f"（整场景复位写回同一位置；碰撞板尽头 y=18.220）"
         )
     if CONVEYOR_BELT_BOX_NAMES:
-        _spawn_ys = ", ".join(f"{pos[1]:.3f}" for pos in BELT_BOX_POSITIONS)
-        print(
-            f"{tag}   纸箱出生/复位落点 y（队首→上游）: {_spawn_ys}"
-            f" | 车道 x={BELT_BOX_POSITIONS[0][0]:.3f} z={BELT_BOX_POSITIONS[0][2]:.3f}"
+        _spawn = ", ".join(
+            f"{kind.key}@{pos[1]:.3f}"
+            for kind, pos in zip(BELT_BOX_KINDS, BELT_BOX_POSITIONS)
+        )
+        _sizes = " | ".join(
+            f"{kind.key}: {kind.length_y}x{kind.width_x}x{kind.height_z} m, {kind.mass} kg"
+            for kind in dict.fromkeys(BELT_BOX_KINDS)
         )
         print(
-            f"{tag}   排队间距 queue_pitch={BELT_BOX_QUEUE_PITCH:.3f}"
-            f"（箱长 {BELT_BOX_LENGTH_Y:.2f}）；队首停工位，抓走后下一个自动补位"
+            f"{tag}   纸箱出生/复位落点（队首→上游）: {_spawn}"
+            f" | 车道 x={BELT_BOX_POSITIONS[0][0]:.3f} z={BELT_BOX_POSITIONS[0][2]:.3f}"
+        )
+        print(f"{tag}   箱型: {_sizes}")
+        print(
+            f"{tag}   排队净间隙 queue_gap={BELT_BOX_QUEUE_GAP:.3f} m"
+            "（按各箱半长算，两种箱型混排时空隙恒定）；队首停工位，抓走后下一个自动补位"
         )
     if not CONVEYOR_DRIVE.requested_enabled:
         drive = "关 [ISAACLAB_CONVEYOR_ENABLED=0]"
@@ -705,19 +726,24 @@ def _make_cart2_tote_spawn_cfg(object_name: str) -> UsdFileCfg:
     )
 
 
-def _make_belt_box_spawn_cfg(object_name: str) -> UsdFileCfg:
-    """流水线纸箱：SM_CardBoxD_01 视觉 + convexHull 碰撞，与 v61 装饰箱同款外观。
+def _make_belt_box_spawn_cfg(object_name: str, kind) -> UsdFileCfg:
+    """流水线纸箱：v61 同款视觉资产 + convexHull 碰撞。
 
-    刻意**不**就地提升背景 USD 里的 ``ConveyorBelt_Box_XX``：那些 Prim 带的是
-    triangle-mesh 碰撞（PhysX 对动态刚体只能退化成凸包 fallback 并刷警告），而且
-    v48→v61 换版遗留让它们的箱底 z=0.633 对不上带面 0.772。任务层自己 spawn 才
-    能精确贴面、拿到干净的凸包碰撞，并复用塑料筐那条已验过的权威/镜像分流：
-    权威端是动态刚体，镜像端翻成 kinematic 只收位姿。
+    ``kind`` 是 ``scene_layout.BeltBoxKind``，决定用哪份物理封装和质量。两种箱型
+    （d01 = SM_CardBoxD_01、c01 = SM_CardBoxC_01）都是 v61 背景自带的，交错排布。
+
+    刻意**不**就地提升背景 USD 里的 ``ConveyorBelt_Box_XX`` / ``KLT_Bin_XX``：那些
+    Prim 带的是 triangle-mesh 碰撞（PhysX 对动态刚体只能退化成凸包 fallback 并刷
+    警告），而且 v48→v61 换版遗留让它们的 z 对不上带面。任务层自己 spawn 才能精确
+    贴面、拿到干净的凸包碰撞，并复用塑料筐那条已验过的权威/镜像分流：权威端是动态
+    刚体，镜像端翻成 kinematic 只收位姿。
     """
 
     return UsdFileCfg(
-        usd_path=str(_ASSETS_DIR / "props" / "cart_box_d01_physics.usda"),
-        mass_props=sim_utils.MassPropertiesCfg(mass=_env_float("ISAACLAB_BELT_BOX_MASS", 1.0)),
+        usd_path=str(_ASSETS_DIR / "props" / kind.asset),
+        mass_props=sim_utils.MassPropertiesCfg(
+            mass=_env_float(f"ISAACLAB_BELT_BOX_MASS_{kind.key.upper()}", kind.mass)
+        ),
         rigid_props=(
             sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True)
             if _is_mirror_object(object_name)
@@ -741,7 +767,7 @@ def _make_belt_box_cfg(index: int) -> RigidObjectCfg | None:
         init_state=RigidObjectCfg.InitialStateCfg(
             pos=BELT_BOX_POSITIONS[index], rot=BELT_BOX_ROT
         ),
-        spawn=_make_belt_box_spawn_cfg(name),
+        spawn=_make_belt_box_spawn_cfg(name, BELT_BOX_KINDS[index]),
     )
 
 
@@ -1368,7 +1394,9 @@ class ConveyorEventsCfg:
             "velocity_y": CONVEYOR_VELOCITY_Y,
             "enabled": CONVEYOR_LEGACY_ENABLED,
             "y_stop": CONVEYOR_Y_STOP,
-            "queue_pitch": BELT_BOX_QUEUE_PITCH,
+            "queue_gap": BELT_BOX_QUEUE_GAP,
+            # 两种箱型尺寸不同，排队按各自半长算净间隙，不能用统一中心距。
+            "half_lengths": CONVEYOR_BELT_BOX_HALF_LENGTHS,
         },
     )
 
