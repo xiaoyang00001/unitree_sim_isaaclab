@@ -32,13 +32,17 @@ _GENERATOR = _load_module(
     "build_conveyor_visual_only_usd_for_workcell_test",
     _REPO_ROOT / "tools/build_conveyor_visual_only_usd.py",
 )
+_DRIVE = _load_module(
+    "conveyor_drive_for_workcell_test", _TASK_DIR / "conveyor_drive.py"
+)
+_NORTH_SHIFT_Y = _DRIVE.CONVEYOR_NORTH_SHIFT_Y
 
 try:
-    from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
     _HAS_PXR = True
 except ModuleNotFoundError:
-    Sdf = Usd = UsdGeom = UsdPhysics = None  # type: ignore[assignment]
+    Gf = Sdf = Usd = UsdGeom = UsdPhysics = None  # type: ignore[assignment]
     _HAS_PXR = False
 
 
@@ -391,11 +395,19 @@ class WorkcellVisualOnlyComposedStageTest(unittest.TestCase):
 
         # 比较生效的本地变换而不是属性作者值：xformOpOrder 被覆盖时
         # translate 属性仍可读到旧值但已不生效，输送机会错位。
+        #
+        # clean wrapper 现在**刻意**覆盖 v61 的这个位移：整条流水线北移
+        # CONVEYOR_NORTH_SHIFT_Y=3.55（世界 y +Δ ≡ 背景局部 x +Δ），让入料端插进
+        # 靠 +Y 墙的安检机隧道。所以判据从"与 v61 逐值相等"改成"恰好是 v61 值
+        # 加上 Δ（且只加在局部 x 上，抬升量 z 原样保留）"。
         belt = self.stage.GetPrimAtPath("/Root/ConveyorBelt")
         belt_transform = UsdGeom.Xformable(belt).GetLocalTransformation()
-        self.assertEqual(
-            belt_transform.ExtractTranslation(), translate_spec.default
+        shifted = Gf.Vec3d(
+            translate_spec.default[0] + _NORTH_SHIFT_Y,
+            translate_spec.default[1],
+            translate_spec.default[2],
         )
+        self.assertEqual(belt_transform.ExtractTranslation(), shifted)
 
         warehouse_stage = Usd.Stage.Open(
             str(_ASSET_DIR / _VARIANTS.VISUAL_ONLY_BACKGROUND_USD),
