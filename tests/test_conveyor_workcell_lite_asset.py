@@ -23,10 +23,10 @@ class ConveyorWorkcellLiteAssetTest(unittest.TestCase):
         digest = hashlib.sha256(source.read_bytes()).hexdigest()
 
         self.assertEqual(digest, _MANIFEST["source_asset_sha256"])
-        # 2569 = 3017 - 300(BA01 纸箱垛) - 148(TB04 料筐垛)：clean wrapper 用
-        # active=false 把这两垛靠墙装饰物移出组合。TB04 是 148 而非 50×3=150，
-        # 第 8 列只有 L0——按实际存在枚举，不用笛卡尔积。
-        self.assertEqual(_MANIFEST["source_root_child_count"], 2569)
+        # 2562 = 3017 - 300(BA01 纸箱垛) - 148(TB04 料筐垛) - 7(4 张桌子及台面三件)：
+        # clean wrapper 用 active=false 把这些装饰物移出组合。TB04 是 148 而非
+        # 50×3=150，第 8 列只有 L0——按实际存在枚举，不用笛卡尔积。
+        self.assertEqual(_MANIFEST["source_root_child_count"], 2562)
         self.assertIn("ConveyorBelt", _MANIFEST["keep_root_exact"])
         self.assertEqual(
             _MANIFEST["omit_pseudoroot_prims"],

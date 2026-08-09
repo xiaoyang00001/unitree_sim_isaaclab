@@ -716,4 +716,16 @@ over "Root"
     over "TB04_49_L0" (active = false) {}
     over "TB04_49_L1" (active = false) {}
     over "TB04_49_L2" (active = false) {}
+
+    # 场景里的 4 张桌子及其台面物品，同属纯装饰，按布局要求一并移除。
+    # 台面物品用两条独立判据交叉确认：命名关联（WorkTable1_ 前缀）与几何判定
+    # （水平中心落在桌面轮廓内 + 底面贴合桌面高度）给出完全相同的三件。
+    # ⚠️ 桌旁的 Cone_3 底面 z=0，是地面路障不是台面物，不在此列。
+    over "Table_1" (active = false) {}  # 空桌，x≈-9.9~-7.4 / y≈-11.7~-10.9
+    over "Table_2" (active = false) {}  # 空桌，x≈-9.9~-7.4 / y≈-8.7~-7.9
+    over "WorkTable_1" (active = false) {}  # 工作台，桌面 z=0.994，台面上有下列三件
+    over "WorkTable1_KLT_Bin" (active = false) {}  # └ 料箱，底 z=0.996
+    over "WorkTable1_PlasticPail" (active = false) {}  # └ 塑料桶，底 z=0.994
+    over "WorkTable1_Tote_C01" (active = false) {}  # └ 料筐，底 z=0.994
+    over "WorkTable_2" (active = false) {}  # 空桌，桌面 z=1.083
 }
