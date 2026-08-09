@@ -7,9 +7,8 @@
 
 用法（conda env_isaaclab，仓库根目录）：
 
-  # Phase 0 单机场景冒烟（不建 socket）：筐应从入料端 y=17.4/18.0 流到工位 y≈13.548 停住
-  # ⚠️ 工位补偿后行程加长到 3.85/4.45 m，800 步不够 tote2 到位，用 1000 步
-  python tools/smoke_conveyor_scene.py --steps 1000
+  # Phase 0 单机场景冒烟（不建 socket）：筐应从入料端 y=17.4/18.0 流到工位 y≈14.148 停住
+  python tools/smoke_conveyor_scene.py --steps 800
 
   # PhysX Surface Velocity 实验 A/B（固定由 ID=1 驱动，默认 50 mm 容差）
   python tools/smoke_conveyor_scene.py --drive-mode surface_velocity --robot-id 1 --steps 800

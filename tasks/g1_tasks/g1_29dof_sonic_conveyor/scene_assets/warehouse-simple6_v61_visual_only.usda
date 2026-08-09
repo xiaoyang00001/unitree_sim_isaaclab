@@ -728,4 +728,43 @@ over "Root"
     over "WorkTable1_PlasticPail" (active = false) {}  # └ 塑料桶，底 z=0.994
     over "WorkTable1_Tote_C01" (active = false) {}  # └ 料筐，底 z=0.994
     over "WorkTable_2" (active = false) {}  # 空桌，桌面 z=1.083
+
+    # v61 换版时把工位家具整体往 -Y 挪了（世界系 -0.47~-0.64 m），而机器人工位
+    # ROBOT_WORKSTATION_Y=14.148 是按 v48 几何定的，于是两台机器人开局就插进分拣
+    # 料箱（料箱 z 跨 [0.50,0.95] 正是腰部高度）。这里把这组家具的变换整体写回 v48
+    # 的值，让工位几何与代码里的坐标常量重新对齐——改资产而不是改机器人站位。
+    #
+    # ⚠️ 四个 Prim 里只有 SM_HeavyDutyPackingTable_C02_03 是 v61 层显式改的
+    # （translate.x 0.9039→0.3039，即世界 y -0.600）；另外三个 v61 没覆盖，其值来自
+    # payload ConveyorBelt02.usd，而 v48 曾用 matrix4d 形式覆盖过它们。因此这里按
+    # 各自在 v48 中的原始 op 形式回写，并显式重写 xformOpOrder：TRS 与 matrix 两种
+    # 写法不能混，只改值不改 order 会让 matrix 覆盖被 payload 的 TRS 顺序忽略。
+    over "ConveyorBelt"
+    {
+        over "SM_HeavyDutyPackingTable_C02_01"
+        {
+            matrix4d xformOp:transform = ( (0.004394829989768472, 0.0, 0.0, 0.0), (0.0, 0.01365120615810155, 0.0, 0.0), (0.0, 0.0, 0.004308692179620263, 0.0), (1.0265775455502195, -0.2067073031074571, -0.5770295507331438, 1.0) )
+            uniform token[] xformOpOrder = ["xformOp:transform"]
+        }
+
+        over "SM_HeavyDutyPackingTable_C02_03"
+        {
+            double3 xformOp:translate = (0.9039417853480621, 2.086707303107458, -0.577029550733144)
+            float3 xformOp:rotateXYZ = (0.0, 0.0, 0.0)
+            float3 xformOp:scale = (0.005324971862137318, 0.013651206158101559, 0.004308692179620266)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+        }
+
+        over "blue_sorting_bin_01"
+        {
+            matrix4d xformOp:transform = ( (-1.8514065467398217e-16, -0.833799383400876, 0.0, 0.0), (1.3622057263085308, -3.02470432324793e-16, 0.0, 0.0), (0.0, 0.0, 0.9988792899023712, 0.0), (7.56997747620902, -8.62928249104018, -0.6416343162044926, 1.0) )
+            uniform token[] xformOpOrder = ["xformOp:transform"]
+        }
+
+        over "blue_sorting_bin_02"
+        {
+            matrix4d xformOp:transform = ( (-1.527410401060354e-15, -6.878844913057232, 0.0, 0.0), (7.978633539807108, -1.771612532188073e-15, 0.0, 0.0), (0.0, 0.0, 6.628926196624825, 0.0), (-1.9383017274054972, -0.35331139354023133, -0.24833856360426954, 1.0) )
+            uniform token[] xformOpOrder = ["xformOp:transform"]
+        }
+    }
 }

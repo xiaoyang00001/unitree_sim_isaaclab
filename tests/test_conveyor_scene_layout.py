@@ -31,10 +31,8 @@ class ConveyorSceneLayoutTest(unittest.TestCase):
         self.assertEqual(layout.tote_scale, (0.005, 0.005, 0.005))
         self.assertEqual(layout.robot_1_x, -4.75)
         self.assertEqual(layout.robot_2_x, -6.7)
-        # 13.548 = 14.148 - 0.600，补偿 v61 换版时工位家具整体 -Y 平移；
-        # 不补偿的话两台机器人开局插进 blue_sorting_bin。
-        self.assertEqual(layout.robot_workstation_y, 13.548)
-        self.assertEqual(layout.conveyor_y_stop, 13.548)
+        self.assertEqual(layout.robot_workstation_y, 14.148)
+        self.assertEqual(layout.conveyor_y_stop, 14.148)
 
     def test_zero_selects_stacked_full_size_totes_on_pushcart(self) -> None:
         layout = resolve_scene_layout({"ISAACLAB_TOTES_ON_CONVEYOR": "0"})
