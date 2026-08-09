@@ -307,7 +307,8 @@ def _env_reset_sync_cfg() -> ZmqEnvResetSyncActionCfg:
 #
 #   1 = 流水线布局：两塑料筐缩小一半（scale 0.005）放上流水线滚轮面的**入料端**，
 #       由 drive_totes 事件沿 -Y 送到第二段工位停住；双机站第二段两侧
-#       (x=-4.75 / -6.7, y=14.148)，pushcart_2 空车留在 y=19.39363。
+#       (x=-4.75 / -6.7, y=13.548)，pushcart_2 空车留在 y=19.39363。
+#       工位 y 已按 v61 家具 -Y 平移量补偿，见 scene_layout.robot_workstation_y。
 #   0 = 原布局：两筐恢复原尺寸（scale 0.01）叠放回 pushcart_2 拖车顶面
 #       (x=-5.62, y=18.75)；双机回到拖车两侧工位；筐被机器人搬上入料端后
 #       自动流到出料段停住（作业闭环）。
@@ -333,9 +334,10 @@ PUSHCART_2_POS = list(SCENE_LAYOUT.pushcart_2_pos)
 # ⚠️ 这同时是**复位落点**：整场景复位（手动 rt/reset_pose/cmd、倒地自动、对端同步）
 # 走的是 mdp.reset_scene_to_default，把筐写回这里的 init_state。放在入料端才能让
 # 一次复位＝重新完整流一遍。早期取 16.4/17.0 时复位只剩 2.25/2.85 m 的行程。
-# 到工位 14.148 分别是 3.25 / 3.85 m；筐是被拖拽滑行不是被带动，实测速度约
-# 0.244 m/s（低于 velocity_y 的 0.3，见 README「已知限制 / 待实测」），所以约 13.3 / 15.8 s
-# 到位，各自越过 y_stop 约 11 mm 后被动摩擦停住（smoke 900 步实测 14.136 / 14.137）。
+# 到工位 13.548 分别是 3.85 / 4.45 m；筐是被拖拽滑行不是被带动，实测速度约
+# 0.244 m/s（低于 velocity_y 的 0.3，见 README「已知限制 / 待实测」），所以约 15.8 / 18.2 s
+# 到位，各自越过 y_stop 约 10 mm 后被动摩擦停住。
+# （工位 y 由 14.148 下调到 13.548 以补偿 v61 家具平移，行程相应各加长 0.6 m。）
 TOTE_SPAWN_Y_LEAD = SCENE_LAYOUT.cart2_tote1_pos[1]
 TOTE_SPAWN_Y_TRAIL = SCENE_LAYOUT.cart2_tote2_pos[1]
 
@@ -1322,8 +1324,10 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
             self.events.lock_sorting_bins = None
         # GUI 开局相机对准流水线工位(默认相机看世界原点,工作区在 (-5,14) 附近,
         # 打开就是空镜头还得手动飞过去)。
-        self.viewer.eye = (-5.62, 19.0, 2.4)
-        self.viewer.lookat = (-5.62, 14.148, 1.0)
+        # lookat 跟随工位常量，别再写死：工位 y 会随布局开关与家具平移补偿变化，
+        # 写死的话改完工位相机就对着空地。
+        self.viewer.eye = (-5.62, max(ROBOT_WORKSTATION_Y + 4.0, 18.8), 2.4)
+        self.viewer.lookat = (-5.62, ROBOT_WORKSTATION_Y, 1.0)
         if _PERF_AB:
             print(f"[conveyor_env_cfg] ⚠️ 性能 A/B 诊断开关生效: {sorted(_PERF_AB)}")
             if "no_peer" in _PERF_AB:

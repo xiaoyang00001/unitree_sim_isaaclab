@@ -53,10 +53,16 @@ def resolve_scene_layout(environ: Mapping[str, str]) -> ConveyorSceneLayout:
     cart_group_y = _env_float(environ, "ISAACLAB_CART_GROUP_Y", 18.75)
     robot_side_offset = _env_float(environ, "ISAACLAB_ROBOT_SIDE_OFFSET", 0.80)
 
+    # 13.548 = 14.148 - 0.600：v61 换版把工位家具整体往 -Y 挪了（离线 AABB 实测
+    # SM_HeavyDutyPackingTable_C02_03 是纯平移 -0.600，blue_sorting_bin_01/02 中心
+    # 分别 -0.642/-0.553），而工位 y 当初没跟着动，两台机器人开局就插进分拣料箱
+    # （robot_1 -0.208、robot_2 -0.340）。按纯平移量补偿后，机器人相对家具的间隙
+    # 精确回到 v48 的 +0.212 / +0.091。⚠️ 这个值同时是 =1 布局的 conveyor_y_stop
+    # 默认值（料筐停在机器人面前），改它会一并改变料筐停位。
     robot_workstation_y = _env_float(
         environ,
         "ISAACLAB_ROBOT_WORKSTATION_Y",
-        14.148 if totes_on_conveyor else cart_group_y,
+        13.548 if totes_on_conveyor else cart_group_y,
     )
     robot_1_x = _env_float(
         environ,
