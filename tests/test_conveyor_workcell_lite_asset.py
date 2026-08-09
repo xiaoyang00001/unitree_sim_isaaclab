@@ -23,8 +23,10 @@ class ConveyorWorkcellLiteAssetTest(unittest.TestCase):
         digest = hashlib.sha256(source.read_bytes()).hexdigest()
 
         self.assertEqual(digest, _MANIFEST["source_asset_sha256"])
-        # 2717 = 3017 - 300：clean wrapper 用 active=false 移除了靠墙的 BA01 纸箱垛。
-        self.assertEqual(_MANIFEST["source_root_child_count"], 2717)
+        # 2569 = 3017 - 300(BA01 纸箱垛) - 148(TB04 料筐垛)：clean wrapper 用
+        # active=false 把这两垛靠墙装饰物移出组合。TB04 是 148 而非 50×3=150，
+        # 第 8 列只有 L0——按实际存在枚举，不用笛卡尔积。
+        self.assertEqual(_MANIFEST["source_root_child_count"], 2569)
         self.assertIn("ConveyorBelt", _MANIFEST["keep_root_exact"])
         self.assertEqual(
             _MANIFEST["omit_pseudoroot_prims"],
@@ -89,8 +91,9 @@ class ConveyorWorkcellLiteAssetTest(unittest.TestCase):
 
         self.assertLessEqual(limits["max_lite_active_prims"], 2000)
         self.assertLessEqual(limits["max_lite_used_layers"], 100)
-        # 移除 BA01 箱垛后源场景本身变轻（Kit 组合实测削减量 22850），门槛随之下调。
-        self.assertGreaterEqual(limits["min_active_prim_reduction"], 22000)
+        # 相对削减量随源自身瘦身而下降（清理 BA01+TB04 后 Kit 实测 22168），是次要
+        # 约束，留足余量即可；防止白名单被误扩的硬约束是 max_lite_active_prims。
+        self.assertGreaterEqual(limits["min_active_prim_reduction"], 20000)
         self.assertGreaterEqual(limits["min_used_layer_reduction"], 1600)
         self.assertTrue(_MANIFEST["remote_dependency_prefix"].startswith("https://"))
 
