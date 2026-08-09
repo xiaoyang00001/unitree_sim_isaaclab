@@ -127,7 +127,10 @@ class ConveyorVisualOnlyAssetTest(unittest.TestCase):
 
         self.assertEqual(
             layer_text,
-            _GENERATOR_MODULE._render_visual_only_layer(manifest, 0.01, "Z"),
+            # 源 ConveyorBelt02.usd 只声明了 upAxis，metersPerUnit 是 USD fallback；
+            # 其几何实为米制（自身 bbox 长边 11.27，在米制 v61 里 scale=(1,1,1) 组合
+            # 后仍是 11.27 m），生成物按场景约定写 1.0 而不是抄 fallback 的 0.01。
+            _GENERATOR_MODULE._render_visual_only_layer(manifest, 1.0, "Z"),
         )
         self.assertEqual(
             layer_text.count("bool physics:rigidBodyEnabled = false"),
@@ -147,8 +150,14 @@ class ConveyorVisualOnlyAssetTest(unittest.TestCase):
             _GENERATOR_MODULE._render_warehouse_adapter(
                 "ConveyorBelt02_visual_only.usda",
                 _GENERATOR_MODULE._resolve_warehouse_base_name(_ASSET_DIR),
+                1.0,
+                "Z",
             ),
         )
+        # stage metadata 只从 root layer 读、不沿 subLayer 继承，adapter 必须自带
+        # 与 v61 一致的 Z-up 米制声明，否则单独打开会落到 USD 默认的 Y-up / 厘米。
+        self.assertIn('upAxis = "Z"', text)
+        self.assertIn("metersPerUnit = 1.0", text)
         warehouse_base = _GENERATOR_MODULE._resolve_warehouse_base_name(_ASSET_DIR)
         self.assertIn(f"subLayers = [@./{warehouse_base}@]", text)
         self.assertIn("delete payload = @./ConveyorBelt02.usd@", text)

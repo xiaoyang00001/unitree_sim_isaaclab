@@ -46,6 +46,9 @@ _CLEAN_WAREHOUSE_SOURCE_NAME = "warehouse-simple6_v61_visual_only.usda"
 _WORKCELL_LITE_SOURCE_NAME = "conveyor_workcell_lite.usd"
 _WORKCELL_LITE_MANIFEST_NAME = "conveyor_workcell_lite.manifest.json"
 _GENERATOR_RELATIVE_PATH = "tools/build_conveyor_visual_only_usd.py"
+# 场景坐标系约定：v61 及其派生层全部是 Z-up 米制。源资产没有显式声明时按此写入生成物。
+_SCENE_METERS_PER_UNIT = 1.0
+_SCENE_UP_AXIS = "Z"
 
 
 @dataclass
@@ -227,12 +230,76 @@ def _resolve_warehouse_base_name(asset_dir: Path) -> str:
     return _LEGACY_WAREHOUSE_SOURCE_NAME
 
 
-def _render_warehouse_adapter(output_name: str, warehouse_base_name: str) -> str:
+def _resolve_source_stage_metadata(source: Path, sdf: Any) -> tuple[float, str]:
+    """取源资产**显式声明**的 stage metadata，未声明的项按场景约定补齐。
+
+    ``Usd.Stage.GetMetadata`` 在源没写这两项时静默返回 USD fallback
+    （``metersPerUnit`` = 0.01），照抄进生成物等于把一个凭空的默认值固化成显式声明。
+    ConveyorBelt02.usd 正是这种资产：只声明了 ``upAxis = "Z"``，几何却是米制——自身
+    bbox 长边 11.27，在米制 v61 里以 ``scale = (1,1,1)`` 组合后仍是 11.27 m。抄
+    fallback 会让单独打开生成物时看到缩小 100 倍的输送机。
+    """
+
+    layer = sdf.Layer.FindOrOpen(str(source))
+    if layer is None:
+        raise RuntimeError(f"无法打开源资产层：{source}")
+    root = layer.pseudoRoot
+    resolved = []
+    for key, fallback in (
+        ("metersPerUnit", _SCENE_METERS_PER_UNIT),
+        ("upAxis", _SCENE_UP_AXIS),
+    ):
+        if root.HasInfo(key):
+            resolved.append(root.GetInfo(key))
+            continue
+        resolved.append(fallback)
+        print(
+            f"[conveyor_visual_only] 源 {source.name} 未显式声明 {key}，"
+            f"按场景约定写入 {fallback!r}（不抄 USD fallback）",
+            flush=True,
+        )
+    return float(resolved[0]), str(resolved[1])
+
+
+def _require_baseline_stage_metadata(baseline: Path, sdf: Any) -> tuple[float, str]:
+    """读取 baseline 层**显式声明**的 upAxis / metersPerUnit。
+
+    这两项是 stage metadata，只从 root layer 自身读取，不会沿 subLayer 继承。adapter
+    以 subLayers 组合 baseline，所以必须把 baseline 的声明复制进自己的 metadata 块，
+    否则单独打开 adapter 会落到 USD 默认的 Y-up / 0.01(厘米)，整个仓库躺倒且尺度差
+    100 倍。baseline 自己就缺声明时直接失败，避免把错误朝向静默传播给生成物。
+    """
+
+    layer = sdf.Layer.FindOrOpen(str(baseline))
+    if layer is None:
+        raise RuntimeError(f"无法打开 baseline 层：{baseline}")
+    missing = [
+        key for key in ("upAxis", "metersPerUnit") if not layer.pseudoRoot.HasInfo(key)
+    ]
+    if missing:
+        raise RuntimeError(
+            f"baseline 层 {baseline.name} 未显式声明 stage metadata {missing}；"
+            "subLayers 不继承这两项，请先在该层的 metadata 块里补齐再生成 adapter"
+        )
+    return (
+        float(layer.pseudoRoot.GetInfo("metersPerUnit")),
+        str(layer.pseudoRoot.GetInfo("upAxis")),
+    )
+
+
+def _render_warehouse_adapter(
+    output_name: str,
+    warehouse_base_name: str,
+    meters_per_unit: float,
+    up_axis: str,
+) -> str:
     return "\n".join(
         [
             "#usda 1.0",
             "(",
             '    defaultPrim = "Root"',
+            f"    metersPerUnit = {meters_per_unit!r}",
+            f'    upAxis = "{up_axis}"',
             f"    subLayers = [@./{warehouse_base_name}@]",
             ")",
             "",
@@ -250,7 +317,11 @@ def _render_warehouse_adapter(output_name: str, warehouse_base_name: str) -> str
     )
 
 
-def _render_workcell_lite_adapter(warehouse_adapter_name: str) -> str:
+def _render_workcell_lite_adapter(
+    warehouse_adapter_name: str,
+    meters_per_unit: float,
+    up_axis: str,
+) -> str:
     """渲染 workcell-lite 背景专用的 conveyor visual-only 组合层。
 
     workcell-lite 的 ``/Root/ConveyorBelt`` 经 reference 取自 clean wrapper，
@@ -265,6 +336,8 @@ def _render_workcell_lite_adapter(warehouse_adapter_name: str) -> str:
             "#usda 1.0",
             "(",
             '    defaultPrim = "Root"',
+            f"    metersPerUnit = {meters_per_unit!r}",
+            f'    upAxis = "{up_axis}"',
             f"    subLayers = [@./{_WORKCELL_LITE_SOURCE_NAME}@]",
             ")",
             "",
@@ -596,23 +669,29 @@ def main() -> int:
         if not source_stage:
             raise RuntimeError(f"无法打开源资产：{source}")
         manifest = _audit_source(source_stage, UsdPhysics, UsdGeom, source)
-        layer_text = _render_visual_only_layer(
-            manifest,
-            float(source_stage.GetMetadata("metersPerUnit")),
-            str(source_stage.GetMetadata("upAxis")),
-        )
+        source_mpu, source_up = _resolve_source_stage_metadata(source, Sdf)
+        layer_text = _render_visual_only_layer(manifest, source_mpu, source_up)
         manifest_text = _expected_manifest_text(manifest)
+        # 两个 adapter 的 stage metadata 各自跟随自己的 subLayer baseline，而不是复用
+        # 传送带源资产的值：adapter 打开时生效的是仓库/工位的坐标系约定。
+        warehouse_base_name = _resolve_warehouse_base_name(adapter.parent)
+        warehouse_mpu, warehouse_up = _require_baseline_stage_metadata(
+            adapter.parent / warehouse_base_name, Sdf
+        )
         adapter_text = _render_warehouse_adapter(
-            output.name, _resolve_warehouse_base_name(adapter.parent)
+            output.name, warehouse_base_name, warehouse_mpu, warehouse_up
         )
         # workcell-lite 是集成分支产物；独立功能分支没有它时跳过组合层，
         # 保持本生成器在两类检出上都可用。
         workcell_source = workcell_adapter.parent / _WORKCELL_LITE_SOURCE_NAME
-        workcell_adapter_text = (
-            _render_workcell_lite_adapter(adapter.name)
-            if workcell_source.is_file()
-            else None
-        )
+        workcell_adapter_text = None
+        if workcell_source.is_file():
+            workcell_mpu, workcell_up = _require_baseline_stage_metadata(
+                workcell_source, Sdf
+            )
+            workcell_adapter_text = _render_workcell_lite_adapter(
+                adapter.name, workcell_mpu, workcell_up
+            )
 
         if args.check:
             _assert_file_matches(output, layer_text)

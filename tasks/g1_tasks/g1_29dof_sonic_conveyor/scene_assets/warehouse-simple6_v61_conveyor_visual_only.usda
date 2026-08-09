@@ -1,6 +1,8 @@
 #usda 1.0
 (
     defaultPrim = "Root"
+    metersPerUnit = 1.0
+    upAxis = "Z"
     subLayers = [@./warehouse-simple6_v61_visual_only.usda@]
 )
 

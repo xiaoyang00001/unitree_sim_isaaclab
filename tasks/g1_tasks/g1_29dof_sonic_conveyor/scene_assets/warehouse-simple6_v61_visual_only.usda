@@ -1,6 +1,13 @@
 #usda 1.0
 (
     defaultPrim = "Root"
+    # upAxis / metersPerUnit 是 stage metadata，只从 root layer 自身读取，不会从
+    # subLayer 继承。不显式声明就会落到 USD 默认的 Y-up / 0.01(厘米)，单独打开本层
+    # 时整个仓库会躺倒 90° 且尺度差 100 倍。运行时不受影响（本层是被 reference 挂到
+    # Isaac 宿主 stage 上的，stage metadata 不参与组合），但 usdview / Isaac Sim 直接
+    # 打开会看到错误的朝向，因此必须与 subLayer 源 warehouse-simple6_v61.usd 对齐。
+    metersPerUnit = 1
+    upAxis = "Z"
     subLayers = [
         @./warehouse-simple6_v61.usd@
     ]

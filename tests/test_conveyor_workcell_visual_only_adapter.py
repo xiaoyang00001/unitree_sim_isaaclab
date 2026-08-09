@@ -46,6 +46,10 @@ _WORKCELL_ADAPTER_NAME = "conveyor_workcell_lite_conveyor_visual_only.usda"
 _VALID_WAREHOUSE_ADAPTER_TEXT = (
     "#usda 1.0\nsubLayers = [@./warehouse-simple6_v61_visual_only.usda@]\n"
 )
+# 场景坐标系约定：v61 及其所有派生层都是 Z-up 米制。subLayers 不继承 stage
+# metadata，adapter 必须自己声明，否则单独打开会落到 USD 默认的 Y-up / 厘米。
+_SCENE_METERS_PER_UNIT = 1.0
+_SCENE_UP_AXIS = "Z"
 
 
 def _write_valid_fixture(assets_dir: Path) -> None:
@@ -62,7 +66,9 @@ def _write_valid_fixture(assets_dir: Path) -> None:
     )
     (assets_dir / _WORKCELL_ADAPTER_NAME).write_text(
         _GENERATOR._render_workcell_lite_adapter(
-            _VARIANTS.VISUAL_ONLY_BACKGROUND_USD
+            _VARIANTS.VISUAL_ONLY_BACKGROUND_USD,
+            _SCENE_METERS_PER_UNIT,
+            _SCENE_UP_AXIS,
         ),
         encoding="utf-8",
     )
@@ -229,12 +235,17 @@ class WorkcellVisualOnlyAdapterArtifactTest(unittest.TestCase):
         self.assertEqual(
             text,
             _GENERATOR._render_workcell_lite_adapter(
-                _VARIANTS.VISUAL_ONLY_BACKGROUND_USD
+                _VARIANTS.VISUAL_ONLY_BACKGROUND_USD,
+                _SCENE_METERS_PER_UNIT,
+                _SCENE_UP_AXIS,
             ),
         )
         self.assertIn(
             f"subLayers = [@./{_VARIANTS.WORKCELL_LITE_BACKGROUND_USD}@]", text
         )
+        # stage metadata 必须显式声明：subLayers 不继承，缺了单独打开就是 Y-up 躺倒。
+        self.assertIn(f'upAxis = "{_SCENE_UP_AXIS}"', text)
+        self.assertIn(f"metersPerUnit = {_SCENE_METERS_PER_UNIT!r}", text)
         self.assertIn(_VARIANTS.WORKCELL_LITE_ADAPTER_DELETE_REFERENCE, text)
         self.assertIn(_VARIANTS.WORKCELL_LITE_ADAPTER_PREPEND_REFERENCE, text)
         # 组合层不允许自带 payload 语义：payload 替换必须发生在被引用的完整

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "description": "v61 流水线工位的白名单引用薄层，只组合传送带、工位地面标识、地面碰撞与仓库外墙。",
   "source_asset": "warehouse-simple6_v61_visual_only.usda",
-  "source_asset_sha256": "f07ae3e415c11c2a0d2a7a762981dd10071cf6ac4ffe539dc87b209fd65bba8e",
+  "source_asset_sha256": "9cc9dc1e28ad59fe6b2755434aaac77e37d1de92ac16a1bb7cb39617be7848fb",
   "source_root_child_count": 2717,
   "output_asset": "conveyor_workcell_lite.usd",
   "keep_root_exact": [
