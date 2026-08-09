@@ -43,7 +43,12 @@ class ConveyorSceneLayoutTest(unittest.TestCase):
         self.assertEqual(layout.cart2_tote1_pos, (-5.35, 20.95, 0.775))
         self.assertEqual(layout.cart2_tote2_pos, (-5.89, 21.55, 0.775))
         self.assertEqual(layout.tote_scale, (0.005, 0.005, 0.005))
-        self.assertEqual(layout.robot_1_x, -4.75)
+        # 两台对称分站带两侧（中线 -5.62 ± 1.08）；robot_1 历史值 -4.75 比对面近
+        # 0.21，一台贴带一台离远，2026-08-09 对称化。
+        self.assertEqual(layout.robot_1_x, -4.54)
+        self.assertAlmostEqual(
+            abs(layout.robot_1_x - (-5.62)), abs(layout.robot_2_x - (-5.62)), places=6
+        )
         self.assertEqual(layout.robot_2_x, -6.7)
         self.assertEqual(layout.robot_workstation_y, 17.698)
         self.assertEqual(layout.conveyor_y_stop, 17.698)

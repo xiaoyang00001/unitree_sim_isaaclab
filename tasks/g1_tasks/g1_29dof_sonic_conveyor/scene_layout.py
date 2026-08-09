@@ -301,10 +301,13 @@ def resolve_scene_layout(environ: Mapping[str, str]) -> ConveyorSceneLayout:
         "ISAACLAB_ROBOT_WORKSTATION_Y",
         _shifted(14.148) if totes_on_conveyor else cart_group_y,
     )
+    # 两台机器人对称分站带两侧：带中线 x=-5.62，各距中线 1.08 m（距带边 0.63 m）。
+    # 历史值 robot_1_x=-4.75 距中线只有 0.87，比对面近 0.21——视觉上一台贴着流水线
+    # 一台离得远（2026-08-09 用户反馈），对称化取 -5.62+1.08=-4.54。
     robot_1_x = _env_float(
         environ,
         "ISAACLAB_ROBOT_1_X",
-        -4.75 if totes_on_conveyor else cart_group_x + robot_side_offset,
+        -4.54 if totes_on_conveyor else cart_group_x + robot_side_offset,
     )
     robot_2_x = _env_float(
         environ,
