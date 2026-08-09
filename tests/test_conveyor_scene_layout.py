@@ -86,11 +86,11 @@ class BeltBoxLayoutTest(unittest.TestCase):
         self.assertEqual(
             layout.belt_box_positions,
             (
-                (-5.62, 15.5, 0.775),
-                (-5.62, 16.1, 0.775),
-                (-5.62, 16.7, 0.775),
-                (-5.62, 17.3, 0.775),
-                (-5.62, 17.9, 0.775),
+                (-5.62, 14.95, 0.775),
+                (-5.62, 15.70, 0.775),
+                (-5.62, 16.45, 0.775),
+                (-5.62, 17.20, 0.775),
+                (-5.62, 17.95, 0.775),
             ),
         )
         self.assertEqual(layout.belt_box_half_lengths, (0.19, 0.25, 0.19, 0.25, 0.19))
@@ -147,15 +147,20 @@ class BeltBoxLayoutTest(unittest.TestCase):
             self.assertGreaterEqual(gap, 0.0, f"box {index} 与 {index + 1} 出生就互穿")
 
     def test_settled_queue_still_fits_on_the_belt(self) -> None:
-        """停稳后队列逐个顶在前车尾部 + 自身半长 + gap，最后一个不能悬出带尾。"""
+        """整带节拍下队列保持出生间距整体平移，停稳队尾必须仍在带面内。
+
+        停稳位一定比出生位更靠下游（队首从 y_lead 走到更小的 y_stop），所以这条
+        由出生位校验蕴含；这里显式钉住，防止以后换回积放语义时无声失守。
+        """
 
         layout = resolve_scene_layout({})
         halves = layout.belt_box_half_lengths
-        y = layout.conveyor_y_stop
-        for index in range(1, layout.belt_box_count):
-            y += halves[index - 1] + layout.belt_box_queue_gap + halves[index]
+        ys = [pos[1] for pos in layout.belt_box_positions]
+        pitch = ys[1] - ys[0]
+        settled_tail = layout.conveyor_y_stop + pitch * (layout.belt_box_count - 1)
 
-        self.assertLessEqual(y + halves[-1], _LAYOUT_MODULE.BELT_BOX_BELT_Y_MAX)
+        self.assertLessEqual(settled_tail + halves[-1], _LAYOUT_MODULE.BELT_BOX_BELT_Y_MAX)
+        self.assertLess(settled_tail, ys[-1], "停稳队尾应比出生队尾更靠下游")
 
     def test_count_and_geometry_are_overridable(self) -> None:
         layout = resolve_scene_layout(
@@ -174,6 +179,16 @@ class BeltBoxLayoutTest(unittest.TestCase):
             layout.belt_box_positions,
             ((-5.617, 16.0, 0.775), (-5.617, 16.7, 0.775), (-5.617, 17.4, 0.775)),
         )
+
+    def test_spacing_is_wide_enough_to_read_as_separate_boxes(self) -> None:
+        """默认间距要让相邻箱子之间留出肉眼可辨的空隙（不是挨在一起）。"""
+
+        layout = resolve_scene_layout({})
+        ys = [pos[1] for pos in layout.belt_box_positions]
+        halves = layout.belt_box_half_lengths
+        for index in range(len(ys) - 1):
+            clear = (ys[index + 1] - halves[index + 1]) - (ys[index] + halves[index])
+            self.assertGreaterEqual(clear, 0.25, f"box {index}/{index + 1} 挨太近")
 
     def test_zero_count_yields_no_boxes(self) -> None:
         layout = resolve_scene_layout({"ISAACLAB_BELT_BOX_COUNT": "0"})
@@ -225,13 +240,21 @@ class BeltBoxLayoutTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "悬出带面"):
             resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_Y_LEAD": "17.0"})
 
-    def test_settled_queue_overflowing_the_belt_fails_fast(self) -> None:
-        """出生位合法但停稳后排不下，也必须启动时就拦住。"""
+    def test_enlarging_the_pitch_without_room_fails_fast(self) -> None:
+        """间距、行程、数量此消彼长：只调大 pitch 而不让出行程就会被拦住。"""
 
-        with self.assertRaisesRegex(ValueError, "停稳后的队列尾端"):
-            resolve_scene_layout(
-                {"ISAACLAB_BELT_BOX_PATTERN": "c01", "ISAACLAB_BELT_BOX_QUEUE_GAP": "0.6"}
-            )
+        with self.assertRaisesRegex(ValueError, "悬出带面"):
+            resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_PITCH": "1.0"})
+
+        # 同时把队首往工位方向下调就能放下。
+        layout = resolve_scene_layout(
+            {
+                "ISAACLAB_BELT_BOX_SPAWN_PITCH": "1.0",
+                "ISAACLAB_BELT_BOX_COUNT": "3",
+                "ISAACLAB_BELT_BOX_SPAWN_Y_LEAD": "15.0",
+            }
+        )
+        self.assertEqual([pos[1] for pos in layout.belt_box_positions], [15.0, 16.0, 17.0])
 
     def test_lead_bound_follows_a_custom_workstation(self) -> None:
         """y_stop 被覆盖时，队首下界跟着走——不能拿默认 14.148 硬判。"""

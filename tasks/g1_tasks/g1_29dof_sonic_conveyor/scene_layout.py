@@ -179,8 +179,13 @@ def resolve_belt_box_positions(
 
     lane_x = _env_float(environ, "ISAACLAB_BELT_BOX_LANE_X", BELT_BOX_LANE_X)
     spawn_z = _env_float(environ, "ISAACLAB_BELT_BOX_SPAWN_Z", BELT_BOX_SPAWN_Z)
-    y_lead = _env_float(environ, "ISAACLAB_BELT_BOX_SPAWN_Y_LEAD", 15.5)
-    spawn_pitch = _env_float(environ, "ISAACLAB_BELT_BOX_SPAWN_PITCH", 0.6)
+    # ⚠️ 出生间距同时**就是**停稳后的队列间距（整带节拍：所有箱子同起同停，相对
+    # 位置恒定）。工位上游只有 18.22-14.148 ≈ 4.07 m，因此
+    #     队列长度 (count-1)*pitch + 端部半长  +  队首行程 (y_lead - y_stop)  ≤ 4.07
+    # 间距、行程、数量三者此消彼长；调大 pitch 必须同时下调 y_lead 或 count，
+    # 否则下面的两条 fail-fast 会拦住。
+    y_lead = _env_float(environ, "ISAACLAB_BELT_BOX_SPAWN_Y_LEAD", 14.95)
+    spawn_pitch = _env_float(environ, "ISAACLAB_BELT_BOX_SPAWN_PITCH", 0.75)
     queue_gap = _env_float(environ, "ISAACLAB_BELT_BOX_QUEUE_GAP", 0.07)
 
     kinds = resolve_belt_box_pattern(environ, count)
@@ -211,18 +216,12 @@ def resolve_belt_box_positions(
     if y_tail + halves[-1] > BELT_BOX_BELT_Y_MAX:
         raise ValueError(
             f"{count} 个纸箱按 pitch={spawn_pitch} 从 y={y_lead} 排到 y={y_tail}，"
-            f"队尾（{kinds[-1].key}）悬出带面 y_max={BELT_BOX_BELT_Y_MAX}"
+            f"队尾（{kinds[-1].key}）悬出带面 y_max={BELT_BOX_BELT_Y_MAX}；"
+            "调小 pitch/count，或把 ISAACLAB_BELT_BOX_SPAWN_Y_LEAD 往工位方向下调"
         )
-
-    # 停稳后的队列也必须装得下：队首压在工位，其余逐个顶在前车尾部 + 自身半长 + 间隙。
-    settled = y_stop + halves[0]
-    for index in range(1, count):
-        settled += queue_gap + halves[index] * 2
-    if settled > BELT_BOX_BELT_Y_MAX:
-        raise ValueError(
-            f"停稳后的队列尾端到 y={settled:.3f}，超出带面 y_max={BELT_BOX_BELT_Y_MAX}；"
-            f"减少 ISAACLAB_BELT_BOX_COUNT 或 ISAACLAB_BELT_BOX_QUEUE_GAP"
-        )
+    # 停稳后的队列不需要单独校验：整带节拍保持出生间距整体**向下游**平移（队首从
+    # y_lead 走到 y_stop < y_lead），所以停稳队尾一定比出生队尾更靠下游，上面这条
+    # 出生位校验已经覆盖了它。
 
     # 最宽的箱型也要放得进带面宽度。
     half_width = BELT_BOX_BELT_WIDTH * 0.5
