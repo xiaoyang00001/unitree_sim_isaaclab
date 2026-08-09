@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 try:  # pxr（usd-core）不需要 Kit，但缺失时也不该让整组选择器测试挂掉。
-    from pxr import Usd
+    from pxr import Usd, UsdGeom
 
     _HAS_PXR = True
 except ModuleNotFoundError:  # pragma: no cover
@@ -77,6 +77,50 @@ class ConveyorBackgroundAssetTest(unittest.TestCase):
         self.assertEqual(layer.count("delete apiSchemas"), 30)
         self.assertEqual(layer.count("bool physics:collisionEnabled = 0"), 30)
         self.assertEqual(layer.count("bool physics:rigidBodyEnabled = 0"), 30)
+
+    @unittest.skipUnless(_HAS_PXR, "需要 pxr（usd-core）做离线组合审计")
+    def test_packing_table_top_is_not_floating_into_the_sorting_bin(self) -> None:
+        """C02_01 的桌面板必须坐在桌体上，不能浮起来穿进分拣料箱。
+
+        源资产 ConveyorBelt02.usd 给这块板单独 author 了 translate.z=23.9065（局部
+        单位，× z 缩放 0.0043086922 = 0.103 m），于是它浮在桌体上方、从下面穿进
+        blue_sorting_bin_02 十厘米。对照组 C02_03 的同名板 translate 是 (0,0,0)，
+        四块几何完全对齐——0 才是正确值。clean wrapper 把 z 分量改回 0。
+        """
+
+        stage = Usd.Stage.Open(
+            str(_ASSETS_DIR / "warehouse-simple6_v61_visual_only.usda"), Usd.Stage.LoadAll
+        )
+        self.assertIsNotNone(stage)
+        cache = UsdGeom.BBoxCache(
+            Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render]
+        )
+
+        def z_range(path: str) -> tuple[float, float]:
+            prim = stage.GetPrimAtPath(path)
+            self.assertTrue(prim, path)
+            box = cache.ComputeWorldBound(prim).ComputeAlignedRange()
+            self.assertFalse(box.IsEmpty(), path)
+            return box.GetMin()[2], box.GetMax()[2]
+
+        belt = "/Root/ConveyorBelt"
+        top_01 = z_range(
+            f"{belt}/SM_HeavyDutyPackingTable_C02_01/SM_HeavyDutyPackingTable_C02_01"
+            "/Geometry/M_HeavyDutyPackingTable_C01_TableTop"
+        )
+        top_03 = z_range(
+            f"{belt}/SM_HeavyDutyPackingTable_C02_03/SM_HeavyDutyPackingTable_C02_03"
+            "/Geometry/M_HeavyDutyPackingTable_C01_TableTop"
+        )
+        bin_02 = z_range(f"{belt}/blue_sorting_bin_02")
+
+        # 桌面板不得侵入料箱：板顶 ≤ 料箱底。
+        self.assertLessEqual(
+            top_01[1], bin_02[0] + 1e-4, f"桌面板顶 {top_01[1]} 穿进料箱底 {bin_02[0]}"
+        )
+        # 与对照组那张桌子的同名板等高。
+        self.assertAlmostEqual(top_01[1], top_03[1], places=4)
+        self.assertAlmostEqual(top_01[0], top_03[0], places=4)
 
     @unittest.skipUnless(_HAS_PXR, "需要 pxr（usd-core）做离线组合审计")
     def test_belt_decorations_are_removed_from_composition_entirely(self) -> None:

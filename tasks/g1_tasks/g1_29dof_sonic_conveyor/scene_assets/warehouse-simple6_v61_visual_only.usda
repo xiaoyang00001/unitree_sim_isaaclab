@@ -770,6 +770,27 @@ over "Root"
         {
             matrix4d xformOp:transform = ( (0.004394829989768472, 0.0, 0.0, 0.0), (0.0, 0.01365120615810155, 0.0, 0.0), (0.0, 0.0, 0.004308692179620263, 0.0), (1.0265775455502195, -0.2067073031074571, -0.5770295507331438, 1.0) )
             uniform token[] xformOpOrder = ["xformOp:transform"]
+
+            # 这张桌子的**桌面板**在源资产 ConveyorBelt02.usd 里被单独 author 了
+            # translate=(-60.5358, 0, 23.9065)（局部单位），于是整块板浮在桌体上方：
+            # 世界 z 到 [0.5146,0.5343]，而同桌的 TableTopSide 在 [0.4117,0.4311]。
+            # 分拣料箱 blue_sorting_bin_02 底面 0.4313 是按正确桌面高度摆的，结果被
+            # 这块浮起来的板从下面穿进去 0.103 m（23.9065 × z 缩放 0.0043086922）。
+            # 对照组 SM_HeavyDutyPackingTable_C02_03 的同名板 translate 是 (0,0,0)，
+            # 四块几何完全对齐、料箱与桌面严丝合缝——说明 0 才是正确值。
+            #
+            # 这里只把 z 归零（把板放回桌体上沿），x 分量保持原值不动：它对应世界 y
+            # 方向 -0.266 m 的偏移，改它会让桌面板横向平移，属于另一个问题。
+            over "SM_HeavyDutyPackingTable_C02_01"
+            {
+                over "Geometry"
+                {
+                    over "M_HeavyDutyPackingTable_C01_TableTop"
+                    {
+                        double3 xformOp:translate = (-60.535846818890974, -3.552713678800501e-15, 0)
+                    }
+                }
+            }
         }
 
         over "SM_HeavyDutyPackingTable_C02_03"
