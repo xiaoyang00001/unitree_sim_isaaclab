@@ -2,8 +2,8 @@
   "schema_version": 1,
   "description": "v61 流水线工位的白名单引用薄层，只组合传送带、工位地面标识、地面碰撞与仓库外墙。",
   "source_asset": "warehouse-simple6_v61_visual_only.usda",
-  "source_asset_sha256": "0e138bd8375b496579c94a1a017c8edd9d1e87ee69860dc09e541c205245503c",
-  "source_root_child_count": 3017,
+  "source_asset_sha256": "f07ae3e415c11c2a0d2a7a762981dd10071cf6ac4ffe539dc87b209fd65bba8e",
+  "source_root_child_count": 2717,
   "output_asset": "conveyor_workcell_lite.usd",
   "keep_root_exact": [
     "ConveyorBelt",
@@ -67,7 +67,7 @@
   "audit_limits": {
     "max_lite_active_prims": 2000,
     "max_lite_used_layers": 100,
-    "min_active_prim_reduction": 25000,
+    "min_active_prim_reduction": 22000,
     "min_used_layer_reduction": 1600
   },
   "remote_dependency_prefix": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/",

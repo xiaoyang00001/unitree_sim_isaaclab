@@ -23,7 +23,8 @@ class ConveyorWorkcellLiteAssetTest(unittest.TestCase):
         digest = hashlib.sha256(source.read_bytes()).hexdigest()
 
         self.assertEqual(digest, _MANIFEST["source_asset_sha256"])
-        self.assertEqual(_MANIFEST["source_root_child_count"], 3017)
+        # 2717 = 3017 - 300：clean wrapper 用 active=false 移除了靠墙的 BA01 纸箱垛。
+        self.assertEqual(_MANIFEST["source_root_child_count"], 2717)
         self.assertIn("ConveyorBelt", _MANIFEST["keep_root_exact"])
         self.assertEqual(
             _MANIFEST["omit_pseudoroot_prims"],
@@ -88,7 +89,8 @@ class ConveyorWorkcellLiteAssetTest(unittest.TestCase):
 
         self.assertLessEqual(limits["max_lite_active_prims"], 2000)
         self.assertLessEqual(limits["max_lite_used_layers"], 100)
-        self.assertGreaterEqual(limits["min_active_prim_reduction"], 25000)
+        # 移除 BA01 箱垛后源场景本身变轻（Kit 组合实测削减量 22850），门槛随之下调。
+        self.assertGreaterEqual(limits["min_active_prim_reduction"], 22000)
         self.assertGreaterEqual(limits["min_used_layer_reduction"], 1600)
         self.assertTrue(_MANIFEST["remote_dependency_prefix"].startswith("https://"))
 

@@ -211,10 +211,17 @@ def main() -> int:
             return 2
 
         remote_prefix = manifest["remote_dependency_prefix"]
+        # resolver 可能把官方资产根重定向到本地资产包镜像（file:/.../Assets/Isaac/5.1/...），
+        # 标识符前缀随 resolver 配置漂移；按资产根的稳定路径段匹配，审计结论才不依赖网络环境。
+        remote_marker = remote_prefix[remote_prefix.index("/Assets/") :]
         remote_layers = sorted(
             layer.identifier
             for layer in lite_stage.GetUsedLayers()
-            if layer.identifier.startswith(remote_prefix)
+            if not layer.anonymous
+            and (
+                layer.identifier.startswith(remote_prefix)
+                or remote_marker in layer.identifier
+            )
         )
         if len(remote_layers) != manifest["expected_lite_remote_layers"]:
             print(
