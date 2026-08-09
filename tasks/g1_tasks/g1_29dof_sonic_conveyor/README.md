@@ -54,7 +54,7 @@ ISAACLAB_PEER_ROBOT_MODE=visual_lod
 
 | 值 | 布局 |
 |---|---|
-| `1`（默认） | 两个半尺寸塑料筐从流水线入料端流向工位；机器人分站流水线两侧 |
+| `1`（默认） | 5 个纸箱排在工位**上游**、挡停放行流向工位；机器人分站流水线两侧 |
 | `0` | 两个原尺寸塑料筐叠放在入料口推车上；机器人面对面站在推车两侧 |
 
 例如：`ISAACLAB_TOTES_ON_CONVEYOR=0 python sim_main.py ...`。
@@ -63,17 +63,24 @@ ISAACLAB_PEER_ROBOT_MODE=visual_lod
 
 | 布局 | 实际生成的任务道具 |
 |---|---|
-| 流水线 | `cart2_tote1` + `cart2_tote2` |
+| 流水线 | `belt_box_1` … `belt_box_5` |
 | 推车 | `pushcart_2` + `cart2_tote1` + `cart2_tote2` |
+| `legacy_props`（任一布局） | 旧的 10 个道具，**不含**纸箱 |
 
 两种布局都不再继承原点的 packing table/cubes，也不生成第一组推车、纸箱和
 `test_box`；scene-sync 默认清单与实际生成清单共用同一解析结果。排障或视觉 A/B 可设
-`ISAACLAB_CONVEYOR_PROPS=legacy_props` 恢复旧的全量道具。
+`ISAACLAB_CONVEYOR_PROPS=legacy_props` 恢复旧的全量道具——它是**纯回退**，不叠加纸箱
+队列。两者不能共存：塑料筐的流水线出生位 (-5.35, 17.4) / (-5.89, 18.0) 与纸箱队列的第
+4、5 个同 y 且同在带上，筐沿 X 半宽 0.15 + 纸箱 0.125 = 0.275 > 车道距中线的 0.27，
+开局就会三轴互穿 5 mm。
 
 背景默认使用 `warehouse-simple6_v61_visual_only.usda` 强覆盖层：保留 v61 外观，但在 PhysX
 解析前删除 10 个流水线纸箱和 5 个 KLT 料箱的刚体/碰撞语义，避免装饰物参与物理、复位和
-双端同步。A/B 或排障时可用 `ISAACLAB_CONVEYOR_BACKGROUND=legacy_v61` 临时恢复原始 v61；
-无效值会在启动时直接报错，不会静默换场景。
+双端同步；这 15 个装饰物**同时被 `active=false` 整体摘除**——它们的摆位是 v48→v61 换版
+遗留（纸箱底 z=0.633 对带面顶 0.772，陷进带里 14 cm；料箱悬空 12~22 cm），而任务现在自己
+在同一条中线上放真箱子，留着只会视觉打架。A/B 或排障时可用
+`ISAACLAB_CONVEYOR_BACKGROUND=legacy_v61` 临时恢复原始 v61；无效值会在启动时直接报错，
+不会静默换场景。
 
 真正精简的 `conveyor_workcell_lite.usd` 已生成，但功能集成期仍保持 opt-in：
 
@@ -103,22 +110,56 @@ NavMesh、Render 设置、额外 PhysicsScene、货架、纸箱堆、推车与�
 
 环境变量拼写错误会直接报错，不会静默回退到高成本模式。
 
-### 筐被搬上流水线后的运动
+### 纸箱队列的挡停放行
 
-两种布局共用同一套流水线驱动。`ISAACLAB_TOTES_ON_CONVEYOR=0` 时，机器人把推车上的
-原尺寸筐放到流水线有效带面并松手后，物体权威端会自动给筐施加沿 `-Y` 的
-`0.3 m/s` 目标速度；当前静止碰撞板 + 摩擦模型下，实测平均滑行速度约
-`0.25 m/s`。
+流水线布局的作业对象是 5 个纸箱（`SM_CardBoxD_01`，0.38×0.25×0.1487 m，与 v61 背景
+`ConveyorBelt_Box_XX` 同款视觉，物理封装见 `props/cart_box_d01_physics.usda`）。它们只
+排在工位 `y_stop=14.148` **上游**那一段带面上，默认出生 y 为
+`15.6 / 16.2 / 16.8 / 17.4 / 18.0`，车道 `x=-5.62`、`z=0.775`。`belt_box_1` 是队首。
 
-驱动只在筐底部位于带面高度 `z=0.772±0.15`，且筐原点进入
-`x=[-6.17,-5.07]`、`y=[10.19,18.22]` 时生效。筐被机器人举离带面、掉到地上或
-放到有效范围外时不会被强行拖动。推车布局默认送到出料段 `y=11.5` 后停止驱动，
-再由摩擦自然停住；流水线布局默认在机器人工位 `y=14.148` 停住。驱动只在物体权威端
-运行，129/130 Viewer 通过场景同步看到相同运动。
+每个箱子的停止线是 `max(y_stop, 前车 y + queue_pitch)`，"前车"取下游方向上**仍在带面**
+的最近一个箱子（默认 `queue_pitch=0.45`，即箱长 0.38 + 7 cm 间隙）。于是：
 
-可用 `ISAACLAB_CONVEYOR_SPEED` 和 `ISAACLAB_CONVEYOR_Y_STOP` 覆盖速度与停止点，
-或用 `ISAACLAB_CONVEYOR_ENABLED=0` 完全关闭驱动。原布局的“机器人搬筐 → 放上流水线
-→ 自动送走”完整作业闭环已有代码支持，但尚未完成实机全流程验收。
+* 队首没有前车 → 流到工位停住等抓取；
+* 后车被前车顶住 → 在上游排队，一次只有一个箱子在工位；
+* 机器人把工位那个拎走 → 它掉出带面窗口、不再是任何人的前车 → 下一个自动补位。
+
+"抓走后放行下一个"因此没有任何状态机：语义完全由当前帧的位置推出来，天然可复位、
+可断点续跑、双机一致。判据在 `conveyor_queue.queue_drive_mask`（不依赖 Isaac，有单测）。
+
+驱动只在箱底位于带面高度 `z=0.772±0.15`，且原点进入 `x=[-6.17,-5.07]`、
+`y=[10.19,18.22]` 时生效；箱子被举离带面、掉到地上或放到范围外都不会被强行拖动。
+驱动只在物体权威端运行，viewer/镜像端通过场景同步看到相同运动。
+
+`ISAACLAB_CONVEYOR_Y_STOP<=0` 切到**循环模式**：没有工位停止线，箱子只受前车约束一路流到
+出料端，到 `y_recycle=10.6` 后被传回 `y_respawn=18.0` 继续循环（回收由额外挂上的
+`recycle_surface_totes` 事件负责——纸箱的驱动函数只管排队和限速，不搬运）。
+
+推车布局（`ISAACLAB_TOTES_ON_CONVEYOR=0`）仍是两塑料筐的老路径：机器人把筐放上带面
+松手后被施加沿 `-Y` 的 `0.3 m/s` 目标速度，送到出料段 `y=11.5` 后交给摩擦停住；筐之间
+没有队列语义。
+
+可调项：
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `ISAACLAB_BELT_BOX_COUNT` | `5` | 纸箱数量；上限 5（SceneCfg 字段是显式声明的，超限 fail-fast） |
+| `ISAACLAB_BELT_BOX_SPAWN_Y_LEAD` | `15.6` | 队首出生 y，同时是复位落点 |
+| `ISAACLAB_BELT_BOX_SPAWN_PITCH` | `0.6` | 出生间距（只决定初始队形） |
+| `ISAACLAB_BELT_BOX_QUEUE_PITCH` | `0.45` | 停稳后的队列中心距，不得小于箱长 |
+| `ISAACLAB_BELT_BOX_LANE_X` / `_SPAWN_Z` | `-5.62` / `0.775` | 车道与出生高度 |
+| `ISAACLAB_BELT_BOX_MASS` | `1.0` | 单箱质量（kg） |
+| `ISAACLAB_CONVEYOR_SPEED` / `_Y_STOP` / `_ENABLED` | `0.3` / `14.148` / `1` | 速度、工位、总开关 |
+
+排到带面外、队距小于箱长、队首压在工位上等非法组合都会在启动时报错，不会等到运行时
+才看见箱子悬空或互相穿模。
+
+验收（`--pick-lead-at` 会在指定步把队首搬离带面，模拟机器人取件）：
+
+```bash
+python tools/smoke_conveyor_scene.py --steps 900 --sync 0 --device cpu
+python tools/smoke_conveyor_scene.py --steps 900 --sync 0 --device cpu --pick-lead-at 500
+```
 
 ## 双机形态（对等/混合权威）
 
@@ -226,16 +267,23 @@ HandCmd 默认超时为 `0.20 s`；超时后保持最后安全的 `q/kp/kd`、�
   deploy 停发 lowcmd 时 env.step 停摆，同步随之冻结）。
 - 镜像端仅限 `--device cpu`：GPU pipeline 下 tensor API 写位姿驱不动 kinematic 体，
   镜像物体会静默冻结（启动时有告警）。
-- 筐在带上被拖拽滑行（碰撞板静止 + μd=0.6），实测平均速度 ≈0.25 m/s 且会缓慢自转（源分支已知）。
-- 流水线布局的 robot_2 仍是偏展示的站位，离对应筐较远，实际可达性尚未完全收口。
+- 物体在带上被拖拽滑行（碰撞板静止 + μd=0.6），实测平均速度 ≈0.25 m/s 而不是设定的
+  0.3 m/s，且会缓慢自转（源分支已知）。
+- 纸箱停位比理论槽位各偏小 8~33 mm（越线后驱动关闭、靠摩擦停住），队列越靠上游累计偏差
+  越大；smoke 的容差取 50 mm。需要更准的节距就调 `queue_pitch`，不要指望停在整数槽位上。
+- **纸箱队列尚未做机器人实抓验收**：`--pick-lead-at` 是把队首直接搬离带面来模拟取件，
+  验的是"队列会不会正确放行下一个"，不等于 Dex3 真能抓起 1.0 kg 的纸箱。
+- 流水线布局的 robot_2 仍是偏展示的站位，离带面较远，实际可达性尚未完全收口。
 - 原布局（`ISAACLAB_TOTES_ON_CONVEYOR=0`）的作业闭环在源分支就未实跑过。
+- `surface_velocity` 后端下纸箱队列靠"后车撞前车"物理涌现，没有走
+  `queue_drive_mask`；该组合尚未实测，上游带面会持续挤压排队的箱子。
 
 ## scene_assets/ 资产来源
 
 | 文件 | 来源 | 说明 |
 |---|---|---|
 | warehouse-simple6_v61.usd | 分叉 git-LFS tip 版（**入本仓库 git**） | 原始 v61，作为 `ISAACLAB_CONVEYOR_BACKGROUND=legacy_v61` 的 A/B 回退；2026-08-07 对根层 Sdf reference list-op 的静态审计记录约 1,805 个唯一资产路径，不等于传递依赖或实际下载数 |
-| warehouse-simple6_v61_visual_only.usda | 本仓库任务专用强覆盖层 | 默认背景入口；引用原始 v61，删除 10 个纸箱和 5 个 KLT 料箱的刚体/碰撞 API 并显式禁用物理，视觉保持不变 |
+| warehouse-simple6_v61_visual_only.usda | 本仓库任务专用强覆盖层 | 默认背景入口；引用原始 v61，对 10 个纸箱和 5 个 KLT 料箱删除刚体/碰撞 API 并显式禁用物理，**再用 `active=false` 整体摘出组合**（摆位与带面对不上，且与任务的真箱子队列重叠）；其余视觉保持不变 |
 | conveyor_workcell_lite.usd | `tools/build_conveyor_workcell_lite.py` 生成的 ASCII USD 薄层 | opt-in 背景；白名单引用 63 个 v61 根 Prim，当前静态审计为 27,802→1,052 active Prim、1,818→13 used layer |
 | conveyor_workcell_lite.manifest.json | 本仓库可复现生成清单 | 锁定源哈希、保留规则、必须存在/缺席的 Prim 和组合降幅门槛 |
 | ConveyorBelt02.usd (46.7MB) | 分叉工作区拷入（**已入本仓库 git**） | 被 warehouse USD 以 `./ConveyorBelt02.usd` 相对引用，必须与 warehouse 层保持可解析的相对路径；后续 visual-only 派生层不直接重写这个二进制源资产 |
@@ -244,5 +292,6 @@ HandCmd 默认超时为 `0.20 s`；超时后保持最后安全的 `q/kp/kd`、�
 | nolo_label.png | 分叉 git | warehouse USD 相对引用的地面贴花 |
 | props/pushcart_physics.usda | 分叉工作区手拷（未入 git） | 引用 Nucleus 5.1 SM_PushcartA_02 |
 | props/cart_box_d05_physics.usda | 分叉 git-LFS tip 版 | 已含关 CCD 修复（ae9118a2e） |
+| props/cart_box_d01_physics.usda | 本仓库任务专用物理层 | 流水线纸箱队列用；与 d05 同构但引用 `SM_CardBoxD_01`（= v61 `ConveyorBelt_Box_XX` 的视觉源），删掉原资产的 triangle-mesh 碰撞、另挂 0.38×0.25×0.149 m 的 convexHull，原点在箱底面 |
 | props/tote_b04_compound_physics.usda | 本仓库任务专用物理层 | 默认料筐碰撞；复用 SimReady 视觉，以底板+四壁 5-box compound 保持开口语义 |
 | props/tote_b04_physics.usda | 分叉 git-LFS | 历史 convex decomposition 回退；内嵌 2.0/1.6 combine=min 高摩擦材质 |

@@ -28,6 +28,8 @@ from isaaclab.sim.utils import clone
 from isaacsim.core.utils.stage import get_current_stage
 from pxr import Gf, PhysxSchema, Usd, UsdPhysics
 
+from . import conveyor_queue
+
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv
 
@@ -211,6 +213,76 @@ def reset_scene_mirror_safe(env):
             rigid_object.write_root_velocity_to_sim(default_root[:, 7:], env_ids=env_ids)
 
 
+def drive_belt_boxes_on_conveyor(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor | None,
+    object_names: tuple[str, ...] = (),
+    velocity_y: float = -0.3,
+    enabled: bool = True,
+    belt_top_z: float = 0.772,
+    z_tolerance: float = 0.15,
+    x_range: tuple[float, float] = (-6.17, -5.07),
+    y_range: tuple[float, float] = (10.19, 18.22),
+    y_stop: float | None = 14.148,
+    queue_pitch: float = 0.45,
+):
+    """把纸箱队列沿 -Y 送到工位，一次只放行一个，后面的排队等着。
+
+    与 ``drive_totes_on_conveyor``（每个筐各自独立判断 ``y > y_stop``）的差别只在
+    停止线怎么算：队首停在工位，后车被前车顶住排队，工位那个被拎走后下一个自动
+    补位。判据本身在 ``conveyor_queue.queue_drive_mask``（无 Isaac 依赖、有单测），
+    完整推导见该函数的 docstring。本函数只负责读位置、写速度。
+
+    ``y_stop=None``（``ISAACLAB_CONVEYOR_Y_STOP<=0`` 的循环模式）下退化为只受前车
+    约束、一路流到带尾。本函数**不做回收**——与塑料筐的 ``drive_totes_on_conveyor``
+    不同，那边自带 loop 分支会把筐传回入料端。纸箱的回收由 env cfg 在循环模式下
+    额外挂上的 ``recycle_totes_on_surface_conveyor`` 负责
+    （见 ``CONVEYOR_BELT_BOX_RECYCLE_ENABLED``）；两者拆开是因为回收要写位姿，
+    而写位姿和逐步写速度混在一个函数里会让排队判据难以推理。
+
+    性能注意：与 ``drive_totes_on_conveyor`` 同一条铁律——本函数每个物理步都跑，
+    **不允许任何 GPU→CPU 同步**（``.item()`` / ``.any()`` / ``if tensor``）。
+    """
+
+    if not enabled or abs(velocity_y) < 1e-8 or not object_names:
+        return
+
+    if env_ids is None:
+        env_ids = torch.arange(env.scene.num_envs, device=env.device, dtype=torch.long)
+    if len(env_ids) == 0:
+        return
+
+    origins = env.scene.env_origins[env_ids]
+    objects = [env.scene[name] for name in object_names]
+
+    # (N, E, 3)：N 个箱子 × E 个 env 的 env-local 位置。
+    pos_local = torch.stack(
+        [obj.data.root_pos_w[env_ids] - origins for obj in objects], dim=0
+    )
+    on_belt = conveyor_queue.on_belt_mask(
+        pos_local,
+        belt_top_z=belt_top_z,
+        z_tolerance=z_tolerance,
+        x_range=x_range,
+        y_range=y_range,
+    )  # (N, E)
+    drive = conveyor_queue.queue_drive_mask(
+        pos_local[..., 1],
+        on_belt,
+        y_stop=y_stop,
+        queue_pitch=queue_pitch,
+    )  # (N, E)
+
+    for index, obj in enumerate(objects):
+        # 只覆写水平速度，Z 留给重力/接触——与 drive_totes_on_conveyor 一致，
+        # 避免把箱子按进碰撞板里。
+        vel = obj.data.root_vel_w[env_ids].clone()
+        drive_i = drive[index]
+        vel[:, 0] = torch.where(drive_i, torch.zeros_like(vel[:, 0]), vel[:, 0])
+        vel[:, 1] = torch.where(drive_i, torch.full_like(vel[:, 1], velocity_y), vel[:, 1])
+        obj.write_root_velocity_to_sim(vel, env_ids=env_ids)
+
+
 def drive_totes_on_conveyor(
     env: ManagerBasedEnv,
     env_ids: torch.Tensor | None,
@@ -250,7 +322,7 @@ def drive_totes_on_conveyor(
     才允许走分支。
     """
 
-    if not enabled or abs(velocity_y) < 1e-8:
+    if not enabled or abs(velocity_y) < 1e-8 or not object_names:
         return
 
     if env_ids is None:
@@ -266,13 +338,12 @@ def drive_totes_on_conveyor(
 
         pos_local = obj.data.root_pos_w[env_ids] - origins
 
-        on_belt = (
-            (pos_local[:, 2] >= belt_top_z - z_tolerance)
-            & (pos_local[:, 2] <= belt_top_z + z_tolerance)
-            & (pos_local[:, 0] >= x_range[0])
-            & (pos_local[:, 0] <= x_range[1])
-            & (pos_local[:, 1] >= y_range[0])
-            & (pos_local[:, 1] <= y_range[1])
+        on_belt = conveyor_queue.on_belt_mask(
+            pos_local,
+            belt_top_z=belt_top_z,
+            z_tolerance=z_tolerance,
+            x_range=x_range,
+            y_range=y_range,
         )
 
         if y_stop is None:
@@ -323,7 +394,7 @@ def recycle_totes_on_surface_conveyor(
     being needlessly woken by a periodic pose/velocity rewrite.
     """
 
-    if not enabled:
+    if not enabled or not object_names:
         return
 
     if env_ids is None:
@@ -335,13 +406,12 @@ def recycle_totes_on_surface_conveyor(
     for object_name in object_names:
         obj = env.scene[object_name]
         pos_local = obj.data.root_pos_w[env_ids] - origins
-        on_belt = (
-            (pos_local[:, 2] >= belt_top_z - z_tolerance)
-            & (pos_local[:, 2] <= belt_top_z + z_tolerance)
-            & (pos_local[:, 0] >= x_range[0])
-            & (pos_local[:, 0] <= x_range[1])
-            & (pos_local[:, 1] >= y_range[0])
-            & (pos_local[:, 1] <= y_range[1])
+        on_belt = conveyor_queue.on_belt_mask(
+            pos_local,
+            belt_top_z=belt_top_z,
+            z_tolerance=z_tolerance,
+            x_range=x_range,
+            y_range=y_range,
         )
         recycle = on_belt & (pos_local[:, 1] <= y_recycle)
 

@@ -13,12 +13,23 @@
     ]
 )
 
-# v61 把下列纸箱和 KLT 料箱作为动态三角网格刚体写进背景。它们只是布景，不应进入
-# 任务物理、reset 或 scene-sync。本强层删除根 Prim 的物理 API，同时把根及纸箱引用
-# 子 Prim 的碰撞/刚体开关显式关闭；即使上游资产以后重新添加 API，禁用属性仍提供保护。
+# v61 把下列 10 个纸箱和 5 个 KLT 料箱作为动态三角网格刚体写进背景。它们只是布景，
+# 不应进入任务物理、reset 或 scene-sync。本强层删除根 Prim 的物理 API，同时把根及
+# 引用子 Prim 的碰撞/刚体开关显式关闭；即使上游资产以后重新添加 API，禁用属性仍
+# 提供保护。
+#
+# 它们**同时被 active=false 整体摘除**，原因有二：
+#   1. 摆位对不上带面。这批装饰物的坐标是 v48→v61 换版遗留：纸箱底 z=0.633 而带面
+#      顶 0.772（陷进带里 14 cm，只露顶上 1 cm），料箱底 z=0.889~0.990（悬空
+#      12~22 cm）。做布景时没人看，一旦旁边有真箱子就非常显眼。
+#   2. 任务现在自己在工位上游 spawn 5 个真刚体纸箱（同款 SM_CardBoxD_01 视觉，见
+#      scene_assets/props/cart_box_d01_physics.usda），沿带面精确贴合并参与
+#      scene-sync。留着这批装饰物会和真箱子在同一条中线上视觉打架。
+# 物理清理保留在原地而不是直接删掉整段：既是双保险，也保留了 active=true 时的可回退性。
 over "Root"
 {
     over "ConveyorBelt_Box_00" (
+        active = false
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
@@ -35,6 +46,7 @@ over "Root"
     }
 
     over "ConveyorBelt_Box_01" (
+        active = false
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
@@ -51,6 +63,7 @@ over "Root"
     }
 
     over "ConveyorBelt_Box_02" (
+        active = false
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
@@ -67,6 +80,7 @@ over "Root"
     }
 
     over "ConveyorBelt_Box_03" (
+        active = false
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
@@ -83,6 +97,7 @@ over "Root"
     }
 
     over "ConveyorBelt_Box_04" (
+        active = false
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
@@ -99,6 +114,7 @@ over "Root"
     }
 
     over "ConveyorBelt_Box_05" (
+        active = false
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
@@ -115,6 +131,7 @@ over "Root"
     }
 
     over "ConveyorBelt_Box_06" (
+        active = false
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
@@ -131,6 +148,7 @@ over "Root"
     }
 
     over "ConveyorBelt_Box_07" (
+        active = false
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
@@ -147,6 +165,7 @@ over "Root"
     }
 
     over "ConveyorBelt_Box_08" (
+        active = false
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
@@ -163,6 +182,7 @@ over "Root"
     }
 
     over "ConveyorBelt_Box_09" (
+        active = false
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
@@ -179,6 +199,7 @@ over "Root"
     }
 
     over "KLT_Bin_00" (
+        active = false
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
@@ -195,6 +216,7 @@ over "Root"
     }
 
     over "KLT_Bin_01" (
+        active = false
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
@@ -211,6 +233,7 @@ over "Root"
     }
 
     over "KLT_Bin_02" (
+        active = false
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
@@ -227,6 +250,7 @@ over "Root"
     }
 
     over "KLT_Bin_03" (
+        active = false
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {
@@ -243,6 +267,7 @@ over "Root"
     }
 
     over "KLT_Bin_04" (
+        active = false
         delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMassAPI", "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysxCollisionAPI", "PhysxRigidBodyAPI"]
     )
     {

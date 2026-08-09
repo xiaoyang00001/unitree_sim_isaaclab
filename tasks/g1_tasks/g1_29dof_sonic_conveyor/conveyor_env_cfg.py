@@ -75,7 +75,7 @@ from .conveyor_drive import (
 )
 from .peer_visual_lod import JOINT_NAMES as PEER_VISUAL_LOD_JOINT_NAMES
 from .peer_visual_lod import resolve_peer_robot_mode
-from .scene_layout import resolve_scene_layout
+from .scene_layout import BELT_BOX_LENGTH_Y, resolve_scene_layout
 from .scene_props import resolve_scene_props
 from .tote_assets import resolve_tote_asset
 from .zmq_scene_sync import ZmqEnvResetSyncActionCfg, ZmqSceneStateSyncActionCfg
@@ -145,9 +145,11 @@ def _env_str_tuple(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
 # scene_state，否则同步 term 会按旧名称查找不存在的场景实体。
 SCENE_LAYOUT = resolve_scene_layout(os.environ)
 TOTES_ON_CONVEYOR = SCENE_LAYOUT.totes_on_conveyor
+BELT_BOX_NAMES = SCENE_LAYOUT.belt_box_names
 SCENE_PROPS = resolve_scene_props(
     os.environ,
     totes_on_conveyor=TOTES_ON_CONVEYOR,
+    belt_box_names=BELT_BOX_NAMES,
 )
 
 
@@ -343,6 +345,22 @@ TOTE_SPAWN_Y_TRAIL = SCENE_LAYOUT.cart2_tote2_pos[1]
 CART2_TOTE1_POS = list(SCENE_LAYOUT.cart2_tote1_pos)
 CART2_TOTE2_POS = list(SCENE_LAYOUT.cart2_tote2_pos)
 
+# 流水线纸箱队列（v61 的 ConveyorBelt_Box 同款视觉资产，见
+# scene_assets/props/cart_box_d01_physics.usda）。默认 5 个，只排在工位
+# ``ROBOT_WORKSTATION_Y`` **上游**那一段带面上——布局与校验在 scene_layout。
+#
+# ⚠️ 与两塑料筐时代同一条约定：出生 y 同时是**复位落点**（整场景复位走
+# mdp.reset_scene_to_default，把箱子写回这里的 init_state），排在上游才能让一次
+# 复位＝重新完整流一遍。
+#
+# ⚠️ 背景 USD 里那 10 个 ConveyorBelt_Box + 5 个 KLT_Bin 装饰物必须保持隐藏
+# （warehouse-simple6_v61_visual_only.usda 里 active=false）：它们的 v48→v61 换版
+# 遗留坐标让箱底 0.633 对带面 0.772（陷 14 cm），留着会和这里的真箱子视觉打架。
+BELT_BOX_POSITIONS = [list(pos) for pos in SCENE_LAYOUT.belt_box_positions]
+BELT_BOX_QUEUE_PITCH = SCENE_LAYOUT.belt_box_queue_pitch
+# 箱子长边（0.38 m）沿输送方向 Y，所以绕 Z 转 90°——与 v61 背景装饰箱的朝向一致。
+BELT_BOX_ROT = [0.70710678, 0.0, 0.0, 0.70710678]
+
 # 双机站位（面对面）：robot_1 在 +X 侧朝 -X（yaw 180°），robot_2 在 -X 侧朝 +X（identity）。
 # ⚠️ SONIC 底座任务刻意保持 identity 出生朝向（policy/world 约定）；ID=1 的 180° yaw
 # 出生是否影响 deploy 行走需 Phase 1 实测，异常时先用 ISAACLAB_ROBOT_YAW_IDENTITY=1
@@ -374,13 +392,21 @@ PEER2_ROBOT_ROT = _ROBOT_2_ROT
 # surface_velocity 比 legacy 的单机诊断语义更严格：固定只允许物体权威 ID=1 启用，
 # 即便 ID=2 临时关闭同步也不会自己驱动，避免两端恢复同步后状态分叉。
 # ==================================================================
-CONVEYOR_TOTE_NAMES = ("cart2_tote1", "cart2_tote2")
+# 只驱动布局实际 spawn 出来的物体：流水线布局的作业对象已换成纸箱队列，两塑料筐
+# 只在推车布局（和 legacy_props 回退）里还存在。清单跟 SCENE_PROPS 走，避免事件
+# 按旧名字去 env.scene 里查不存在的实体。
+CONVEYOR_TOTE_NAMES = tuple(
+    name for name in ("cart2_tote1", "cart2_tote2") if SCENE_PROPS.spawns(name)
+)
+CONVEYOR_BELT_BOX_NAMES = tuple(name for name in BELT_BOX_NAMES if SCENE_PROPS.spawns(name))
 CONVEYOR_DRIVE = resolve_conveyor_drive(
     os.environ,
     object_authority=OBJECT_AUTHORITY,
     mirror_objects=MIRROR_OBJECTS,
     default_y_stop=SCENE_LAYOUT.conveyor_y_stop,
-    default_handoff_offset=0.10 if TOTES_ON_CONVEYOR else 0.20,
+    # 移动带面在期望停位上游 handoff_offset 处结束，取作业对象沿带方向的半长：
+    # 流水线布局是纸箱（0.38/2），推车布局仍是原尺寸塑料筐（0.20）。
+    default_handoff_offset=BELT_BOX_LENGTH_Y * 0.5 if TOTES_ON_CONVEYOR else 0.20,
 )
 CONVEYOR_DRIVE_MODE = CONVEYOR_DRIVE.mode
 CONVEYOR_SPEED = CONVEYOR_DRIVE.speed
@@ -392,6 +418,15 @@ CONVEYOR_LEGACY_ENABLED = CONVEYOR_DRIVE.legacy_enabled
 CONVEYOR_SURFACE_VELOCITY_ENABLED = CONVEYOR_DRIVE.surface_velocity_enabled
 CONVEYOR_SURFACE_RECYCLE_ENABLED = CONVEYOR_DRIVE.surface_recycle_enabled
 CONVEYOR_ENABLED = CONVEYOR_LEGACY_ENABLED or CONVEYOR_SURFACE_VELOCITY_ENABLED
+
+# 循环模式（ISAACLAB_CONVEYOR_Y_STOP<=0 ⇒ y_stop=None）下纸箱同样需要回收。
+# 塑料筐的 legacy 驱动自带 loop 分支会把筐传回入料端，但纸箱走的是
+# drive_belt_boxes_on_conveyor——它只管排队和驱动，不搬运。若不额外开回收事件，
+# legacy + 循环模式的纸箱会一路流出带尾后失去驱动、堆死在出料端。
+CONVEYOR_BELT_BOX_RECYCLE_ENABLED = (
+    bool(CONVEYOR_BELT_BOX_NAMES) and CONVEYOR_Y_STOP is None and CONVEYOR_ENABLED
+)
+CONVEYOR_RECYCLE_ENABLED = CONVEYOR_SURFACE_RECYCLE_ENABLED or CONVEYOR_BELT_BOX_RECYCLE_ENABLED
 
 # 背景清理和输送机物理是两层独立选择：默认 legacy 后端沿用第一阶段的 clean
 # background，但保留 ConveyorBelt02 原生物理；显式资产开关可让 legacy 也使用纯视觉
@@ -493,7 +528,10 @@ def _log_scene_layout() -> None:
     print(f"{tag} 料筐碰撞: {TOTE_COLLIDER_MODE} ({TOTE_USD_PATH.name})")
     print(f"{tag} ContactReport: {CONTACT_REPORT_MODE}")
     if TOTES_ON_CONVEYOR:
-        print(f"{tag} 场景布局: 流水线（两筐缩半在传送带上流动） [ISAACLAB_TOTES_ON_CONVEYOR=1]")
+        print(
+            f"{tag} 场景布局: 流水线（{len(BELT_BOX_NAMES)} 个纸箱排在工位上游、挡停放行）"
+            " [ISAACLAB_TOTES_ON_CONVEYOR=1]"
+        )
     else:
         print(f"{tag} 场景布局: 推车（两筐原尺寸叠在推车上） [ISAACLAB_TOTES_ON_CONVEYOR=0]")
     print(
@@ -506,10 +544,20 @@ def _log_scene_layout() -> None:
         f" | robot_1 x={ROBOT_1_X:.3f} robot_2 x={ROBOT_2_X:.3f} y={ROBOT_WORKSTATION_Y:.3f}"
         f" | 流水线中线 x=-5.620 入料端 y=18.222"
     )
-    if TOTES_ON_CONVEYOR:
+    if CONVEYOR_TOTE_NAMES and TOTES_ON_CONVEYOR:
         print(
             f"{tag}   筐出生/复位落点 y: tote1={CART2_TOTE1_POS[1]:.3f} tote2={CART2_TOTE2_POS[1]:.3f}"
             f"（整场景复位写回同一位置；碰撞板尽头 y=18.220）"
+        )
+    if CONVEYOR_BELT_BOX_NAMES:
+        _spawn_ys = ", ".join(f"{pos[1]:.3f}" for pos in BELT_BOX_POSITIONS)
+        print(
+            f"{tag}   纸箱出生/复位落点 y（队首→上游）: {_spawn_ys}"
+            f" | 车道 x={BELT_BOX_POSITIONS[0][0]:.3f} z={BELT_BOX_POSITIONS[0][2]:.3f}"
+        )
+        print(
+            f"{tag}   排队间距 queue_pitch={BELT_BOX_QUEUE_PITCH:.3f}"
+            f"（箱长 {BELT_BOX_LENGTH_Y:.2f}）；队首停工位，抓走后下一个自动补位"
         )
     if not CONVEYOR_DRIVE.requested_enabled:
         drive = "关 [ISAACLAB_CONVEYOR_ENABLED=0]"
@@ -654,6 +702,46 @@ def _make_cart2_tote_spawn_cfg(object_name: str) -> UsdFileCfg:
             contact_offset=_env_float("ISAACLAB_GRASP_OBJECT_CONTACT_OFFSET", 0.006),
             rest_offset=_env_float("ISAACLAB_GRASP_OBJECT_REST_OFFSET", 0.0),
         ),
+    )
+
+
+def _make_belt_box_spawn_cfg(object_name: str) -> UsdFileCfg:
+    """流水线纸箱：SM_CardBoxD_01 视觉 + convexHull 碰撞，与 v61 装饰箱同款外观。
+
+    刻意**不**就地提升背景 USD 里的 ``ConveyorBelt_Box_XX``：那些 Prim 带的是
+    triangle-mesh 碰撞（PhysX 对动态刚体只能退化成凸包 fallback 并刷警告），而且
+    v48→v61 换版遗留让它们的箱底 z=0.633 对不上带面 0.772。任务层自己 spawn 才
+    能精确贴面、拿到干净的凸包碰撞，并复用塑料筐那条已验过的权威/镜像分流：
+    权威端是动态刚体，镜像端翻成 kinematic 只收位姿。
+    """
+
+    return UsdFileCfg(
+        usd_path=str(_ASSETS_DIR / "props" / "cart_box_d01_physics.usda"),
+        mass_props=sim_utils.MassPropertiesCfg(mass=_env_float("ISAACLAB_BELT_BOX_MASS", 1.0)),
+        rigid_props=(
+            sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True)
+            if _is_mirror_object(object_name)
+            else _grasp_object_rigid_props()
+        ),
+        collision_props=sim_utils.CollisionPropertiesCfg(
+            contact_offset=_env_float("ISAACLAB_GRASP_OBJECT_CONTACT_OFFSET", 0.006),
+            rest_offset=_env_float("ISAACLAB_GRASP_OBJECT_REST_OFFSET", 0.0),
+        ),
+    )
+
+
+def _make_belt_box_cfg(index: int) -> RigidObjectCfg | None:
+    """第 ``index`` 个纸箱（0 基）。数量不足或布局不生成时返回 None。"""
+
+    name = f"belt_box_{index + 1}"
+    if not SCENE_PROPS.spawns(name) or index >= len(BELT_BOX_POSITIONS):
+        return None
+    return RigidObjectCfg(
+        prim_path=f"{{ENV_REGEX_NS}}/BeltBox{index + 1}",
+        init_state=RigidObjectCfg.InitialStateCfg(
+            pos=BELT_BOX_POSITIONS[index], rot=BELT_BOX_ROT
+        ),
+        spawn=_make_belt_box_spawn_cfg(name),
     )
 
 
@@ -1057,16 +1145,39 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
         if SCENE_PROPS.spawns("pushcart_2")
         else None
     )
-    cart2_tote1 = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/Cart2Tote1",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=CART2_TOTE1_POS, rot=[0.0, 0.0, 0.0, 1.0]),
-        spawn=_make_cart2_tote_spawn_cfg("cart2_tote1"),
+    # 两塑料筐只在推车布局（和 legacy_props 回退）里存在：流水线布局的作业对象
+    # 已换成下面的纸箱队列，筐不再生成，也就不再进 scene_state 同步清单。
+    cart2_tote1: RigidObjectCfg | None = (
+        RigidObjectCfg(
+            prim_path="{ENV_REGEX_NS}/Cart2Tote1",
+            init_state=RigidObjectCfg.InitialStateCfg(
+                pos=CART2_TOTE1_POS, rot=[0.0, 0.0, 0.0, 1.0]
+            ),
+            spawn=_make_cart2_tote_spawn_cfg("cart2_tote1"),
+        )
+        if SCENE_PROPS.spawns("cart2_tote1")
+        else None
     )
-    cart2_tote2 = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/Cart2Tote2",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=CART2_TOTE2_POS, rot=[0.0, 0.0, 0.0, 1.0]),
-        spawn=_make_cart2_tote_spawn_cfg("cart2_tote2"),
+    cart2_tote2: RigidObjectCfg | None = (
+        RigidObjectCfg(
+            prim_path="{ENV_REGEX_NS}/Cart2Tote2",
+            init_state=RigidObjectCfg.InitialStateCfg(
+                pos=CART2_TOTE2_POS, rot=[0.0, 0.0, 0.0, 1.0]
+            ),
+            spawn=_make_cart2_tote_spawn_cfg("cart2_tote2"),
+        )
+        if SCENE_PROPS.spawns("cart2_tote2")
+        else None
     )
+
+    # 流水线纸箱队列：belt_box_1 是队首（y 最小、最先到工位），编号递增向上游排。
+    # configclass 需要类属性，所以字段显式声明到 BELT_BOX_MAX_COUNT 个；
+    # ISAACLAB_BELT_BOX_COUNT 只能在此上限内往下减（超限在 scene_layout 里 fail-fast）。
+    belt_box_1: RigidObjectCfg | None = _make_belt_box_cfg(0)
+    belt_box_2: RigidObjectCfg | None = _make_belt_box_cfg(1)
+    belt_box_3: RigidObjectCfg | None = _make_belt_box_cfg(2)
+    belt_box_4: RigidObjectCfg | None = _make_belt_box_cfg(3)
+    belt_box_5: RigidObjectCfg | None = _make_belt_box_cfg(4)
 
     # 底座打包桌三方块换成镜像感知版（位置/颜色与底座一致）：不同步的话
     # 两端各自模拟，任一端机器人碰一下就静默分叉。
@@ -1245,13 +1356,29 @@ class ConveyorEventsCfg:
         },
     )
 
+    # 纸箱队列走带挡停的驱动：队首停在工位等抓取，后面的按 queue_pitch 排队，
+    # 工位那个被拎走后下一个自动补位（判据全在当前帧位置里，无状态机）。
+    # surface_velocity 后端不需要它——那边队列是后车撞前车物理涌现出来的。
+    drive_belt_boxes = EventTerm(
+        func=conveyor_events.drive_belt_boxes_on_conveyor,
+        mode="interval",
+        interval_range_s=(0.02, 0.02),
+        params={
+            "object_names": CONVEYOR_BELT_BOX_NAMES,
+            "velocity_y": CONVEYOR_VELOCITY_Y,
+            "enabled": CONVEYOR_LEGACY_ENABLED,
+            "y_stop": CONVEYOR_Y_STOP,
+            "queue_pitch": BELT_BOX_QUEUE_PITCH,
+        },
+    )
+
     recycle_surface_totes = EventTerm(
         func=conveyor_events.recycle_totes_on_surface_conveyor,
         mode="interval",
         interval_range_s=(0.02, 0.02),
         params={
-            "object_names": CONVEYOR_TOTE_NAMES,
-            "enabled": CONVEYOR_SURFACE_RECYCLE_ENABLED,
+            "object_names": (*CONVEYOR_TOTE_NAMES, *CONVEYOR_BELT_BOX_NAMES),
+            "enabled": CONVEYOR_RECYCLE_ENABLED,
             "y_recycle": CONVEYOR_Y_RECYCLE,
             "y_respawn": CONVEYOR_Y_RESPAWN,
         },
@@ -1286,6 +1413,7 @@ _PROP_NAMES = (
     "cube_1",
     "cube_2",
     "cube_3",
+    *BELT_BOX_NAMES,
 )
 
 
@@ -1314,8 +1442,14 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
         # 接触，不需要逐步事件；循环模式仅保留回收事件，绝不保留 legacy 速度覆写。
         if not CONVEYOR_LEGACY_ENABLED:
             self.events.drive_totes = None
-        if not CONVEYOR_SURFACE_RECYCLE_ENABLED:
+            self.events.drive_belt_boxes = None
+        if not CONVEYOR_RECYCLE_ENABLED:
             self.events.recycle_surface_totes = None
+        # 清单为空的驱动事件不进 interval manager：每 20 ms 空跑一次没有意义。
+        if not CONVEYOR_TOTE_NAMES:
+            self.events.drive_totes = None
+        if not CONVEYOR_BELT_BOX_NAMES:
+            self.events.drive_belt_boxes = None
         # visual-only ConveyorBelt 已在 USD 组合阶段移除全部刚体，不再对
         # blue_sorting_bin_02 运行历史 kinematic 补丁或产生无刚体告警。
         if CONVEYOR_VISUAL_ONLY_ASSET_ENABLED:
@@ -1332,6 +1466,7 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
                 for _name in _PROP_NAMES:
                     setattr(self.scene, _name, None)
                 self.events.drive_totes = None
+                self.events.drive_belt_boxes = None
                 self.events.recycle_surface_totes = None
             if "plain_ground" in _PERF_AB:
                 self.scene.background = None

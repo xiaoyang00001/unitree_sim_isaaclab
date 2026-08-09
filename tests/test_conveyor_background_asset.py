@@ -6,6 +6,14 @@ import unittest
 from pathlib import Path
 
 
+try:  # pxr（usd-core）不需要 Kit，但缺失时也不该让整组选择器测试挂掉。
+    from pxr import Usd
+
+    _HAS_PXR = True
+except ModuleNotFoundError:  # pragma: no cover
+    _HAS_PXR = False
+
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _TASK_DIR = _REPO_ROOT / "tasks/g1_tasks/g1_29dof_sonic_conveyor"
 _ASSETS_DIR = _TASK_DIR / "scene_assets"
@@ -69,6 +77,36 @@ class ConveyorBackgroundAssetTest(unittest.TestCase):
         self.assertEqual(layer.count("delete apiSchemas"), 30)
         self.assertEqual(layer.count("bool physics:collisionEnabled = 0"), 30)
         self.assertEqual(layer.count("bool physics:rigidBodyEnabled = 0"), 30)
+
+    @unittest.skipUnless(_HAS_PXR, "需要 pxr（usd-core）做离线组合审计")
+    def test_belt_decorations_are_removed_from_composition_entirely(self) -> None:
+        """15 个传送带装饰物必须整体失活，而不只是去掉物理。
+
+        它们的摆位是 v48→v61 换版遗留（纸箱底 z=0.633 对带面顶 0.772，陷 14 cm；
+        料箱悬空 12~22 cm），任务又已经在同一条中线上 spawn 真刚体纸箱队列，
+        留着就是视觉打架。物理清理保留在原地当双保险，见该层头部注释。
+        """
+
+        stage = Usd.Stage.Open(
+            str(_ASSETS_DIR / "warehouse-simple6_v61_visual_only.usda")
+        )
+        self.assertIsNotNone(stage)
+
+        decorations = [f"ConveyorBelt_Box_{index:02d}" for index in range(10)]
+        decorations += [f"KLT_Bin_{index:02d}" for index in range(5)]
+        for name in decorations:
+            with self.subTest(name):
+                prim = stage.GetPrimAtPath(f"/Root/{name}")
+                self.assertTrue(prim, f"{name} 应仍被 author（只是失活）")
+                self.assertFalse(prim.IsActive(), f"{name} 仍在组合里")
+
+        # 默认遍历只走 active 分支——Kit 也是照这条路实例化的。
+        still_composed = [
+            prim.GetName()
+            for prim in stage.Traverse()
+            if prim.GetName().startswith(("ConveyorBelt_Box_", "KLT_Bin_"))
+        ]
+        self.assertEqual(still_composed, [])
 
 
 if __name__ == "__main__":

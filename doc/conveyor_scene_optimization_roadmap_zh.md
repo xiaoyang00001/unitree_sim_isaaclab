@@ -64,7 +64,7 @@ flowchart LR
 
 | 项目 | 审查事实 | 影响 | 级别 |
 |---|---|---|---|
-| v61 动态装饰物 | 背景根层包含 10 个 `ConveyorBelt_Box` 和 5 个 `KLT_Bin` 动态刚体；当前任务只显式锁定一个蓝色料箱 | 这些物体没有完整纳入 reset/scene-sync，host 与 viewer 可能独立模拟并分叉 | P0 |
+| v61 动态装饰物 | **已收口（2026-08-09）**：15 个装饰物在 clean wrapper 里 `active=false` 整体摘出组合，作业对象改为任务自己 spawn 的 5 个真刚体纸箱 | 分叉风险消除：作业对象全部进 `SYNC_OBJECT_NAMES`，权威端驱动、镜像端只收位姿；顺带发现这批装饰物的摆位本就与带面对不上（纸箱陷 14 cm、料箱悬空 12~22 cm） | ✅ 完成 |
 | 动态三角网格碰撞 | 本次运行日志在启动和重载各出现一轮回退，共涉及 26 个唯一 Prim 路径 | PhysX 自动退回 convex hull，不应把该回退当成稳定的碰撞资产制作流程 | P0 |
 | v61 依赖规模 | Sdf 根层 reference list-op 静态审计记录 1,806 条非空引用项、1,805 个唯一资产路径；v48 对照为 60/59 | 冷启动、换机和版本漂移风险显著增加 | P0 |
 | 依赖统计口径 | 上述数字是 USD 根层直接写入的引用列表，不等于组合 Stage 的传递依赖数，也不等于一次运行实际下载数 | 后续必须分别记录“直接引用清单、传递闭包、实际缺缓存下载” | P0 |
@@ -438,3 +438,79 @@ visual-only 候选使用 `tools/smoke_conveyor_scene.py --steps 900 --sync 0 --d
 
 完整依赖路径和生成方式见
 [`conveyor_workcell_lite_zh.md`](../tasks/g1_tasks/g1_29dof_sonic_conveyor/scene_assets/conveyor_workcell_lite_zh.md)。
+
+### 2026-08-09：P0 v61 传送带装饰物 → 真刚体纸箱队列
+
+- 分支：`feat/conveyor-v61-belt-boxes-sync`（worktree `unitree_sim_isaaclab-belt-boxes`）
+- 基线提交：`5f769d0`
+- 运行环境：Ubuntu 24.04、Isaac Sim 5.1.0、`--device cpu`、headless smoke
+- ⚠️ 测量期间另一套 GUI `sim_main.py`（PID 2787581）在同机运行，绝对帧率偏低；
+  下表所有数字都在同一背景负载下取得，只做相对比较。
+
+**背景（v48→v61 换版遗留的坐标账）**：v61 在带中心线 x=-5.617 上摆了 10 个
+`ConveyorBelt_Box`（`SM_CardBoxD_01`，0.38×0.25×0.1487 m）和 5 个 `KLT_Bin`
+（`SM_CardBoxC_01`，0.5×0.5×0.25 m），y 从 11.71 排到 18.58。v48 里**根本没有这批
+装饰物**。它们的 z 与带面对不上：纸箱底 0.633 对带面顶 0.772（陷进带里 14 cm，只露顶上
+1 cm），料箱底 0.889~0.990（悬空 12~22 cm）。此前只做了物理清理，摆位问题一直没暴露。
+
+改动：
+
+- clean wrapper 对这 15 个装饰物追加 `active = false`，整体摘出组合（物理清理保留在原地
+  当双保险）。`conveyor_workcell_lite` 是白名单引用、本就不含它们，只需重钉 manifest
+  的源哈希与 root child count（2562 → 2547，差值恰好 15，已离线 + Kit 双向核对）。
+- 新增 `props/cart_box_d01_physics.usda`：与 `cart_box_d05_physics.usda` 同构，引用
+  `SM_CardBoxD_01`（= v61 装饰箱的视觉源），删掉原资产 triangle-mesh 碰撞、另挂
+  0.38×0.25×0.149 m 的 convexHull，原点在箱底面。**刻意不就地提升背景 Prim**：那份带的是
+  triangle-mesh 碰撞（动态刚体下 PhysX 只能退化成凸包 fallback 并刷警告），摆位也不对。
+- 流水线布局的作业对象从两塑料筐换成 5 个纸箱（`belt_box_1..5`），只排在工位
+  `y_stop=14.148` **上游**，出生 y = 15.6/16.2/16.8/17.4/18.0。两塑料筐仅保留给推车布局
+  与 `legacy_props` 回退。
+- 挡停放行：新增 `conveyor_queue.py`（只依赖 torch，无 Isaac 依赖，可单测），停止线为
+  `max(y_stop, 前车 y + queue_pitch)`，"前车"取下游方向上**仍在带面**的最近一个箱子。
+  取件 → `on_belt` 转假 → 不再挡人 → 下一个自动补位，**没有状态机**。
+  (N,N,E) 成对比较 + `amax`，无 GPU→CPU 同步（沿用 `drive_totes_on_conveyor` 的铁律）。
+- `handoff_offset` 从 0.10（半尺寸筐半长）改为 0.19（纸箱沿带方向半长），
+  驱动/静态分段界随之从 14.248 移到 14.338。
+- `smoke_conveyor_scene.py` 监控清单改为跟随实际布局，停止判定改成队列槽位，
+  新增 `--pick-lead-at STEP` 做取件节拍验收。
+- 循环模式补口：`drive_belt_boxes_on_conveyor` 只排队限速、不搬运，而回收事件原本只挂在
+  `surface_velocity` 上，于是 `legacy + y_stop<=0` 会让纸箱流出带尾后失去驱动堆死在出料端。
+  新增 `CONVEYOR_BELT_BOX_RECYCLE_ENABLED`，循环模式下无论哪个后端都挂上回收事件。
+- `legacy_props` 保持**纯回退**语义，不叠加纸箱队列。中途曾把纸箱叠上去（理由是"别让作业
+  对象在切道具模式时丢失"），对抗复查指出这会撞车：塑料筐的流水线出生位 (-5.35, 17.4) /
+  (-5.89, 18.0) 与纸箱队列第 4、5 个同 y 且同在带面，筐沿 X 半宽 0.15 + 纸箱 0.125 = 0.275
+  > 车道距中线的 0.27 ⇒ 各三轴互穿 5 mm，开局即非法初始状态。原先那条顾虑本身也不成立：
+  `SYNC_OBJECT_NAMES` 就派生自 `resolve_scene_props`，SceneCfg 每个纸箱字段又都以
+  `spawns()` 为门，摘掉纸箱两边同源不会脱节。已加回归用例钉死"两者永不共存"。
+
+验证结果：
+
+| 项 | 结果 |
+|---|---|
+| 队列成形（900 步） | 停在 14.140 / 14.584 / 15.029 / 15.471 / 15.915，实测间距 0.442~0.445（设定 0.45），全部仍在带面 |
+| 与理论槽位偏差 | 8 / 14 / 19 / 27 / 33 mm（越线后驱动关闭、靠摩擦停住，越靠上游累计越大），容差 50 mm PASS |
+| 取件补位（`--pick-lead-at 500`） | 取走 `belt_box_1` 后队列整体前移一格，`belt_box_2` 补位到 14.139（目标 14.148） |
+| 循环模式（`ISAACLAB_CONVEYOR_Y_STOP=0`，2000 步） | 5 个箱子持续循环：step1000 `belt_box_1` 到 10.729（≈y_recycle 10.6），step1500 已传回入料端重新流下（15.725），全部仍在带面 |
+| 双机同步 | 镜像端 ID=2 在 step=1250 的 5 个箱位与权威端稳定态逐值一致，且**无任何 `Ignored invalid scene frame`**；镜像端自身不跑驱动事件 |
+| 单测 | 148 passed / 6 skipped（改造前 110），新增队列语义 15 例、布局 13 例、资产 8 例 |
+
+帧率（headless、`--device cpu`、900 步、同一背景负载）：
+
+| 配置 | env_hz | ms/step |
+|---|---:|---:|
+| 改造前：2 个塑料筐（compound 五盒碰撞） | 124.1 | 8.06 |
+| 改造后：2 个纸箱（单 convexHull） | 155.4 | 6.44 |
+| 改造后：5 个纸箱（默认） | 140.6 | 7.11 |
+
+**5 个纸箱比改造前的 2 个塑料筐还快 13%**——塑料筐的 5-box compound collider 比纸箱的单
+凸包贵得多，箱子数量的边际成本约 0.22 ms/step/个。这条推翻了立项时"加箱子必然掉帧"的
+预判，但口径限于 headless 无渲染 + 机器人静止，**不等于 GUI + SONIC 闭环下的 50 Hz 达标**，
+后者仍需按帧率账本单独复验。
+
+未覆盖：
+
+- 机器人实抓验收（`--pick-lead-at` 是直接搬走队首，验的是队列放行，不是 Dex3 能否抓起
+  1.0 kg 纸箱）。
+- `surface_velocity` 后端：那条路径下队列靠"后车撞前车"物理涌现，不走 `queue_drive_mask`，
+  且上游带面会持续挤压排队的箱子，尚未实测。
+- GUI / 双机实机的帧率账本（A/E/R/S 四项）未重取。

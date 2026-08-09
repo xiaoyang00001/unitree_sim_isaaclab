@@ -54,6 +54,16 @@ parser.add_argument(
     action="store_true",
     help="跳过权威端停止精度断言（默认按任务配置自动检查）",
 )
+parser.add_argument(
+    "--pick-lead-at",
+    type=int,
+    default=None,
+    metavar="STEP",
+    help=(
+        "在第 STEP 步把队首箱子搬离带面，模拟机器人取件；"
+        "随后断言后一个箱子补位到工位（流水线节拍验收）"
+    ),
+)
 args = parser.parse_args()
 
 # 环境变量必须在 import tasks 之前定型（env cfg 在 import 时读取）。
@@ -106,8 +116,22 @@ def main() -> int:
     # SONIC 动作张量 field-major：q 目标 + dq 目标 + 前馈 tau。
     action = torch.cat([default_q, zeros, zeros], dim=-1)
 
-    tote_names = ("cart2_tote1", "cart2_tote2")
-    watched = {name: env.scene[name] for name in tote_names}
+    # 监控清单跟着实际布局走：流水线布局是纸箱队列，推车布局仍是两塑料筐。
+    watched_names = (
+        conveyor_env_cfg.CONVEYOR_BELT_BOX_NAMES or conveyor_env_cfg.CONVEYOR_TOTE_NAMES
+    )
+    if not watched_names:
+        print("[smoke] 当前布局没有可监控的流水线物体", flush=True)
+        env.close()
+        return 1
+    watched = {name: env.scene[name] for name in watched_names}
+    # 纸箱是排队停的：队首停在工位，第 k 个被前车顶在 y_stop + k*queue_pitch。
+    # 塑料筐没有队列语义，两个筐都各自直接停在工位。
+    queue_pitch = (
+        conveyor_env_cfg.BELT_BOX_QUEUE_PITCH
+        if conveyor_env_cfg.CONVEYOR_BELT_BOX_NAMES
+        else 0.0
+    )
     peer = env.scene["peer_robot"]
 
     # 方案 b（主循环挂载）：apply_actions 是 no-op，宿主要自己 pump。
@@ -131,14 +155,41 @@ def main() -> int:
         parts.append(f"peer_robot x={pp[0]:.3f} y={pp[1]:.3f} z={pp[2]:.3f}")
         print(f"[smoke {tag}] " + " | ".join(parts), flush=True)
 
+    def pick_lead_box() -> str | None:
+        """把队首搬离带面，模拟机器人取件。
+
+        直接写位姿而不是真去抓：本脚本没有操作臂，而队列判据只看"还在不在带面
+        窗口内"，抬走与抓走对它是同一件事。搬到 +X 侧、抬高到 1.2 m，正好落在
+        z 窗口与 x 窗口之外。
+        """
+
+        lead_name, lead_obj = None, None
+        for name, obj in watched.items():
+            y = float(obj.data.root_pos_w[0, 1])
+            if lead_obj is None or y < float(lead_obj.data.root_pos_w[0, 1]):
+                lead_name, lead_obj = name, obj
+        if lead_obj is None:
+            return None
+
+        pose = lead_obj.data.root_state_w[:, :7].clone()
+        pose[:, 0] = -4.0
+        pose[:, 2] = 1.2
+        lead_obj.write_root_pose_to_sim(pose)
+        lead_obj.write_root_velocity_to_sim(torch.zeros_like(lead_obj.data.root_vel_w))
+        print(f"[smoke] 第 {args.pick_lead_at} 步取走队首 {lead_name}（搬到带面外）", flush=True)
+        return lead_name
+
     snapshot("start")
     start_y = {name: float(obj.data.root_pos_w[0, 1]) for name, obj in watched.items()}
+    picked_name: str | None = None
 
     t0 = monotonic()
     for step in range(1, args.steps + 1):
         env.step(action)
         for term in pump_terms:
             term.pump()
+        if args.pick_lead_at is not None and step == args.pick_lead_at:
+            picked_name = pick_lead_box()
         if step % max(1, args.report_every) == 0:
             snapshot(f"step={step}")
     elapsed = monotonic() - t0
@@ -148,8 +199,11 @@ def main() -> int:
     hz = args.steps / max(elapsed, 1e-6)
     print(f"[smoke] {args.steps} steps in {elapsed:.1f}s -> env_hz={hz:.1f}", flush=True)
 
-    moved = {name: start_y[name] - end_y[name] for name in watched}
-    on_belt = {name: abs(end_z[name] - 0.775) < 0.05 for name in watched}
+    # 被取走的那个已经不在带面上，自然退出全部带面判定；剩下的按队列重新编号，
+    # 于是"下一个补位到工位"就落在 graded_names[0] 的槽位断言里。
+    graded_names = [name for name in watched_names if name != picked_name]
+    moved = {name: start_y[name] - end_y[name] for name in graded_names}
+    on_belt = {name: abs(end_z[name] - 0.775) < 0.05 for name in graded_names}
     print(f"[smoke] 位移(-Y) {moved} | 仍在带面 {on_belt}", flush=True)
 
     sync_on = args.sync == "1"
@@ -176,15 +230,29 @@ def main() -> int:
         and ((not sync_on) or authority)
         and not surface_non_authority_offline
     ):
+        # 队列语义：第 k 个物体的目标停位是 y_stop + k*queue_pitch（队列 pitch 为 0
+        # 时退化成"全都停在工位"，即塑料筐的历史行为）。取件后队列整体前移一格，
+        # 断言 graded_names[0] 落在工位上 = 验证"抓走后下一个自动补位"。
+        expected_slots = {
+            name: expected_stop_y + index * queue_pitch
+            for index, name in enumerate(graded_names)
+        }
         stop_errors = {
-            name: abs(end_y[name] - expected_stop_y) for name in watched
+            name: abs(end_y[name] - expected_slots[name]) for name in graded_names
         }
         stop_ok = all(error <= args.stop_tolerance for error in stop_errors.values())
+        slots_text = ", ".join(f"{name}={y:.3f}" for name, y in expected_slots.items())
         print(
-            f"[smoke] 停止目标 y={expected_stop_y:.3f} | 误差 {stop_errors} "
+            f"[smoke] 停止目标 [{slots_text}] | 误差 {stop_errors} "
             f"| 容差={args.stop_tolerance:.3f} | {'PASS' if stop_ok else 'FAIL'}",
             flush=True,
         )
+        if picked_name is not None:
+            print(
+                f"[smoke] 节拍验收：取走 {picked_name} 后 {graded_names[0]} 应补位到工位 "
+                f"y={expected_stop_y:.3f}，实测 y={end_y[graded_names[0]]:.3f}",
+                flush=True,
+            )
         ok = ok and stop_ok
     print(f"[smoke] RESULT: {'PASS' if ok else 'FAIL'}", flush=True)
 
