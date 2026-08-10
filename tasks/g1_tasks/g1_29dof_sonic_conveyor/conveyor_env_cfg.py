@@ -1717,12 +1717,15 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
         # blue_sorting_bin_02 运行历史 kinematic 补丁或产生无刚体告警。
         if CONVEYOR_VISUAL_ONLY_ASSET_ENABLED:
             self.events.lock_sorting_bins = None
-        # GUI 开局相机对准流水线工位(默认相机看世界原点,工作区在 (-5.6,14.1)
-        # 附近,打开就是空镜头还得手动飞过去)。机位在入料端上方俯视工位，带体朝
-        # 镜头下方流过来。lookat 用动态常量，Δ/工位变了自动跟随。
-        # ⚠️ 西拐弯道落地后复核过：弯道顶（南口门柱）世界 z≈1.169，低于 eye 高
-        # 2.4，且机位在弯道东南、视线朝西南下方——俯视无碍。
-        self.viewer.eye = (-5.62, 19.25, 2.4)  # 随整体北移 Δ=0.25，保持相对构图
+        # GUI 开局相机：吊在流水线正上方（x=带中线）、工位下游侧，面向流水线
+        # 流动开始的方向（+Y，上游弯道/货架方向），机器人工位在画面中心——
+        # 前景是双机与工位，背景是带体向弯道延伸、箱子迎面流来。
+        # eye/lookat 全用动态常量，Δ/工位变了自动跟随；=0 布局下工位=拖车组 y，
+        # 同一公式仍成立（相机移到带中段上方朝北看作业组）。
+        # 视线通廊复核：eye z=3.2 高于弯道门柱顶 1.169 与全部箱顶，带上方
+        # z∈(1.2,3.2) 无横梁（桁架在 z≥6），到工位视线无遮挡；eye y=工位-4.0
+        # 在 =1 下落在带尾附近正上方（带体 y[10.44,18.47]）。
+        self.viewer.eye = (BELT_X_CENTER, ROBOT_WORKSTATION_Y - 4.0, 3.2)
         self.viewer.lookat = (BELT_X_CENTER, ROBOT_WORKSTATION_Y, 1.0)
         if _PERF_AB:
             print(f"[conveyor_env_cfg] ⚠️ 性能 A/B 诊断开关生效: {sorted(_PERF_AB)}")
