@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 try:  # pxr（usd-core）不需要 Kit，但缺失时也不该让整组选择器测试挂掉。
-    from pxr import Usd, UsdGeom
+    from pxr import Gf, Usd, UsdGeom
 
     _HAS_PXR = True
 except ModuleNotFoundError:  # pragma: no cover
@@ -77,6 +77,63 @@ class ConveyorBackgroundAssetTest(unittest.TestCase):
         self.assertEqual(layer.count("delete apiSchemas"), 30)
         self.assertEqual(layer.count("bool physics:collisionEnabled = 0"), 30)
         self.assertEqual(layer.count("bool physics:rigidBodyEnabled = 0"), 30)
+
+    def test_blue_sorting_bin_02_authors_in_place_half_turn(self) -> None:
+        """02 应在叶子 mesh 自身原点翻转，不能旋转偏置很大的根 Prim。"""
+
+        layer = (_ASSETS_DIR / "warehouse-simple6_v61_visual_only.usda").read_text(
+            encoding="utf-8"
+        )
+        bin_02 = layer.split('over "blue_sorting_bin_02"', 1)[1]
+
+        # 根矩阵保留 v48 的原始平移与缩放，避免可见料箱被甩离工作位。
+        self.assertIn(
+            "(-1.9383017274054972, -0.35331139354023133, "
+            "-0.24833856360426954, 1.0)",
+            bin_02,
+        )
+        # v61 叶子原角度 179.65359452632015°，精确减去 180°。
+        self.assertEqual(
+            layer.count(
+                "double3 xformOp:rotateXYZ = (0.0, 0.0, -0.34640547367985)"
+            ),
+            1,
+        )
+
+    @unittest.skipUnless(_HAS_PXR, "需要 pxr（usd-core）做离线组合审计")
+    def test_blue_sorting_bins_open_toward_the_same_robot_side(self) -> None:
+        """组合后两只料箱的可见中心不漂移，局部 -Y 缺口方向保持一致。"""
+
+        stage = Usd.Stage.Open(
+            str(_ASSETS_DIR / "warehouse-simple6_v61_visual_only.usda"),
+            Usd.Stage.LoadNone,
+        )
+        self.assertIsNotNone(stage)
+        stage.Load("/Root/ConveyorBelt")
+        cache = UsdGeom.XformCache()
+
+        def mesh_pose(name: str) -> tuple[Gf.Vec3d, Gf.Vec3d]:
+            path = (
+                f"/Root/ConveyorBelt/{name}/{name}/Geometry/"
+                "sm_bin_20x25x05cm_a01_01/"
+                "sm_bin_a05_20x25x05cm_pr_v_nvd_a01_01"
+            )
+            prim = stage.GetPrimAtPath(path)
+            self.assertTrue(prim, path)
+            transform = cache.GetLocalToWorldTransform(prim)
+            origin = transform.Transform(Gf.Vec3d(0.0))
+            opening = transform.TransformDir(Gf.Vec3d(0.0, -1.0, 0.0)).GetNormalized()
+            return origin, opening
+
+        _, opening_01 = mesh_pose("blue_sorting_bin_01")
+        origin_02, opening_02 = mesh_pose("blue_sorting_bin_02")
+
+        self.assertGreater(opening_01 * opening_02, 0.9999)
+        expected_origin_02 = Gf.Vec3d(
+            1.1539417853480611, -0.20670726210634566, 0.43127658462090845
+        )
+        for actual, expected in zip(origin_02, expected_origin_02):
+            self.assertAlmostEqual(actual, expected, places=9)
 
     @unittest.skipUnless(_HAS_PXR, "需要 pxr（usd-core）做离线组合审计")
     def test_packing_table_top_is_not_floating_into_the_sorting_bin(self) -> None:
