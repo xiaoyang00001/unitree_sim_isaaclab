@@ -32,10 +32,10 @@ _SPEC.loader.exec_module(_LAYOUT)
 
 # key -> (defaultPrim, 视觉资产名, 半宽x, 半宽y, 高)。数值取自本机 Isaac 5.1 资产包实测：
 # SM_CardBoxD_01 extent (-19,-12.5,0)~(19,12.5,14.875) × scale 0.01
-# SM_CardBoxC_01 extent (-25,-25,0)~(25,25,25)         × scale 0.01
+# SM_CardBoxD_02 extent (-19,-12.5,0)~(19,12.5,16.6338) × scale 0.01
 _EXPECTED = {
     "d01": ("CartBoxD01", "SM_CardBoxD_01", 0.19, 0.125, 0.149),
-    "c01": ("CartBoxC01", "SM_CardBoxC_01", 0.25, 0.25, 0.25),
+    "d02": ("CartBoxD02", "SM_CardBoxD_02", 0.19, 0.125, 0.1663),
 }
 
 # 软包裹是自包含的程序化资产（IsaacLab 分叉 feat/pickplace-parcel-assets 生成），
@@ -63,6 +63,16 @@ class BeltBoxPhysicsAssetTest(unittest.TestCase):
 
         text = _ENV_CFG_PATH.read_text(encoding="utf-8")
         self.assertRegex(text, r"BELT_BOX_ROT\s*=\s*\[1\.0, 0\.0, 0\.0, 0\.0\]")
+
+    def test_d02_has_a_blue_tint_and_high_contrast_top_label(self) -> None:
+        """第二箱型必须在远处也能与棕色 D01 明显区分。"""
+
+        text = self._text("d02")
+        self.assertIn("inputs:BaseColor_Tint = (0.15, 0.48, 1.0, 1.0)", text)
+        self.assertIn("float inputs:Desaturation = 0.85", text)
+        self.assertIn('def Mesh "TopLabel"', text)
+        self.assertIn('def Material "LabelMaterial"', text)
+        self.assertIn("rel material:binding = </CartBoxD02/LabelMaterial>", text)
 
     def test_stage_metadata_and_default_prim(self) -> None:
         for key, (default_prim, _visual, *_rest) in _EXPECTED.items():
@@ -156,13 +166,17 @@ class BeltBoxPhysicsAssetTest(unittest.TestCase):
             with self.subTest(key):
                 self.assertLessEqual(kind.width_x, _LAYOUT.BELT_BOX_BELT_WIDTH)
 
-    def test_the_two_kinds_are_visually_distinguishable(self) -> None:
-        """交错排布的意义在于一眼能区分——尺寸必须有明显差异。"""
+    def test_the_two_cardboxes_share_grasp_dimensions_but_use_distinct_visuals(self) -> None:
+        """D02 靠压皱轮廓区分，但抓取与排队所用的横向尺寸必须与 D01 一致。"""
 
         d01 = _LAYOUT.BELT_BOX_KINDS["d01"]
-        c01 = _LAYOUT.BELT_BOX_KINDS["c01"]
-        self.assertGreater(c01.length_y - d01.length_y, 0.1)
-        self.assertGreater(c01.height_z - d01.height_z, 0.05)
+        d02 = _LAYOUT.BELT_BOX_KINDS["d02"]
+        self.assertNotEqual(d01.asset, d02.asset)
+        self.assertEqual(
+            (d01.length_y, d01.width_x, d01.mass),
+            (d02.length_y, d02.width_x, d02.mass),
+        )
+        self.assertGreater(d02.height_z, d01.height_z)
 
     def test_parcel_assets_are_self_contained_rigid_bodies(self) -> None:
         """软包裹：刚体 + convexHull + 自包含，物理约定与纸箱一致。

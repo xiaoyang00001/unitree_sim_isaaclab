@@ -1,0 +1,130 @@
+#usda 1.0
+(
+    defaultPrim = "CartBoxD02"
+    metersPerUnit = 1
+    upAxis = "Z"
+    doc = """Physics wrapper for the dented SM_CardBoxD_02 conveyor box.
+
+    The warehouse prop supplies the visibly crushed cardboard mesh. This layer
+    removes its triangle-mesh collision and adds a stable flat-bottom convex hull,
+    rigid-body properties, mass, and the conveyor grasp material."""
+)
+
+def Xform "CartBoxD02" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "PhysxRigidBodyAPI"]
+)
+{
+    bool physics:rigidBodyEnabled = 1
+    bool physics:kinematicEnabled = 0
+    float physics:mass = 1
+    float physxRigidBody:angularDamping = 0.1
+    bool physxRigidBody:disableGravity = 0
+    bool physxRigidBody:enableCCD = 0
+    bool physxRigidBody:enableGyroscopicForces = 1
+    float physxRigidBody:linearDamping = 0.1
+    float physxRigidBody:maxDepenetrationVelocity = 0.5
+    int physxRigidBody:solverPositionIterationCount = 8
+    int physxRigidBody:solverVelocityIterationCount = 2
+
+    def Xform "Visual" (
+        prepend references = @https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Environments/Simple_Warehouse/Props/SM_CardBoxD_02.usd@
+    )
+    {
+        over "SM_CardBoxD_02" (
+            delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+        )
+        {
+        }
+
+        # 保留原纸箱纹理细节，但把底色改成高辨识度蓝色。
+        over "Looks"
+        {
+            over "MI_CardBoxD"
+            {
+                over "MI_LampCeilingA"
+                {
+                    float4 inputs:BaseColor_Tint = (0.15, 0.48, 1.0, 1.0)
+                    float inputs:Desaturation = 0.85
+                }
+            }
+        }
+    }
+
+    def Material "GraspPhysicsMaterial" (
+        prepend apiSchemas = ["PhysicsMaterialAPI", "PhysxMaterialAPI"]
+    )
+    {
+        float physics:dynamicFriction = 1.1
+        float physics:restitution = 0
+        float physics:staticFriction = 1.4
+        token physxMaterial:frictionCombineMode = "multiply"
+        token physxMaterial:restitutionCombineMode = "min"
+    }
+
+    def Mesh "ConvexHullCollider" (
+        prepend apiSchemas = ["MaterialBindingAPI", "PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "PhysxCollisionAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+        int[] faceVertexIndices = [
+            0, 1, 2, 3,
+            4, 7, 6, 5,
+            0, 4, 5, 1,
+            1, 5, 6, 2,
+            2, 6, 7, 3,
+            3, 7, 4, 0,
+        ]
+        # SM_CardBoxD_02 实测包围盒：0.38 × 0.25 × 0.1663 m，原点在箱底面。
+        point3f[] points = [
+            (-0.19, -0.125, 0),
+            (0.19, -0.125, 0),
+            (0.19, 0.125, 0),
+            (-0.19, 0.125, 0),
+            (-0.19, -0.125, 0.1663),
+            (0.19, -0.125, 0.1663),
+            (0.19, 0.125, 0.1663),
+            (-0.19, 0.125, 0.1663),
+        ]
+        bool physics:collisionEnabled = 1
+        uniform token physics:approximation = "convexHull"
+        float physxCollision:contactOffset = 0.005
+        float physxCollision:restOffset = 0
+        rel material:binding:physics = </CartBoxD02/GraspPhysicsMaterial>
+        uniform token subdivisionScheme = "none"
+        token visibility = "invisible"
+    }
+
+    def Material "LabelMaterial"
+    {
+        token outputs:surface.connect = </CartBoxD02/LabelMaterial/PreviewSurface.outputs:surface>
+
+        def Shader "PreviewSurface"
+        {
+            uniform token info:id = "UsdPreviewSurface"
+            color3f inputs:diffuseColor = (0.95, 0.97, 1.0)
+            float inputs:metallic = 0
+            float inputs:roughness = 0.35
+            token outputs:surface
+        }
+    }
+
+    # 22×14 cm 白色顶标，悬在压皱网格最高点上方约 2 mm；纯视觉、无碰撞。
+    def Mesh "TopLabel" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        normal3f[] normals = [(0, 0, 1)] (
+            interpolation = "uniform"
+        )
+        point3f[] points = [
+            (-0.11, -0.07, 0.1685),
+            (0.11, -0.07, 0.1685),
+            (0.11, 0.07, 0.1685),
+            (-0.11, 0.07, 0.1685),
+        ]
+        rel material:binding = </CartBoxD02/LabelMaterial>
+        uniform token subdivisionScheme = "none"
+    }
+}

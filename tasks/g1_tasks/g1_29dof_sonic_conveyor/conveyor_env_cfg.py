@@ -957,7 +957,7 @@ def _make_belt_box_spawn_cfg(object_name: str, kind) -> UsdFileCfg:
     """流水线纸箱：v61 同款视觉资产 + convexHull 碰撞。
 
     ``kind`` 是 ``scene_layout.BeltBoxKind``，决定用哪份物理封装和质量。两种箱型
-    （d01 = SM_CardBoxD_01、c01 = SM_CardBoxC_01）都是 v61 背景自带的，交错排布。
+    （d01 = SM_CardBoxD_01、d02 = 顶部压皱的 SM_CardBoxD_02）横向尺寸相同，交错排布。
 
     刻意**不**就地提升背景 USD 里的 ``ConveyorBelt_Box_XX`` / ``KLT_Bin_XX``：那些
     Prim 带的是 triangle-mesh 碰撞（PhysX 对动态刚体只能退化成凸包 fallback 并刷
@@ -1692,7 +1692,7 @@ class ConveyorEventsCfg:
             "enabled": CONVEYOR_LEGACY_ENABLED,
             "y_stop": CONVEYOR_Y_STOP,
             "queue_gap": BELT_BOX_QUEUE_GAP,
-            # 两种箱型尺寸不同，排队按各自半长算净间隙，不能用统一中心距。
+            # 仍按各箱型半长算净间隙，确保显式切到软包裹混排时防撞口径正确。
             "half_lengths": CONVEYOR_BELT_BOX_HALF_LENGTHS,
             "path_enabled": ENDLESS_INTAKE.enabled,
             "path_corner_center": endless_intake.CORNER_CENTER,

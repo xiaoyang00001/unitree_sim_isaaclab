@@ -159,7 +159,8 @@ class BeltBoxLayoutTest(unittest.TestCase):
                 (-4.778759, -4.167826, 15.096080, 15.999063, 0.42, 0.56),
             ),
         )
-        # 接收区按任务支持的最大 0.25 m 半边长保守内缩，箱底根不会只擦到框沿。
+        # 接收区保守沿用 0.25 m 内缩；当前 d01/d02 最大路径半长只有 0.19 m，
+        # 所有可选箱型进入该区时，箱底根都不会只擦到框沿。
         for kind in _LAYOUT_MODULE.BELT_BOX_KINDS.values():
             self.assertLessEqual(kind.length_y, 0.50)
             self.assertLessEqual(kind.width_x, 0.50)
@@ -174,10 +175,10 @@ class BeltBoxLayoutTest(unittest.TestCase):
             layout.belt_box_names,
             tuple(f"belt_box_{i + 1}" for i in range(17)),
         )
-        # 默认 pattern d01,c01 循环 → 小纸箱与大纸箱交错（17 箱首尾都是 d01）。
+        # 默认 pattern d01,d02 循环 → 原箱与压皱箱交错（首尾都是 d01）。
         self.assertEqual(
             [kind.key for kind in layout.belt_box_kinds],
-            ["d01" if i % 2 == 0 else "c01" for i in range(17)],
+            ["d01" if i % 2 == 0 else "d02" for i in range(17)],
         )
         self.assertEqual(layout.belt_box_queue_gap, 0.07)
         # 槽位序列 = 队首 8.06 为锚、pitch 0.75 向上游铺满（最深 -3.94）。
@@ -201,22 +202,22 @@ class BeltBoxLayoutTest(unittest.TestCase):
         )
         self.assertEqual(
             layout.belt_box_half_lengths,
-            tuple(0.19 if i % 2 == 0 else 0.25 for i in range(17)),
+            (0.19,) * 17,
         )
 
     def test_deepest_slot_clears_the_roller_end_and_deepens_the_e2_hide(self) -> None:
         """最深槽位 -3.94 的两条红线：滚筒端净距 ≥50 mm、E2 遮挡只强不弱。
 
-        * 对支线滚筒可用端 PATH_S_MIN=-4.27 的净距按**最坏箱型 c01 半长 0.25**
-          算（pattern 可被环境变量换成全 c01）：80 mm ≥ 50 mm；
+        * 对支线滚筒可用端 PATH_S_MIN=-4.27 的净距按 d01/d02 路径半长 0.19
+          算：140 mm ≥ 50 mm；
         * 比旧深藏位 -3.90（=RESPAWN_S，回生点**不动**）更深 ⇒ E2"东上角"全遮
           边界 s≤-3.81 的裕量从 90 mm 加深到 130 mm，结论沿用不需重算。
         """
 
         deepest = _SLOTS_DEFAULT[-1]
         self.assertAlmostEqual(deepest, -3.94, places=9)
-        worst_half = _LAYOUT_MODULE.BELT_BOX_KINDS["c01"].half_length_y
-        self.assertAlmostEqual(worst_half, 0.25, places=9)
+        worst_half = _LAYOUT_MODULE.BELT_BOX_KINDS["d02"].half_queue_extent
+        self.assertAlmostEqual(worst_half, 0.19, places=9)
         self.assertGreaterEqual(
             (deepest - worst_half) - _EI_MODULE.PATH_S_MIN, 0.05 - 1e-9
         )
@@ -256,7 +257,10 @@ class BeltBoxLayoutTest(unittest.TestCase):
         self.assertAlmostEqual(loop_length, 19.6425, places=3)
 
         wrap_gap = loop_length - span
-        worst_half = max(_LAYOUT_MODULE.BELT_BOX_KINDS["c01"].half_length_y, *layout.belt_box_half_lengths)
+        worst_half = max(
+            _LAYOUT_MODULE.BELT_BOX_KINDS["d02"].half_queue_extent,
+            *layout.belt_box_half_lengths,
+        )
         need = 2 * worst_half + layout.belt_box_queue_gap
         # 留 ≥1 m 余量：回收事件 20ms 判定的瞬移落点抖动与弧段拖滑漂移都吃不掉它。
         self.assertGreaterEqual(wrap_gap, need + 1.0)
@@ -278,43 +282,40 @@ class BeltBoxLayoutTest(unittest.TestCase):
                     ),
                 )
 
-    def test_both_kinds_come_from_the_v61_background_assets(self) -> None:
-        """两种箱型就是 v61 背景里 ConveyorBelt_Box / KLT_Bin 引的那两个视觉资产。"""
+    def test_both_cardbox_kinds_have_equal_size_and_distinct_visual_assets(self) -> None:
+        """D01/D02 横向尺寸相同，但必须引用不同轮廓的视觉资产。"""
 
         kinds = _LAYOUT_MODULE.BELT_BOX_KINDS
         self.assertEqual(kinds["d01"].asset, "cart_box_d01_physics.usda")
-        self.assertEqual(kinds["c01"].asset, "cart_box_c01_physics.usda")
+        self.assertEqual(kinds["d02"].asset, "cart_box_d02_physics.usda")
         self.assertEqual(
             (kinds["d01"].length_y, kinds["d01"].width_x, kinds["d01"].height_z),
             (0.25, 0.38, 0.1487),
         )
         self.assertEqual(
-            (kinds["c01"].length_y, kinds["c01"].width_x, kinds["c01"].height_z),
-            (0.50, 0.50, 0.25),
+            (kinds["d02"].length_y, kinds["d02"].width_x, kinds["d02"].height_z),
+            (0.25, 0.38, 0.1663),
         )
 
     def test_pattern_is_configurable_and_cycles(self) -> None:
-        single = resolve_scene_layout({"ISAACLAB_BELT_BOX_PATTERN": "c01"})
-        self.assertEqual([k.key for k in single.belt_box_kinds], ["c01"] * 17)
+        single = resolve_scene_layout({"ISAACLAB_BELT_BOX_PATTERN": "d02"})
+        self.assertEqual([k.key for k in single.belt_box_kinds], ["d02"] * 17)
 
-        flipped = resolve_scene_layout({"ISAACLAB_BELT_BOX_PATTERN": " C01 , D01 "})
+        flipped = resolve_scene_layout({"ISAACLAB_BELT_BOX_PATTERN": " D02 , D01 "})
         self.assertEqual(
             [k.key for k in flipped.belt_box_kinds],
-            ["c01" if i % 2 == 0 else "d01" for i in range(17)],
+            ["d02" if i % 2 == 0 else "d01" for i in range(17)],
         )
 
     def test_default_two_cardbox_pattern_can_be_selected_explicitly(self) -> None:
-        """显式指定 d01,c01 与默认双纸箱形态一致。"""
+        """显式指定 d01,d02 与默认双纸箱形态一致。"""
 
-        layout = resolve_scene_layout({"ISAACLAB_BELT_BOX_PATTERN": "d01,c01"})
+        layout = resolve_scene_layout({"ISAACLAB_BELT_BOX_PATTERN": "d01,d02"})
         self.assertEqual(
             [k.key for k in layout.belt_box_kinds],
-            ["d01" if i % 2 == 0 else "c01" for i in range(17)],
+            ["d01" if i % 2 == 0 else "d02" for i in range(17)],
         )
-        self.assertEqual(
-            layout.belt_box_half_lengths,
-            tuple(0.19 if i % 2 == 0 else 0.25 for i in range(17)),
-        )
+        self.assertEqual(layout.belt_box_half_lengths, (0.19,) * 17)
 
     def test_all_three_parcel_variants_are_registered(self) -> None:
         layout = resolve_scene_layout(
@@ -483,15 +484,14 @@ class BeltBoxLayoutTest(unittest.TestCase):
     def test_spawn_pitch_too_small_for_the_actual_pair_fails_fast(self) -> None:
         """出生间距按**相邻两箱各自的半长**校验，而不是一个统一箱长。"""
 
-        with self.assertRaisesRegex(ValueError, "放不下相邻的 d01/c01"):
-            resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_PITCH": "0.3"})
+        with self.assertRaisesRegex(ValueError, "放不下相邻的 d01/d02"):
+            resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_PITCH": "0.37"})
 
-        # 全 d01 时 0.40 够（0.19+0.19=0.38），但默认混排放不下 d01/c01（要 0.44）。
+        # D01/D02 横向尺寸相同，0.40 对全 D01 和默认混排都够（所需 0.19+0.19=0.38）。
         resolve_scene_layout(
             {"ISAACLAB_BELT_BOX_PATTERN": "d01", "ISAACLAB_BELT_BOX_SPAWN_PITCH": "0.40"}
         )
-        with self.assertRaisesRegex(ValueError, "放不下相邻的"):
-            resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_PITCH": "0.40"})
+        resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_PITCH": "0.40"})
 
     def test_lead_box_on_the_workstation_fails_fast(self) -> None:
         with self.assertRaisesRegex(ValueError, "压在工位"):

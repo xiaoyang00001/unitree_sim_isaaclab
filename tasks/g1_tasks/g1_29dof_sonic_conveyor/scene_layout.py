@@ -82,8 +82,10 @@ class BeltBoxKind:
         return max(self.length_y, self.width_x) * 0.5
 
 
-# 纸箱两种取自 v61 背景（`ConveyorBelt_Box_XX` 引 SM_CardBoxD_01、`KLT_Bin_XX` 引
-# SM_CardBoxC_01）；软包裹三种取自 IsaacLab 分叉 feat/pickplace-parcel-assets 的
+# 两种纸箱使用 Simple Warehouse 的 SM_CardBoxD_01 / SM_CardBoxD_02；D02 保持
+# 与 D01 相同的横向尺寸，但顶部有明显压皱，替换掉跨度过大的 SM_CardBoxC_01。
+# 软包裹三种取自
+# IsaacLab 分叉 feat/pickplace-parcel-assets 的
 # 程序化快递袋资产（塑料袋装衣服：枕形鼓包+热封边+顶面白色面单）。⚠️ 软包裹是
 # **刚体不是软体**——"软"只是视觉造型，物理上与纸箱同一套约定（根挂 RigidBody+Mass、
 # convexHull 碰撞、原点在袋底），所以能直接进队列/同步/镜像分流，CPU pipeline 可用。
@@ -96,13 +98,13 @@ BELT_BOX_KINDS = {
         height_z=0.1487,
         mass=1.0,
     ),
-    "c01": BeltBoxKind(
-        key="c01",
-        asset="cart_box_c01_physics.usda",
-        length_y=0.50,
-        width_x=0.50,
-        height_z=0.25,
-        mass=1.5,
+    "d02": BeltBoxKind(
+        key="d02",
+        asset="cart_box_d02_physics.usda",
+        length_y=0.25,
+        width_x=0.38,
+        height_z=0.1663,
+        mass=1.0,
     ),
     # 尺寸取实测组合包围盒（生成器标称 40×30 / 45×35 / 32×24 cm，鼓包略溢出）。
     "parcel_a01": BeltBoxKind(
@@ -130,9 +132,9 @@ BELT_BOX_KINDS = {
         mass=0.22,
     ),
 }
-# 默认交错：小纸箱 + 大纸箱。三种软包裹仍可通过
+# 默认交错：横向尺寸相同、外形不同的 D01 + 压皱 D02。三种软包裹仍可通过
 # ISAACLAB_BELT_BOX_PATTERN=parcel_a01,parcel_a02,parcel_a03 显式选用。
-DEFAULT_BELT_BOX_PATTERN = ("d01", "c01")
+DEFAULT_BELT_BOX_PATTERN = ("d01", "d02")
 
 # 两台机器人身后的蓝色分拣框接收区（env-local，单位 m）：
 #   blue_sorting_bin_01 → robot_2 侧；blue_sorting_bin_02 → robot_1 侧。
@@ -140,8 +142,9 @@ DEFAULT_BELT_BOX_PATTERN = ("d01", "c01")
 #   bin_01 x[-7.318025,-6.215390] y[14.849451,16.245693]
 #   bin_02 x[-5.028759,-3.917826] y[14.846080,16.249063]
 # 且共同 z[0.431277,0.799277]。这里给的是**箱底根位置**允许区：XY 从外框各
-# 保守沿用 0.25 m 内缩（覆盖当前最大 c01 的 0.25 m 半边长），Z 要求箱底落到
-# 框底附近；因此箱子只是从框上方经过、擦到框沿或掉在地上都不会被当成已投放。
+# 保守沿用 0.25 m 内缩（大于当前 d01/d02 的最大半边长 0.19 m），Z 要求箱底落到
+# 框底附近；因此箱子
+# 只是从框上方经过、擦到框沿或掉在地上都不会被当成已投放。
 #
 # y 基准仍走 _shifted：当前 Δ=0.25，若整条流水线再次北移，接收区会跟工位一起走。
 BELT_BOX_DROP_ROOT_ZONES = (
@@ -186,8 +189,8 @@ BELT_BOX_STRAIGHT_DEFAULT_COUNT = 5
 # pitch 0.75 一路向上游**铺满整条上游路径**——主线 1 + 弧上 3 + X 支线 13，
 # 共 17 箱（2026-08-10"放满"改版；此前是前四位 + 队尾单列深藏 -3.90）。
 # 最深槽位 s = 8.06 − 0.75×16 = -3.94，逐项核算：
-# * 对支线滚筒可用端 PATH_S_MIN=-4.27 的净距（最坏 c01 半长 0.25 口径）
-#   = -3.94 − 0.25 − (-4.27) = 80 mm ≥ 50 mm 红线；
+# * 对支线滚筒可用端 PATH_S_MIN=-4.27 的净距（d01/d02 路径半长 0.19 口径）
+#   = -3.94 − 0.19 − (-4.27) = 140 mm ≥ 50 mm 红线；
 # * 比旧深藏位 -3.90（= endless_intake.RESPAWN_S，循环模式回生点**仍是**它）
 #   更深 40 mm：E2 眼位"东上角"全遮边界 s≤-3.81 ⇒ 遮挡结论只强不弱（裕量
 #   90→130 mm）；E1 通视缝残余口径不变——E2/E1 结论沿用 endless_intake
@@ -275,7 +278,7 @@ class ConveyorSceneLayout:
 def resolve_belt_box_pattern(environ: Mapping[str, str], count: int) -> tuple[BeltBoxKind, ...]:
     """按 ``ISAACLAB_BELT_BOX_PATTERN`` 循环出每个位置的箱型。
 
-    默认 ``d01,c01`` ⇒ 交错排布 d01/c01/d01/c01/d01。写单个 key（如 ``d01``）就是
+    默认 ``d01,d02`` ⇒ 交错排布 d01/d02/d01/d02/d01。写单个 key（如 ``d01``）就是
     全用一种。未知 key 一律 fail-fast，不静默回退——否则场景里会悄悄少一种箱型。
     """
 
@@ -305,8 +308,8 @@ def resolve_belt_box_positions(
     ``belt_box_1`` 是队首（最靠下游、最先到工位），编号递增向上游排。箱型按
     ``ISAACLAB_BELT_BOX_PATTERN`` 循环（默认两种交错）。出生间距 ``spawn_pitch``
     只决定初始队形；停下来后的实际队距由**每个箱子自己的半长**加净间隙
-    ``queue_gap`` 决定——两种箱型尺寸不同，统一的"中心距"要么让大箱穿模、要么让
-    小箱之间留出突兀的空档。
+    ``queue_gap`` 决定。当前 D01/D02 横向尺寸相同，但仍保留逐箱型半长口径，确保显式
+    切换到软包裹时防撞计算正确。
 
     **弯道形态（endless intake 生效，默认）**：出生点按显式槽位序列
     ``BELT_BOX_DEFAULT_SLOT_S``（以队首 s=8.06 为锚、pitch 0.75 铺满整条上游
