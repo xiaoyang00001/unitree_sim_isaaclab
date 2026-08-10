@@ -20,6 +20,7 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _TASK_DIR = _REPO_ROOT / "tasks/g1_tasks/g1_29dof_sonic_conveyor"
 _PROPS_DIR = _TASK_DIR / "scene_assets/props"
+_ENV_CFG_PATH = _TASK_DIR / "conveyor_env_cfg.py"
 
 _SPEC = importlib.util.spec_from_file_location(
     "conveyor_scene_layout_for_box_asset_test", _TASK_DIR / "scene_layout.py"
@@ -56,6 +57,12 @@ class BeltBoxPhysicsAssetTest(unittest.TestCase):
         for key, kind in _LAYOUT.BELT_BOX_KINDS.items():
             with self.subTest(key):
                 self.assertTrue((_PROPS_DIR / kind.asset).is_file(), kind.asset)
+
+    def test_spawn_rotation_keeps_the_short_edge_in_the_grasp_direction(self) -> None:
+        """资产保持原始朝向，Y 向短边就是机器人双臂需要跨过的宽度。"""
+
+        text = _ENV_CFG_PATH.read_text(encoding="utf-8")
+        self.assertRegex(text, r"BELT_BOX_ROT\s*=\s*\[1\.0, 0\.0, 0\.0, 0\.0\]")
 
     def test_stage_metadata_and_default_prim(self) -> None:
         for key, (default_prim, _visual, *_rest) in _EXPECTED.items():
@@ -128,16 +135,17 @@ class BeltBoxPhysicsAssetTest(unittest.TestCase):
     def test_collider_dimensions_agree_with_the_layout_kind_table(self) -> None:
         """碰撞盒与 scene_layout 的箱型表必须是同一套数，否则排队间距会算错。
 
-        箱子绕 Z 转 90° 摆放：视觉的 X 尺寸变成沿输送方向的 ``length_y``，
-        视觉的 Y 尺寸变成横向的 ``width_x``。
+        箱子保持资产原始朝向：视觉的 Y 尺寸沿输送方向成为 ``length_y``，
+        视觉的 X 尺寸横跨带面成为 ``width_x``，让机器人抱取时跨过较短边。
         """
 
         for key, (_prim, _visual, half_x, half_y, height) in _EXPECTED.items():
             with self.subTest(key):
                 kind = _LAYOUT.BELT_BOX_KINDS[key]
-                self.assertAlmostEqual(kind.length_y, half_x * 2, places=6)
-                self.assertAlmostEqual(kind.width_x, half_y * 2, places=6)
-                self.assertAlmostEqual(kind.half_length_y, half_x, places=6)
+                self.assertAlmostEqual(kind.length_y, half_y * 2, places=6)
+                self.assertAlmostEqual(kind.width_x, half_x * 2, places=6)
+                self.assertAlmostEqual(kind.half_length_y, half_y, places=6)
+                self.assertAlmostEqual(kind.half_queue_extent, max(half_x, half_y), places=6)
                 # 高度容差放宽到 mm：碰撞盒取整到 0.149，视觉包围盒是 0.1487。
                 self.assertAlmostEqual(kind.height_z, height, places=2)
 
@@ -196,9 +204,9 @@ class BeltBoxPhysicsAssetTest(unittest.TestCase):
         """箱型表里软包裹的尺寸必须与资产实测包围盒一致（排队半长靠它算）。"""
 
         expected_dims = {
-            "parcel_a01": (0.4017, 0.3013, 0.0801),
-            "parcel_a02": (0.4526, 0.3520, 0.0968),
-            "parcel_a03": (0.3218, 0.2414, 0.0603),
+            "parcel_a01": (0.3013, 0.4017, 0.0801),
+            "parcel_a02": (0.3520, 0.4526, 0.0968),
+            "parcel_a03": (0.2414, 0.3218, 0.0603),
         }
         for key, (length, width, height) in expected_dims.items():
             with self.subTest(key):

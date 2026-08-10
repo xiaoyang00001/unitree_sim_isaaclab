@@ -380,8 +380,8 @@ BELT_BOX_POSITIONS = [list(pos) for pos in SCENE_LAYOUT.belt_box_positions]
 BELT_BOX_KINDS = SCENE_LAYOUT.belt_box_kinds
 BELT_BOX_HALF_LENGTHS = SCENE_LAYOUT.belt_box_half_lengths
 BELT_BOX_QUEUE_GAP = SCENE_LAYOUT.belt_box_queue_gap
-# 箱子长边沿输送方向 Y，所以绕 Z 转 90°——与 v61 背景装饰箱的朝向一致。
-BELT_BOX_ROT = [0.70710678, 0.0, 0.0, 0.70710678]
+# 箱子短边沿输送方向 Y，机器人从流水线侧面抱取时双臂跨距更小；保持资产原始朝向。
+BELT_BOX_ROT = [1.0, 0.0, 0.0, 0.0]
 
 # 双机站位（面对面）：robot_1 在 +X 侧朝 -X（yaw 180°），robot_2 在 -X 侧朝 +X（identity）。
 # ⚠️ SONIC 底座任务刻意保持 identity 出生朝向（policy/world 约定）；ID=1 的 180° yaw

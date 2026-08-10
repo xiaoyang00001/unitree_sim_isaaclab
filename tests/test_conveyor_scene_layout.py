@@ -269,7 +269,7 @@ class BeltBoxLayoutTest(unittest.TestCase):
         self.assertEqual(kinds["c01"].asset, "cart_box_c01_physics.usda")
         self.assertEqual(
             (kinds["d01"].length_y, kinds["d01"].width_x, kinds["d01"].height_z),
-            (0.38, 0.25, 0.1487),
+            (0.25, 0.38, 0.1487),
         )
         self.assertEqual(
             (kinds["c01"].length_y, kinds["c01"].width_x, kinds["c01"].height_z),

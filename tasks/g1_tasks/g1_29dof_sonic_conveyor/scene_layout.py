@@ -56,9 +56,10 @@ def _env_int(environ: Mapping[str, str], name: str, default: int) -> int:
 class BeltBoxKind:
     """一种流水线箱型：视觉资产 + 缩放后的世界尺寸 + 质量。
 
-    ``length_y`` 是**摆上带面后沿输送方向 Y 的长度**。两种箱型都绕 Z 转 90° 摆放
-    （与 v61 背景装饰箱朝向一致），所以 ``length_y`` 取的是视觉资产的 X 尺寸、
-    ``width_x`` 取 Y 尺寸。原点都在箱底面，出生 z 因此可以直接用带面高度。
+    ``length_y`` 是**摆上带面后沿输送方向 Y 的长度**。箱子保持资产原始朝向，
+    让较短的资产 Y 边沿输送方向，机器人从流水线侧面抱取时双臂无需跨过长边；
+    因此 ``length_y`` 取视觉资产的 Y 尺寸、``width_x`` 取 X 尺寸。原点都在箱底面，
+    出生 z 因此可以直接用带面高度。
     """
 
     key: str
@@ -72,6 +73,14 @@ class BeltBoxKind:
     def half_length_y(self) -> float:
         return self.length_y * 0.5
 
+    @property
+    def half_queue_extent(self) -> float:
+        """固定世界朝向下用于 L 形路径排队的半长保守值。"""
+
+        # 主线沿 Y、支线沿 X，而箱子拐弯时不随路径旋转；取两轴较大的半尺寸，
+        # 避免为了缩短机器人抱取方向的 Y 跨距，反而低估支线上的占用长度。
+        return max(self.length_y, self.width_x) * 0.5
+
 
 # 纸箱两种取自 v61 背景（`ConveyorBelt_Box_XX` 引 SM_CardBoxD_01、`KLT_Bin_XX` 引
 # SM_CardBoxC_01）；软包裹三种取自 IsaacLab 分叉 feat/pickplace-parcel-assets 的
@@ -82,8 +91,8 @@ BELT_BOX_KINDS = {
     "d01": BeltBoxKind(
         key="d01",
         asset="cart_box_d01_physics.usda",
-        length_y=0.38,
-        width_x=0.25,
+        length_y=0.25,
+        width_x=0.38,
         height_z=0.1487,
         mass=1.0,
     ),
@@ -99,24 +108,24 @@ BELT_BOX_KINDS = {
     "parcel_a01": BeltBoxKind(
         key="parcel_a01",
         asset="parcel_soft_a01.usda",
-        length_y=0.4017,
-        width_x=0.3013,
+        length_y=0.3013,
+        width_x=0.4017,
         height_z=0.0801,
         mass=0.35,
     ),
     "parcel_a02": BeltBoxKind(
         key="parcel_a02",
         asset="parcel_soft_a02.usda",
-        length_y=0.4526,
-        width_x=0.3520,
+        length_y=0.3520,
+        width_x=0.4526,
         height_z=0.0968,
         mass=0.5,
     ),
     "parcel_a03": BeltBoxKind(
         key="parcel_a03",
         asset="parcel_soft_a03.usda",
-        length_y=0.3218,
-        width_x=0.2414,
+        length_y=0.2414,
+        width_x=0.3218,
         height_z=0.0603,
         mass=0.22,
     ),
@@ -243,9 +252,9 @@ class ConveyorSceneLayout:
 
     @property
     def belt_box_half_lengths(self) -> tuple[float, ...]:
-        """每个箱子沿输送方向的半长——排队判据按它算净间隙。"""
+        """每个箱子用于 L 形路径排队的保守半长——防撞判据按它算净间隙。"""
 
-        return tuple(kind.half_length_y for kind in self.belt_box_kinds)
+        return tuple(kind.half_queue_extent for kind in self.belt_box_kinds)
 
 
 def resolve_belt_box_pattern(environ: Mapping[str, str], count: int) -> tuple[BeltBoxKind, ...]:
@@ -332,7 +341,8 @@ def resolve_belt_box_positions(
     if queue_gap < 0.0:
         raise ValueError(f"ISAACLAB_BELT_BOX_QUEUE_GAP 不能为负，当前 {queue_gap}")
 
-    halves = [kind.half_length_y for kind in kinds]
+    # 箱子保持世界朝向，主线沿 Y、支线沿 X；排队/边界校验不能只取 Y 向短边。
+    halves = [kind.half_queue_extent for kind in kinds]
 
     def _check_adjacent_clearance(gaps: list[float], what: str) -> None:
         # 相邻箱子出生就不能互穿：中心距至少是两个半长之和（直线/弯道形态同判据，

@@ -172,11 +172,14 @@ A02/A05 本体纯视觉（coll=0/rigid=0），全部 `AssetBaseCfg` → `scene.e
 
 | key | 来源 | 尺寸（沿带 × 横向 × 高） | 质量 | 资产 |
 |---|---|---|---|---|
-| `d01` | v61 背景 `ConveyorBelt_Box_XX` 同款纸箱 | 0.38 × 0.25 × 0.1487 m | 1.0 kg | `props/cart_box_d01_physics.usda` |
+| `d01` | v61 背景 `ConveyorBelt_Box_XX` 同款纸箱 | 0.25 × 0.38 × 0.1487 m | 1.0 kg | `props/cart_box_d01_physics.usda` |
 | `c01` | v61 背景 `KLT_Bin_XX` 同款大纸箱 | 0.50 × 0.50 × 0.25 m | 1.5 kg | `props/cart_box_c01_physics.usda` |
-| `parcel_a01` | 程序化快递软包裹（灰） | 0.402 × 0.301 × 0.080 m | 0.35 kg | `props/parcel_soft_a01.usda` |
-| `parcel_a02` | 程序化快递软包裹（白，面单朝上） | 0.453 × 0.352 × 0.097 m | 0.5 kg | `props/parcel_soft_a02.usda` |
-| `parcel_a03` | 程序化快递软包裹（粉） | 0.322 × 0.241 × 0.060 m | 0.22 kg | `props/parcel_soft_a03.usda` |
+| `parcel_a01` | 程序化快递软包裹（灰） | 0.301 × 0.402 × 0.080 m | 0.35 kg | `props/parcel_soft_a01.usda` |
+| `parcel_a02` | 程序化快递软包裹（白，面单朝上） | 0.352 × 0.453 × 0.097 m | 0.5 kg | `props/parcel_soft_a02.usda` |
+| `parcel_a03` | 程序化快递软包裹（粉） | 0.241 × 0.322 × 0.060 m | 0.22 kg | `props/parcel_soft_a03.usda` |
+
+箱/包保持资产原始朝向，让短边沿流水线 Y 方向；机器人从流水线侧面抱取时，双臂跨距由
+沿带尺寸决定，默认 `d01` / `parcel_a02` 分别降为 0.25 / 0.352 m。
 
 ⚠️ 软包裹是**刚体不是软体**：枕形鼓包、热封边、褶皱、顶面白色面单都只是视觉造型，物理
 上与纸箱同一套约定（根挂 RigidBody+Mass、凸包碰撞、原点在袋底）——CPU pipeline 不支持
