@@ -5,7 +5,7 @@
 
 这里只依赖 torch，**刻意不 import Isaac Sim**——``conveyor_events`` 一旦被导入就要
 拉起 carb/Kit，普通 unittest 跑不起来。把判据抽到这一层之后，"谁在带上"
-"谁已投框""谁该被驱动""挡停放行"全都能在不启 Kit 的情况下逐条验证，
+"谁仍在流水线上方""谁该被驱动""挡停放行"全都能在不启 Kit 的情况下逐条验证，
 事件函数只剩读写场景状态。
 
 ⚠️ 本模块的函数都在每个物理步被调用，**不允许任何 GPU→CPU 同步**
@@ -21,6 +21,38 @@ import math
 import torch
 
 
+def in_conveyor_corridor_mask(
+    pos_local: torch.Tensor,
+    *,
+    x_range: tuple[float, float],
+    y_range: tuple[float, float],
+    extra_rects: tuple[tuple[float, float, float, float], ...] = (),
+) -> torch.Tensor:
+    """根位置的 XY 投影是否仍在流水线通道内；完全忽略高度 Z。
+
+    * ``x_range`` / ``y_range``：可用带面（略放宽于碰撞板）。
+    * ``extra_rects``：与主矩形取**并集**的附加矩形（每项 ``(x0, x1, y0, y1)``）。
+      入口弯道方案的 L 形带面 = 主线矩形 ∪ 拐角补块 ∪ X 支线条带；矩形个数是
+      Python 常量，循环展开不引入张量同步。
+
+    这张纯平面 mask 与 ``on_belt_mask`` 刻意分开：箱子只被抬高时已经不应继续受
+    流水线驱动，但它的 XY 投影仍压在通道上，后续队列必须继续停住；只有根位置真正
+    偏出通道后才放行下一格。
+    """
+
+    x = pos_local[..., 0]
+    y = pos_local[..., 1]
+    in_plane = (
+        (x >= x_range[0])
+        & (x <= x_range[1])
+        & (y >= y_range[0])
+        & (y <= y_range[1])
+    )
+    for x0, x1, y0, y1 in extra_rects:
+        in_plane = in_plane | ((x >= x0) & (x <= x1) & (y >= y0) & (y <= y1))
+    return in_plane
+
+
 def on_belt_mask(
     pos_local: torch.Tensor,
     *,
@@ -34,22 +66,15 @@ def on_belt_mask(
 
     * ``belt_top_z ± z_tolerance``：物体原点在底面，静置时 z≈0.775。被机器人拎起
       或掉到地上就落出窗口 → 立即停止驱动，不会把抓在手里的东西硬拖走。
-    * ``x_range`` / ``y_range``：可用带面（略放宽于碰撞板）。
-    * ``extra_rects``：与主矩形取**并集**的附加矩形（每项 ``(x0, x1, y0, y1)``）。
-      入口弯道方案的 L 形带面 = 主线矩形 ∪ 拐角补块 ∪ X 支线条带；矩形个数是
-      Python 常量，循环展开不引入张量同步。
+    * XY 平面范围复用 ``in_conveyor_corridor_mask``，直线与 L 形入口共用一套边界。
     """
 
-    x = pos_local[..., 0]
-    y = pos_local[..., 1]
-    in_plane = (
-        (x >= x_range[0])
-        & (x <= x_range[1])
-        & (y >= y_range[0])
-        & (y <= y_range[1])
+    in_plane = in_conveyor_corridor_mask(
+        pos_local,
+        x_range=x_range,
+        y_range=y_range,
+        extra_rects=extra_rects,
     )
-    for x0, x1, y0, y1 in extra_rects:
-        in_plane = in_plane | ((x >= x0) & (x <= x1) & (y >= y0) & (y <= y1))
     return (
         (pos_local[..., 2] >= belt_top_z - z_tolerance)
         & (pos_local[..., 2] <= belt_top_z + z_tolerance)
@@ -57,96 +82,42 @@ def on_belt_mask(
     )
 
 
-def inside_drop_zone_mask(
-    pos_local: torch.Tensor,
-    *,
-    root_zones: tuple[tuple[float, float, float, float, float, float], ...],
-) -> torch.Tensor:
-    """判断箱底根位置是否进入任一目标分拣框的保守接收区。
-
-    ``root_zones`` 每项是 ``(x_min, x_max, y_min, y_max, z_min, z_max)``；区域已经
-    按最大箱型从分拣框外包围盒向内缩，所以这里只判断根位置，不在热路径里重算每个
-    箱型的几何。多个区域取并集，对应两台机器人各自一只目标框。
-
-    输出形状与 ``pos_local[..., 0]`` 相同。实现只用张量布尔运算，不产生
-    GPU→CPU 同步。
-    """
-
-    inside = torch.zeros_like(pos_local[..., 0], dtype=torch.bool)
-    x = pos_local[..., 0]
-    y = pos_local[..., 1]
-    z = pos_local[..., 2]
-    for x_min, x_max, y_min, y_max, z_min, z_max in root_zones:
-        inside = inside | (
-            (x >= x_min)
-            & (x <= x_max)
-            & (y >= y_min)
-            & (y <= y_max)
-            & (z >= z_min)
-            & (z <= z_max)
-        )
-    return inside
-
-
-def update_drop_completion_latch(
-    completed: torch.Tensor,
-    dwell_counts: torch.Tensor,
-    settled_in_drop_zone: torch.Tensor,
-    *,
-    dwell_steps: int,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """累计稳定入框帧数，并锁存每个箱子的投放完成状态。
-
-    三个输入都采用 ``(N, E)``：N 个箱子 × E 个 env。未完成箱只有连续
-    ``dwell_steps`` 次同时满足“位于接收区且速度已稳定”才会完成；中途离区或重新运动
-    会把连续计数清零。完成后状态保持为真，不会因框内堆叠、碰撞或后续清框而反悔；
-    场景复位由事件 term 的 ``reset`` 显式清除锁存。
-
-    函数本身无原地修改，方便用纯 torch 单测锁住状态迁移，也避免 GPU→CPU 同步。
-    """
-
-    if completed.shape != dwell_counts.shape or completed.shape != settled_in_drop_zone.shape:
-        raise ValueError(
-            "completed、dwell_counts 与 settled_in_drop_zone 形状必须一致："
-            f"{tuple(completed.shape)} / {tuple(dwell_counts.shape)} / "
-            f"{tuple(settled_in_drop_zone.shape)}"
-        )
-    if dwell_steps < 1:
-        raise ValueError(f"dwell_steps 必须 >= 1，收到 {dwell_steps}")
-
-    next_counts = torch.where(
-        settled_in_drop_zone,
-        torch.clamp(dwell_counts + 1, max=dwell_steps),
-        torch.zeros_like(dwell_counts),
-    )
-    next_completed = completed | (next_counts >= dwell_steps)
-    # 已锁存项把计数固定在阈值，便于调试，也避免物体离框后计数表面回到 0。
-    next_counts = torch.where(
-        next_completed,
-        torch.full_like(next_counts, dwell_steps),
-        next_counts,
-    )
-    return next_completed, next_counts
-
-
 def transfer_complete_mask(
     on_belt: torch.Tensor,
-    drop_completed: torch.Tensor,
+    departure_completed: torch.Tensor,
 ) -> torch.Tensor:
-    """返回每个 env 是否已完成当前取放、可以让队列前进一步。
+    """返回每个 env 的工位箱是否已偏出流水线、可以让队列前进一步。
 
-    每个箱子必须满足二选一：仍在流水线上，或它的“稳定入框”完成位已经锁存。于是
-    队首被抱起后会形成一个“既不在带上、也未完成投框”的缺口，整带继续保持停止；
-    箱子稳定落入框内后缺口闭合才放行。下一箱被抱起会再次形成新缺口，因此不会被
-    首次投放永久解锁。
+    每个箱子必须满足二选一：仍在带面高度窗口内，或根位置的 XY 投影已经偏出过流水线
+    通道。于是队首只被竖直抬高时 ``on_belt=False`` 但仍在通道内，整带继续停住；
+    横向搬出通道后立即放行，不再依赖蓝箱位置、速度阈值或驻留时间。完成位按箱锁存，
+    避免抓取轨迹回摆或在边界附近抖动时把已经启动的流水线再次按停。
     """
 
-    if on_belt.shape != drop_completed.shape:
+    if on_belt.shape != departure_completed.shape:
         raise ValueError(
-            "on_belt 与 drop_completed 形状必须一致："
-            f"{tuple(on_belt.shape)} vs {tuple(drop_completed.shape)}"
+            "on_belt 与 departure_completed 形状必须一致："
+            f"{tuple(on_belt.shape)} vs {tuple(departure_completed.shape)}"
         )
-    return (on_belt | drop_completed).all(dim=0)
+    return (on_belt | departure_completed).all(dim=0)
+
+
+def update_departure_completion_latch(
+    completed: torch.Tensor,
+    in_conveyor_corridor: torch.Tensor,
+) -> torch.Tensor:
+    """箱根 XY 首次偏出流水线通道后锁存完成位。
+
+    输入均为 ``(N, E)``。正好压在边界上仍属于通道内；只有跨出边界才置位。锁存项
+    保持为真，直到事件 term 随 F12/DDS/env reset 清零。
+    """
+
+    if completed.shape != in_conveyor_corridor.shape:
+        raise ValueError(
+            "completed 与 in_conveyor_corridor 形状必须一致："
+            f"{tuple(completed.shape)} vs {tuple(in_conveyor_corridor.shape)}"
+        )
+    return completed | ~in_conveyor_corridor
 
 
 def path_progress(
@@ -241,8 +212,9 @@ def queue_drive_mask(
         drive[i] = on_belt[i] & belt_running & 没顶到前车
 
     也就是说队首一到工位，整条带立刻停下，后面的箱子**原地保持当前间距**，不会继续
-    往前挤到贴紧前车。队首被取走后 ``transfer_complete=False``，整带仍保持停止；
-    只有它进入目标分拣框、门控恢复为真，剩余队列才一起前进到新队首压住工位。
+    往前挤到贴紧前车。队首只被抬高、XY 仍在线上方时 ``transfer_complete=False``，
+    整带继续停止；根位置横向偏出流水线通道后门控恢复为真，剩余队列一起前进到新
+    队首压住工位。
 
     第三个因子是**防撞保底**，正常情况下不会触发：整带同起同停时相对间距恒定，
     而出生间距（默认 0.6）远大于任何一对箱子的最小净距。它只在两箱因摩擦/质量差异
@@ -255,8 +227,8 @@ def queue_drive_mask(
     的空档；按各自半长算，无论怎么交错，兜底的净空隙都恒为 ``queue_gap``。
 
     ``transfer_complete`` 是可选的 ``(E,)`` bool 张量；不传时保持通用队列函数的
-    历史行为，由调用方决定是否启用投框门。投放锁存由权威端事件维护，并随 env reset
-    清零；镜像端根本不跑驱动事件，箱子位姿仍全部来自权威端的 scene_state 帧。
+    历史行为。停止式 legacy 事件用“仍在带上或已偏出通道”生成它；镜像端根本不跑
+    驱动事件，箱子位姿仍全部来自权威端的 scene_state 帧。
 
     ``y_stop=None``（``ISAACLAB_CONVEYOR_Y_STOP<=0`` 的循环模式）下没有工位停止线，
     整带长跑不停，只剩防撞保底。
@@ -279,7 +251,7 @@ def queue_drive_mask(
         return on_belt & clear_of_leader
 
     # —— 整带节拍 ——
-    # 只看仍在带面的箱子来确定新队首；被抓走的箱子是否允许新队首启动，则由下方
+    # 只看仍在带面的箱子来确定新队首；被抓走的箱子是否已经横向偏出流水线，则由下方
     # transfer_complete 统一门控。全部离开带面时 lead_y 取到哨兵大值，但 on_belt
     # 全假，drive 仍是全假，无需额外分支。
     far_away = ys.new_tensor(1.0e9)

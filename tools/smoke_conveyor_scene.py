@@ -19,8 +19,8 @@ ISAACLAB_CONVEYOR_ENDLESS=off 回退直线带头（旧行为，y 判定）。
   # Phase 0 单机场景冒烟（不建 socket）
   python tools/smoke_conveyor_scene.py --steps 1600
 
-  # 取放节拍验收：第 1000 步取走队首，保持 50 步停线，再放入蓝框并断言下一个补位
-  python tools/smoke_conveyor_scene.py --steps 1600 --pick-lead-at 1000 --place-lead-after 50
+  # 取放节拍验收：第 1000 步仅抬高队首，保持 50 步停线，再横向移出并断言下一个补位
+  python tools/smoke_conveyor_scene.py --steps 1600 --pick-lead-at 1000 --depart-lead-after 50
 
   # PhysX Surface Velocity 实验 A/B（固定由 ID=1 驱动，默认 50 mm 容差）
   # ⚠️ surface_velocity 只驱动主线碰撞面，弯道形态未验证（README 已知限制）
@@ -73,27 +73,32 @@ parser.add_argument(
     default=None,
     metavar="STEP",
     help=(
-        "在第 STEP 步把队首箱子搬离带面，模拟机器人取件；"
-        "保持停线后再放入目标框，待稳定驻留后断言后一个箱子补位到工位"
+        "在第 STEP 步把队首箱子原地抬高，模拟机器人取件；"
+        "保持停线后再横向移出流水线通道，并断言后一个箱子补位到工位"
     ),
 )
 parser.add_argument(
+    "--depart-lead-after",
     "--place-lead-after",
+    dest="depart_lead_after",
     type=int,
     default=50,
     metavar="STEPS",
-    help="配合 --pick-lead-at：取走后保持 STEPS 步，再把箱子放入 robot_1 侧蓝框（默认 50）",
+    help=(
+        "配合 --pick-lead-at：原 XY 抬高后保持 STEPS 步，再把箱根横向移出流水线"
+        "（默认 50；旧参数名 --place-lead-after 仍兼容）"
+    ),
 )
 args = parser.parse_args()
-if args.place_lead_after < 0:
-    parser.error("--place-lead-after 不能为负数")
+if args.depart_lead_after < 0:
+    parser.error("--depart-lead-after 不能为负数")
 if args.pick_lead_at is not None and args.drive_mode != "legacy":
-    parser.error("--pick-lead-at 的投框门验收仅支持 legacy 后端")
+    parser.error("--pick-lead-at 的平面偏离门验收仅支持 legacy 后端")
 if (
     args.pick_lead_at is not None
-    and args.pick_lead_at + args.place_lead_after > args.steps
+    and args.pick_lead_at + args.depart_lead_after > args.steps
 ):
-    parser.error("--steps 必须覆盖 pick-lead-at + place-lead-after，才能完成投框放行验收")
+    parser.error("--steps 必须覆盖 pick-lead-at + depart-lead-after，才能完成偏离放行验收")
 
 # 环境变量必须在 import tasks 之前定型（env cfg 在 import 时读取）。
 os.environ["ISAACLAB_SCENE_SYNC"] = args.sync
@@ -193,11 +198,11 @@ def main() -> int:
         print(f"[smoke {tag}] " + " | ".join(parts), flush=True)
 
     def pick_lead_box() -> tuple[str, object] | None:
-        """把队首搬离带面，模拟机器人取件。
+        """把队首原地抬高，模拟机器人刚取起但尚未偏离流水线。
 
-        直接写位姿而不是真去抓：本脚本没有操作臂，而队列判据只看"还在不在带面
-        窗口内"，抬走与抓走对它是同一件事。搬到 +X 侧、抬高到 1.2 m，正好落在
-        z 窗口与（L 形）平面窗口之外。队首=沿路径最靠下游（弯道形态按 s 判）。
+        直接写位姿而不是真去抓：本脚本没有操作臂。这里只改 Z 到 1.2 m，保持原 XY，
+        因而箱子已经脱离带面驱动，却仍占用流水线平面通道并按住后续队列。队首=沿路径
+        最靠下游（弯道形态按 s 判）。
         """
 
         lead_name, lead_obj, lead_p = None, None, None
@@ -209,26 +214,26 @@ def main() -> int:
             return None
 
         pose = lead_obj.data.root_state_w[:, :7].clone()
-        pose[:, 0] = -4.0
         pose[:, 2] = 1.2
         lead_obj.write_root_pose_to_sim(pose)
         lead_obj.write_root_velocity_to_sim(torch.zeros_like(lead_obj.data.root_vel_w))
-        print(f"[smoke] 第 {args.pick_lead_at} 步取走队首 {lead_name}（搬到带面外）", flush=True)
+        print(
+            f"[smoke] 第 {args.pick_lead_at} 步抬高队首 {lead_name}"
+            "（XY 不变，仍在流水线上方）",
+            flush=True,
+        )
         return lead_name, lead_obj
 
-    def place_lead_box(name: str, obj) -> None:
-        """把冒烟测试中的队首放进 robot_1 侧蓝色分拣框接收区。"""
+    def move_lead_off_conveyor(name: str, obj) -> None:
+        """把已抬高的队首横向移出主线/L 形通道，触发立即放行。"""
 
-        zone = conveyor_env_cfg.BELT_BOX_DROP_ROOT_ZONES[1]
         pose = obj.data.root_state_w[:, :7].clone()
-        pose[:, 0] = (zone[0] + zone[1]) * 0.5
-        pose[:, 1] = (zone[2] + zone[3]) * 0.5
-        pose[:, 2] = (zone[4] + zone[5]) * 0.5
+        pose[:, 0] = -4.0
         obj.write_root_pose_to_sim(pose)
         obj.write_root_velocity_to_sim(torch.zeros_like(obj.data.root_vel_w))
         print(
-            f"[smoke] 第 {args.pick_lead_at + args.place_lead_after} 步把 {name} 放入 "
-            "robot_1 侧蓝色分拣框，开始稳定驻留判定",
+            f"[smoke] 第 {args.pick_lead_at + args.depart_lead_after} 步把 {name} "
+            "横向移出流水线通道，触发偏离完成锁存",
             flush=True,
         )
 
@@ -270,7 +275,7 @@ def main() -> int:
             picked_name is not None
             and picked_obj is not None
             and args.pick_lead_at is not None
-            and step == args.pick_lead_at + args.place_lead_after
+            and step == args.pick_lead_at + args.depart_lead_after
         ):
             if hold_lead_name is not None and hold_start_p is not None:
                 hold_end_p = _progress(
@@ -278,7 +283,7 @@ def main() -> int:
                     float(watched[hold_lead_name].data.root_pos_w[0, 1]),
                 )
                 hold_displacement = hold_end_p - hold_start_p
-            place_lead_box(picked_name, picked_obj)
+            move_lead_off_conveyor(picked_name, picked_obj)
         if step % max(1, args.report_every) == 0:
             snapshot(f"step={step}")
     elapsed = monotonic() - t0
@@ -292,8 +297,8 @@ def main() -> int:
     hz = args.steps / max(elapsed, 1e-6)
     print(f"[smoke] {args.steps} steps in {elapsed:.1f}s -> env_hz={hz:.1f}", flush=True)
 
-    # 被取走的箱子已经放进目标框并完成稳定驻留，退出带面评分；剩下的按队列重新
-    # 编号，于是“稳定投框后下一个补位到工位”落在 graded_names[0] 的槽位断言里。
+    # 被取走的箱子已经横向偏出流水线并完成锁存，退出带面评分；剩下的按队列重新
+    # 编号，于是“偏离后下一个补位到工位”落在 graded_names[0] 的槽位断言里。
     graded_names = [name for name in watched_names if name != picked_name]
     moved = {name: round(end_p[name] - start_p[name], 4) for name in graded_names}
     on_belt = {name: abs(end_z[name] - 0.775) < 0.05 for name in graded_names}
@@ -392,7 +397,7 @@ def main() -> int:
             )
         if picked_name is not None:
             print(
-                f"[smoke] 节拍验收：{picked_name} 稳定入框后 {graded_names[0]} 应补位到工位 "
+                f"[smoke] 节拍验收：{picked_name} XY 偏出流水线后 {graded_names[0]} 应补位到工位 "
                 f"y={expected_stop_y:.3f}，实测 y={end_xy[graded_names[0]][1]:.3f}",
                 flush=True,
             )

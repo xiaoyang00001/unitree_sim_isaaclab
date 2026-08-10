@@ -193,24 +193,6 @@ class ConveyorLayoutNorthShiftTest(unittest.TestCase):
 class BeltBoxLayoutTest(unittest.TestCase):
     """纸箱队列默认沿西拐入口弯道路径**铺满**（pitch 0.75 × 17 槽），两种箱型交错。"""
 
-    def test_drop_root_zones_cover_both_robot_sorting_bins(self) -> None:
-        """两个接收区分别位于 robot_2/robot_1 身后的蓝色分拣框内部。"""
-
-        self.assertEqual(
-            _LAYOUT_MODULE.BELT_BOX_DROP_ROOT_ZONES,
-            (
-                (-7.068025, -6.465390, 15.099451, 15.995693, 0.42, 0.56),
-                (-4.778759, -4.167826, 15.096080, 15.999063, 0.42, 0.56),
-            ),
-        )
-        # 接收区保守沿用 0.25 m 内缩；当前 d01/d02 最大路径半长只有 0.19 m，
-        # 所有可选箱型进入该区时，箱底根都不会只擦到框沿。
-        for kind in _LAYOUT_MODULE.BELT_BOX_KINDS.values():
-            self.assertLessEqual(kind.length_y, 0.50)
-            self.assertLessEqual(kind.width_x, 0.50)
-            self.assertLessEqual(kind.height_z, 0.25)
-            self.assertLessEqual(kind.half_queue_extent, 0.25)
-
     def test_default_conveyor_layout_fills_seventeen_slots_along_the_path(self) -> None:
         layout = resolve_scene_layout({})
 
