@@ -114,7 +114,10 @@ class StandbyRobotLayoutTest(unittest.TestCase):
         self.assertEqual(
             tuple((pose.pos, pose.rot) for pose in layout.standby_robot_poses),
             (
-                ((-7.02, 18.6534, 0.76), (0.0, 0.0, 0.0, 1.0)),
+                (
+                    (-12.7, 18.9534, 0.76),
+                    (0.40455358, 0.0, 0.0, 0.91451430),
+                ),
                 ((-6.7, 17.2, 0.76), (1.0, 0.0, 0.0, 0.0)),
                 (
                     (-9.5, 21.15, 0.76),
@@ -122,7 +125,7 @@ class StandbyRobotLayoutTest(unittest.TestCase):
                 ),
             ),
         )
-        # 三台分处弯道内侧、主线上游和 X 支线，不在同一横截面相向站立。
+        # 三台分处支线队尾、主线上游和支线中段，不在同一横截面相向站立。
         self.assertEqual(len({pose.pos[1] for pose in layout.standby_robot_poses}), 3)
         self.assertEqual(len({pose.rot for pose in layout.standby_robot_poses}), 3)
 

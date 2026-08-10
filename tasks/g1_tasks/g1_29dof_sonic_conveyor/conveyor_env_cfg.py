@@ -325,7 +325,7 @@ def _env_reset_sync_cfg() -> ZmqEnvResetSyncActionCfg:
 #
 #   1 = 流水线布局：两塑料筐缩小一半（scale 0.005）放上流水线滚轮面的**入料端**，
 #       由 drive_totes 事件沿 -Y 送到第二段工位停住；双机站第二段两侧
-#       (x=-4.54 / -6.7, y=14.398)，另有三台无物理 G1 在弯道内侧、主线和 X 支线分散站位，
+#       (x=-4.54 / -6.7, y=14.398)，另有三台无物理 G1 在支线队尾、主线和支线中段分散站位，
 #       不组成面对面队列；pushcart_2 空车留在 y=19.64363
 #       （⚠️ robot_1 x=-4.54 是 2026-08-09 的对称化站位，不是 01cdfaf 的 -4.75；
 #       所有世界 y 已含整体北移 Δ=0.25）。
@@ -1579,7 +1579,7 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
         _make_foot_contact_sensor("Robot2") if HOST_MODE else None
     )
 
-    # 仅流水线布局（TOTES_ON_CONVEYOR=1）生成：三台完整外观 G1 在弯道内侧、主线和 X 支线
+    # 仅流水线布局（TOTES_ON_CONVEYOR=1）生成：三台完整外观 G1 在支线队尾、主线和支线中段
     # 分散站立，各自朝向明确且不组成面对面队列。它们没有 articulation、刚体、
     # 碰撞、执行器或传感器，也不进入 scene_state 同步；现有两台机器人配置不变。
     standby_robot_1: AssetBaseCfg | None = _make_standby_robot_cfg(0)

@@ -520,19 +520,15 @@ def resolve_scene_layout(environ: Mapping[str, str]) -> ConveyorSceneLayout:
         -6.7 if totes_on_conveyor else cart_group_x - robot_side_offset,
     )
 
-    # 只在 =1 流水线布局生成三台纯显示 G1。它们分散在弯道内侧、主线上游和 X 支线，
-    # 不组成同一横截面的面对面队列。第一台站在弯道圆心内侧、朝 -X 看向支线队尾；
-    # 第二台沿用现有机器人到主带中线的横向站距；第三台在支线北侧。现有两台的
-    # 坐标和朝向保持不变。
+    # 只在 =1 流水线布局生成三台纯显示 G1。它们分散在 X 支线队尾、主线上游和
+    # X 支线中段，不组成面对面队列。第一台站在默认最后一个物体南侧偏东 1 m 并
+    # 朝西北正对该物体；第二台沿用现有机器人到主带中线的横向站距；第三台在支线北侧。
+    # 现有两台的坐标和朝向保持不变。
     standby_robot_poses = (
         (
             StandbyRobotPose(
-                pos=(
-                    BELT_BOX_LANE_X - BELT_BOX_CORNER_RADIUS,
-                    BELT_BOX_BRANCH_LANE_Y - BELT_BOX_CORNER_RADIUS,
-                    STANDBY_ROBOT_ROOT_Z,
-                ),
-                rot=(0.0, 0.0, 0.0, 1.0),  # yaw 180°，朝 -X
+                pos=(-12.70, 18.9534, STANDBY_ROBOT_ROOT_Z),
+                rot=(0.40455358, 0.0, 0.0, 0.91451430),  # 朝西北正对队尾物体
             ),
             StandbyRobotPose(
                 pos=(robot_2_x, _shifted(16.95), STANDBY_ROBOT_ROOT_Z),
