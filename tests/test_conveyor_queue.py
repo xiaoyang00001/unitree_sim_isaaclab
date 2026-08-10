@@ -1,7 +1,7 @@
 """流水线整带节拍判据的单测（不启 Kit，只用 torch）。
 
 这些用例锁的是核心语义：队首一到工位整条带一起停、后面的保持间距不再挤上来、
-取走队首后整列一起前进一格，外加一层按各箱半长算的防撞保底。
+取走队首后继续停线、稳定投框后整列才前进一格，外加一层按各箱半长算的防撞保底。
 ``conveyor_queue`` 刻意不依赖 Isaac Sim 就是为了让这一层能被这样逐条验证。
 """
 
@@ -25,6 +25,15 @@ _MODULE = importlib.util.module_from_spec(_SPEC)
 sys.modules[_SPEC.name] = _MODULE
 _SPEC.loader.exec_module(_MODULE)
 
+_SCENE_LAYOUT_PATH = _MODULE_PATH.with_name("scene_layout.py")
+_SCENE_SPEC = importlib.util.spec_from_file_location(
+    "conveyor_scene_layout_for_queue_test", _SCENE_LAYOUT_PATH
+)
+assert _SCENE_SPEC is not None and _SCENE_SPEC.loader is not None
+_SCENE_LAYOUT = importlib.util.module_from_spec(_SCENE_SPEC)
+sys.modules[_SCENE_SPEC.name] = _SCENE_LAYOUT
+_SCENE_SPEC.loader.exec_module(_SCENE_LAYOUT)
+
 
 _Y_STOP = 14.148
 # 两种箱型沿输送方向的半长：d01=0.38/2、c01=0.50/2。
@@ -34,6 +43,7 @@ _GAP = 0.07
 _BELT_TOP_Z = 0.772
 _X_RANGE = (-6.17, -5.07)
 _Y_RANGE = (10.19, 18.22)
+_DROP_ROOT_ZONES = _SCENE_LAYOUT.BELT_BOX_DROP_ROOT_ZONES
 
 
 def _column(values: list[float]) -> torch.Tensor:
@@ -47,17 +57,24 @@ def _drive(
     on_belt: list[bool],
     y_stop: float | None = _Y_STOP,
     halves: list[float] | None = None,
+    transfer_complete: bool | None = None,
 ) -> list[bool]:
     """默认全用 d01 半长，需要混排时显式传 ``halves``。"""
 
     if halves is None:
         halves = [_HALF_D] * len(ys)
+    transfer_complete_tensor = (
+        None
+        if transfer_complete is None
+        else torch.tensor([transfer_complete], dtype=torch.bool)
+    )
     mask = _MODULE.queue_drive_mask(
         _column(ys),
         torch.tensor(on_belt, dtype=torch.bool).unsqueeze(-1),
         _column(halves),
         y_stop=y_stop,
         queue_gap=_GAP,
+        transfer_complete=transfer_complete_tensor,
     )
     return [bool(v) for v in mask.squeeze(-1).tolist()]
 
@@ -98,8 +115,122 @@ class OnBeltMaskTest(unittest.TestCase):
         )
 
 
+class DropZoneMaskTest(unittest.TestCase):
+    """投框判据只接受两个蓝色分拣框内部、靠近框底的箱底根位置。"""
+
+    def _mask(self, positions: list[tuple[float, float, float]]) -> list[bool]:
+        pos = torch.tensor(positions, dtype=torch.float32).unsqueeze(1)
+        mask = _MODULE.inside_drop_zone_mask(pos, root_zones=_DROP_ROOT_ZONES)
+        return [bool(v) for v in mask.squeeze(-1).tolist()]
+
+    def test_either_robot_sorting_bin_completes_the_drop(self) -> None:
+        centers = [
+            (
+                (zone[0] + zone[1]) * 0.5,
+                (zone[2] + zone[3]) * 0.5,
+                0.45,
+            )
+            for zone in _DROP_ROOT_ZONES
+        ]
+        self.assertEqual(self._mask(centers), [True, True])
+
+    def test_passing_above_or_missing_the_bins_does_not_complete_the_drop(self) -> None:
+        west = _DROP_ROOT_ZONES[0]
+        west_center = ((west[0] + west[1]) * 0.5, (west[2] + west[3]) * 0.5)
+        self.assertEqual(
+            self._mask(
+                [
+                    (*west_center, 0.80),  # 从框沿上方经过
+                    (*west_center, 0.10),  # 掉到框下/地面
+                    (west[0] - 0.01, west_center[1], 0.45),  # 擦过框外侧
+                    (-5.62, 15.50, 0.45),  # 两框之间的流水线区域
+                ]
+            ),
+            [False, False, False, False],
+        )
+
+    def test_transfer_requires_every_box_to_be_on_belt_or_in_a_bin(self) -> None:
+        on_belt = torch.tensor(
+            [[False, True], [True, False], [True, True]], dtype=torch.bool
+        )
+        drop_completed = torch.tensor(
+            [[False, False], [False, True], [False, False]], dtype=torch.bool
+        )
+        ready = _MODULE.transfer_complete_mask(on_belt, drop_completed)
+        # env0 的队首在搬运中 → 停；env1 的离带箱已入框 → 放行。
+        self.assertEqual(ready.tolist(), [False, True])
+
+    def test_transfer_shape_mismatch_fails_fast(self) -> None:
+        with self.assertRaisesRegex(ValueError, "形状必须一致"):
+            _MODULE.transfer_complete_mask(
+                torch.ones((2, 1), dtype=torch.bool),
+                torch.ones((1, 1), dtype=torch.bool),
+            )
+
+    def test_drop_completion_requires_continuous_dwell_then_latches(self) -> None:
+        completed = torch.zeros((2, 1), dtype=torch.bool)
+        counts = torch.zeros((2, 1), dtype=torch.int16)
+        settled = torch.tensor([[True], [False]], dtype=torch.bool)
+
+        for _ in range(9):
+            completed, counts = _MODULE.update_drop_completion_latch(
+                completed,
+                counts,
+                settled,
+                dwell_steps=10,
+            )
+        self.assertEqual(completed.squeeze(-1).tolist(), [False, False])
+        self.assertEqual(counts.squeeze(-1).tolist(), [9, 0])
+
+        completed, counts = _MODULE.update_drop_completion_latch(
+            completed,
+            counts,
+            settled,
+            dwell_steps=10,
+        )
+        self.assertEqual(completed.squeeze(-1).tolist(), [True, False])
+
+        # 完成后即使箱子因堆叠、碰撞或清框离开接收区，也不撤销已经完成的周期。
+        completed, counts = _MODULE.update_drop_completion_latch(
+            completed,
+            counts,
+            torch.zeros_like(settled),
+            dwell_steps=10,
+        )
+        self.assertEqual(completed.squeeze(-1).tolist(), [True, False])
+        self.assertEqual(counts.squeeze(-1).tolist(), [10, 0])
+
+    def test_unsettled_frame_breaks_the_required_dwell(self) -> None:
+        completed = torch.zeros((1, 1), dtype=torch.bool)
+        counts = torch.tensor([[6]], dtype=torch.int16)
+        completed, counts = _MODULE.update_drop_completion_latch(
+            completed,
+            counts,
+            torch.tensor([[False]], dtype=torch.bool),
+            dwell_steps=10,
+        )
+        self.assertEqual(completed.tolist(), [[False]])
+        self.assertEqual(counts.tolist(), [[0]])
+
+    def test_drop_latch_rejects_invalid_shape_or_dwell(self) -> None:
+        with self.assertRaisesRegex(ValueError, "形状必须一致"):
+            _MODULE.update_drop_completion_latch(
+                torch.zeros((2, 1), dtype=torch.bool),
+                torch.zeros((1, 1), dtype=torch.int16),
+                torch.zeros((2, 1), dtype=torch.bool),
+                dwell_steps=10,
+            )
+        with self.assertRaisesRegex(ValueError, ">= 1"):
+            _MODULE.update_drop_completion_latch(
+                torch.zeros((1, 1), dtype=torch.bool),
+                torch.zeros((1, 1), dtype=torch.int16),
+                torch.zeros((1, 1), dtype=torch.bool),
+                dwell_steps=0,
+            )
+
+
 class QueueDriveMaskTest(unittest.TestCase):
-    """整带节拍：队首一到工位，整条带一起停；取走队首，整列一起前进一格。"""
+    """整带节拍：队首到工位停线；取走后等投框完成，整列才前进一格。"""
 
     def test_lead_box_runs_until_the_workstation_then_stops(self) -> None:
         self.assertEqual(_drive([16.0], [True]), [True])
@@ -146,8 +277,8 @@ class QueueDriveMaskTest(unittest.TestCase):
         nudged[3] += 0.4
         self.assertEqual(_drive(nudged, [True] * 5), [False] * 5)
 
-    def test_picking_the_lead_restarts_the_whole_belt(self) -> None:
-        """取走队首 → 整列一起重新起步（不是只放行下一个）。"""
+    def test_picking_the_lead_waits_until_the_drop_is_complete(self) -> None:
+        """队首离带仍停；进入目标框后整列才重新起步。"""
 
         spacing = 0.6
         queued = [_Y_STOP + index * spacing for index in range(5)]
@@ -155,9 +286,66 @@ class QueueDriveMaskTest(unittest.TestCase):
         # 取件前：整带停。
         self.assertEqual(_drive(queued, [True] * 5), [False] * 5)
 
-        # 队首被拎起（离开带面窗口）→ 新队首在 y_stop+0.6，带重启，剩下四个同时走。
-        released = _drive(queued, [False, True, True, True, True])
+        # 队首被拎起、仍在搬运中：即使新队首在 y_stop+0.6，整带也继续停。
+        held = _drive(
+            queued,
+            [False, True, True, True, True],
+            transfer_complete=False,
+        )
+        self.assertEqual(held, [False] * 5)
+
+        # 队首进入任一目标框 → 门控闭合，剩下四个同时走。
+        released = _drive(
+            queued,
+            [False, True, True, True, True],
+            transfer_complete=True,
+        )
         self.assertEqual(released, [False, True, True, True, True])
+
+    def test_position_masks_drive_the_full_pick_and_place_gate(self) -> None:
+        """从根位置直接串起 on_belt→入框→放行，不靠手写门控结果。"""
+
+        queued = [_Y_STOP + index * 0.6 for index in range(3)]
+        west = _DROP_ROOT_ZONES[0]
+        west_center = (
+            (west[0] + west[1]) * 0.5,
+            (west[2] + west[3]) * 0.5,
+            0.45,
+        )
+        followers = [(-5.62, queued[1], 0.775), (-5.62, queued[2], 0.775)]
+
+        for lead_position, expected in (
+            ((-4.0, queued[0], 1.20), [False, False, False]),  # 搬运中
+            (west_center, [False, True, True]),  # 已完整放进 robot_2 侧框
+        ):
+            positions = torch.tensor([lead_position, *followers], dtype=torch.float32).unsqueeze(1)
+            on_belt = _MODULE.on_belt_mask(
+                positions,
+                belt_top_z=_BELT_TOP_Z,
+                z_tolerance=0.15,
+                x_range=_X_RANGE,
+                y_range=_Y_RANGE,
+            )
+            in_bin = _MODULE.inside_drop_zone_mask(
+                positions,
+                root_zones=_DROP_ROOT_ZONES,
+            )
+            completed, _ = _MODULE.update_drop_completion_latch(
+                torch.zeros_like(in_bin),
+                torch.zeros_like(in_bin, dtype=torch.int16),
+                in_bin,
+                dwell_steps=1,
+            )
+            ready = _MODULE.transfer_complete_mask(on_belt, completed)
+            drive = _MODULE.queue_drive_mask(
+                _column(queued),
+                on_belt,
+                torch.full((3, 1), _HALF_D),
+                y_stop=_Y_STOP,
+                queue_gap=_GAP,
+                transfer_complete=ready,
+            )
+            self.assertEqual(drive.squeeze(-1).tolist(), expected)
 
     def test_belt_stops_again_once_the_new_lead_reaches_the_station(self) -> None:
         """整列前进一格后，新队首压到工位，再次整带停——节拍循环成立。"""
@@ -166,13 +354,22 @@ class QueueDriveMaskTest(unittest.TestCase):
         advanced = [_Y_STOP + index * spacing for index in range(4)]
         self.assertEqual(_drive(advanced, [True] * 4), [False] * 4)
 
-    def test_a_box_off_the_belt_neither_drives_nor_holds_the_belt(self) -> None:
-        """离开带面的箱子既不被驱动，也不参与"队首是谁"的判定。"""
+    def test_an_off_belt_box_holds_the_belt_until_it_is_in_a_bin(self) -> None:
+        """搬运中/掉地的箱子继续停线；确认入框后才退出节拍门控。"""
 
-        # 下游那个已被搬走 → 它不再把带按停，上游那个继续走。
-        self.assertEqual(_drive([13.0, 16.0], [False, True]), [False, True])
-        # 它也不再充当前车挡住后面的箱子。
-        self.assertEqual(_drive([15.0, 15.2], [False, True]), [False, True])
+        self.assertEqual(
+            _drive([13.0, 16.0], [False, True], transfer_complete=False),
+            [False, False],
+        )
+        # 已投进框后，它既不驱动，也不再挡住上游箱子。
+        self.assertEqual(
+            _drive([13.0, 16.0], [False, True], transfer_complete=True),
+            [False, True],
+        )
+        self.assertEqual(
+            _drive([15.0, 15.2], [False, True], transfer_complete=True),
+            [False, True],
+        )
 
     def test_anti_collision_still_holds_a_follower_that_drifts_too_close(self) -> None:
         """防撞保底：带在跑，但后车已经贴到前车尾部时不再驱动它。
@@ -237,6 +434,10 @@ class QueueDriveMaskTest(unittest.TestCase):
         self.assertEqual(_drive([11.0], [True], y_stop=None), [True])
         self.assertEqual(_drive([_Y_STOP], [True], y_stop=None), [True])
         self.assertEqual(_drive([10.5, 12.0], [True, True], y_stop=None), [True, True])
+        # 循环模式没有取放工位，显式的未完成门也不应改变长跑语义。
+        self.assertEqual(
+            _drive([11.0], [True], y_stop=None, transfer_complete=False), [True]
+        )
         # 贴太近时仍被兜底按住。
         self.assertEqual(_drive([12.0, 12.2], [True, True], y_stop=None), [True, False])
 
@@ -260,6 +461,24 @@ class QueueDriveMaskTest(unittest.TestCase):
         mask = _MODULE.queue_drive_mask(ys, on_belt, halves, y_stop=_Y_STOP, queue_gap=_GAP)
 
         self.assertEqual(mask.tolist(), [[False, True], [False, True]])
+
+    def test_drop_gate_is_applied_per_environment(self) -> None:
+        """一个 env 正在搬运不能按住另一个已经投框的 env。"""
+
+        ys = torch.tensor([[13.0, 13.0], [16.0, 16.0]], dtype=torch.float32)
+        on_belt = torch.tensor([[False, False], [True, True]], dtype=torch.bool)
+        halves = torch.full((2, 1), _HALF_D)
+        transfer_complete = torch.tensor([False, True], dtype=torch.bool)
+        mask = _MODULE.queue_drive_mask(
+            ys,
+            on_belt,
+            halves,
+            y_stop=_Y_STOP,
+            queue_gap=_GAP,
+            transfer_complete=transfer_complete,
+        )
+
+        self.assertEqual(mask.tolist(), [[False, False], [False, True]])
 
     def test_mask_is_computed_without_host_synchronisation(self) -> None:
         """判据必须全程留在张量里：返回 bool 张量而不是 Python 值。
@@ -363,17 +582,24 @@ class QueueDriveMaskAlongPathTest(unittest.TestCase):
         on_belt: list[bool],
         s_stop: object = _UNSET,
         halves: list[float] | None = None,
+        transfer_complete: bool | None = None,
     ) -> list[bool]:
         if s_stop is self._UNSET:
             s_stop = self._S_STOP
         if halves is None:
             halves = [_HALF_D] * len(ss)
+        transfer_complete_tensor = (
+            None
+            if transfer_complete is None
+            else torch.tensor([transfer_complete], dtype=torch.bool)
+        )
         mask = _MODULE.queue_drive_mask_along_path(
             _column(ss),
             torch.tensor(on_belt, dtype=torch.bool).unsqueeze(-1),
             _column(halves),
             s_stop=s_stop,
             queue_gap=_GAP,
+            transfer_complete=transfer_complete_tensor,
         )
         return [bool(v) for v in mask.squeeze(-1).tolist()]
 
@@ -391,10 +617,20 @@ class QueueDriveMaskAlongPathTest(unittest.TestCase):
             self._drive([self._S_STOP - 0.5, 6.5, 0.5], [True] * 3), [True, True, True]
         )
 
-    def test_picking_the_lead_restarts_the_whole_belt(self) -> None:
+    def test_picking_the_lead_waits_for_drop_before_restarting(self) -> None:
         queued = [self._S_STOP - 0.75 * index for index in range(5)]
         self.assertEqual(self._drive(queued, [True] * 5), [False] * 5)
-        released = self._drive(queued, [False, True, True, True, True])
+        held = self._drive(
+            queued,
+            [False, True, True, True, True],
+            transfer_complete=False,
+        )
+        self.assertEqual(held, [False] * 5)
+        released = self._drive(
+            queued,
+            [False, True, True, True, True],
+            transfer_complete=True,
+        )
         self.assertEqual(released, [False, True, True, True, True])
 
     def test_anti_collision_uses_each_box_half_length(self) -> None:
@@ -411,6 +647,9 @@ class QueueDriveMaskAlongPathTest(unittest.TestCase):
 
     def test_loop_mode_never_stops_the_belt(self) -> None:
         self.assertEqual(self._drive([13.0], [True], s_stop=None), [True])
+        self.assertEqual(
+            self._drive([13.0], [True], s_stop=None, transfer_complete=False), [True]
+        )
         self.assertEqual(
             self._drive([13.0, 12.9], [True, True], s_stop=None), [True, False]
         )

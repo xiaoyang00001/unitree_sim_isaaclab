@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 import torch
 
 import isaaclab.sim as sim_utils
+from isaaclab.managers import ManagerTermBase
 from isaaclab.sim.utils import clone
 from isaacsim.core.utils.stage import get_current_stage
 from pxr import Gf, PhysxSchema, Usd, UsdPhysics
@@ -248,15 +249,32 @@ def drive_belt_boxes_on_conveyor(
     path_radius: float = 1.40,
     path_s_origin_x: float = 0.0,
     extra_rects: tuple[tuple[float, float, float, float], ...] = (),
+    # —— 取放闭环门控（仅停止式 legacy 后端启用） ——
+    drop_gate_enabled: bool = False,
+    drop_root_zones: tuple[
+        tuple[float, float, float, float, float, float], ...
+    ] = (),
+    drop_completed: torch.Tensor | None = None,
+    drop_dwell_counts: torch.Tensor | None = None,
+    drop_dwell_steps: int = 10,
+    drop_max_linear_speed: float = 0.10,
+    drop_max_angular_speed: float = 0.50,
 ):
-    """把纸箱队列沿带面送到工位，一次只放行一个，后面的排队等着。
+    """把纸箱队列沿带面送到工位，投框完成后才放行下一格。
 
     与 ``drive_totes_on_conveyor``（每个筐各自独立判断 ``y > y_stop``）的差别只在
-    停止线怎么算：队首停在工位，后车被前车顶住排队，工位那个被拎走后下一个自动
-    补位。判据本身在 ``conveyor_queue``（无 Isaac 依赖、有单测）：直线形态用
+    停止线怎么算：队首停在工位，后车原地保持队形；工位箱被拎走后仍保持停线，只有
+    箱底进入 robot_1/robot_2 身后的任一目标分拣框，下一格才补位。判据本身在
+    ``conveyor_queue``（无 Isaac 依赖、有单测）：直线形态用
     ``queue_drive_mask``（裸 y），弯道形态用 ``path_progress`` +
     ``queue_drive_mask_along_path``（沿路径距离 s），完整推导见各自 docstring。
     本函数只负责读位置、写速度。
+
+    投框门为每个箱子维护完成锁存：箱底进入目标框接收区，且线速度/角速度连续
+    ``drop_dwell_steps`` 个事件周期低于阈值后才算完成。于是搬运中、抛入后仍在弹跳或
+    掉地上的箱子都会继续按住整带；锁存后即使框内堆叠、碰撞或清框也不会反悔。
+    ``DriveBeltBoxesOnConveyor.reset`` 在整场景/F12/DDS 复位时按 env 清零锁存；状态
+    只存在物体权威端，不需要增加双机同步字段。
 
     弯道形态下箱子**不旋转**（保持世界朝向）：速度矢量沿路径航向逐步更新，
     姿态不动——双机同步/镜像端零改动，观感是箱子"平移着拐弯"。
@@ -301,7 +319,35 @@ def drive_belt_boxes_on_conveyor(
         y_range=y_range,
         extra_rects=extra_rects if path_enabled else (),
     )  # (N, E)
-    # (N, 1)：广播到 (N, E)。每步重建一个 5 元素张量的成本可忽略，换来事件层无状态。
+    transfer_complete = None
+    if drop_gate_enabled:
+        if not drop_root_zones:
+            raise ValueError("启用纸箱投框放行门时必须配置 drop_root_zones")
+        if drop_completed is None or drop_dwell_counts is None:
+            raise ValueError("启用纸箱投框放行门时必须由有状态事件 term 提供投放锁存")
+        inside_drop_zone = conveyor_queue.inside_drop_zone_mask(
+            pos_local,
+            root_zones=drop_root_zones,
+        )
+        root_vel = torch.stack([obj.data.root_vel_w[env_ids] for obj in objects], dim=0)
+        settled_in_drop_zone = (
+            inside_drop_zone
+            & ((root_vel[..., :3] * root_vel[..., :3]).sum(dim=-1) <= drop_max_linear_speed**2)
+            & ((root_vel[..., 3:] * root_vel[..., 3:]).sum(dim=-1) <= drop_max_angular_speed**2)
+        )
+        completed, dwell_counts = conveyor_queue.update_drop_completion_latch(
+            drop_completed[:, env_ids],
+            drop_dwell_counts[:, env_ids],
+            settled_in_drop_zone,
+            dwell_steps=drop_dwell_steps,
+        )
+        drop_completed[:, env_ids] = completed
+        drop_dwell_counts[:, env_ids] = dwell_counts
+        transfer_complete = conveyor_queue.transfer_complete_mask(
+            on_belt,
+            completed,
+        )  # (E,)
+    # (N, 1)：广播到 (N, E)。箱型通常只有十余个，每周期重建此小张量成本可忽略。
     half_len = pos_local.new_tensor(half_lengths).unsqueeze(-1)
     speed = -velocity_y  # velocity_y 约定为负（-Y 方向）；沿路径恒速取其模。
 
@@ -320,7 +366,12 @@ def drive_belt_boxes_on_conveyor(
             s_arc_end = (path_corner_center[0] - path_s_origin_x) + path_radius * 1.5707963267948966
             s_stop = s_arc_end + (path_corner_center[1] - y_stop)
         drive = conveyor_queue.queue_drive_mask_along_path(
-            ss, on_belt, half_len, s_stop=s_stop, queue_gap=queue_gap
+            ss,
+            on_belt,
+            half_len,
+            s_stop=s_stop,
+            queue_gap=queue_gap,
+            transfer_complete=transfer_complete,
         )  # (N, E)
     else:
         hx = hy = None
@@ -330,6 +381,7 @@ def drive_belt_boxes_on_conveyor(
             half_len,
             y_stop=y_stop,
             queue_gap=queue_gap,
+            transfer_complete=transfer_complete,
         )  # (N, E)
 
     for index, obj in enumerate(objects):
@@ -344,6 +396,83 @@ def drive_belt_boxes_on_conveyor(
             vel[:, 0] = torch.where(drive_i, torch.zeros_like(vel[:, 0]), vel[:, 0])
             vel[:, 1] = torch.where(drive_i, torch.full_like(vel[:, 1], velocity_y), vel[:, 1])
         obj.write_root_velocity_to_sim(vel, env_ids=env_ids)
+
+
+class DriveBeltBoxesOnConveyor(ManagerTermBase):
+    """带 per-box 稳定投框锁存的纸箱驱动事件 term。"""
+
+    def __init__(self, cfg, env: ManagerBasedEnv):
+        super().__init__(cfg, env)
+        num_objects = len(cfg.params.get("object_names", ()))
+        self._drop_completed = torch.zeros(
+            (num_objects, env.num_envs),
+            device=env.device,
+            dtype=torch.bool,
+        )
+        self._drop_dwell_counts = torch.zeros(
+            (num_objects, env.num_envs),
+            device=env.device,
+            dtype=torch.int16,
+        )
+
+    def reset(self, env_ids=None) -> None:
+        ids = slice(None) if env_ids is None else env_ids
+        self._drop_completed[:, ids] = False
+        self._drop_dwell_counts[:, ids] = 0
+
+    def __call__(
+        self,
+        env: ManagerBasedEnv,
+        env_ids: torch.Tensor | None,
+        object_names: tuple[str, ...] = (),
+        velocity_y: float = -0.3,
+        enabled: bool = True,
+        belt_top_z: float = BELT_TOP_Z,
+        z_tolerance: float = 0.15,
+        x_range: tuple[float, float] = (-6.17, -5.07),
+        y_range: tuple[float, float] = (BELT_Y_MIN, BELT_Y_MAX),
+        y_stop: float | None = None,
+        queue_gap: float = 0.07,
+        half_lengths: tuple[float, ...] = (),
+        path_enabled: bool = False,
+        path_corner_center: tuple[float, float] = (0.0, 0.0),
+        path_radius: float = 1.40,
+        path_s_origin_x: float = 0.0,
+        extra_rects: tuple[tuple[float, float, float, float], ...] = (),
+        drop_gate_enabled: bool = False,
+        drop_root_zones: tuple[
+            tuple[float, float, float, float, float, float], ...
+        ] = (),
+        drop_dwell_steps: int = 10,
+        drop_max_linear_speed: float = 0.10,
+        drop_max_angular_speed: float = 0.50,
+    ) -> None:
+        drive_belt_boxes_on_conveyor(
+            env,
+            env_ids,
+            object_names=object_names,
+            velocity_y=velocity_y,
+            enabled=enabled,
+            belt_top_z=belt_top_z,
+            z_tolerance=z_tolerance,
+            x_range=x_range,
+            y_range=y_range,
+            y_stop=y_stop,
+            queue_gap=queue_gap,
+            half_lengths=half_lengths,
+            path_enabled=path_enabled,
+            path_corner_center=path_corner_center,
+            path_radius=path_radius,
+            path_s_origin_x=path_s_origin_x,
+            extra_rects=extra_rects,
+            drop_gate_enabled=drop_gate_enabled,
+            drop_root_zones=drop_root_zones,
+            drop_completed=self._drop_completed,
+            drop_dwell_counts=self._drop_dwell_counts,
+            drop_dwell_steps=drop_dwell_steps,
+            drop_max_linear_speed=drop_max_linear_speed,
+            drop_max_angular_speed=drop_max_angular_speed,
+        )
 
 
 def drive_totes_on_conveyor(

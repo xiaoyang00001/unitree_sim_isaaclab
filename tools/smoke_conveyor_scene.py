@@ -19,8 +19,8 @@ ISAACLAB_CONVEYOR_ENDLESS=off 回退直线带头（旧行为，y 判定）。
   # Phase 0 单机场景冒烟（不建 socket）
   python tools/smoke_conveyor_scene.py --steps 1600
 
-  # 节拍验收：第 1000 步取走队首，断言下一个补位到工位
-  python tools/smoke_conveyor_scene.py --steps 1600 --pick-lead-at 1000
+  # 取放节拍验收：第 1000 步取走队首，保持 50 步停线，再放入蓝框并断言下一个补位
+  python tools/smoke_conveyor_scene.py --steps 1600 --pick-lead-at 1000 --place-lead-after 50
 
   # PhysX Surface Velocity 实验 A/B（固定由 ID=1 驱动，默认 50 mm 容差）
   # ⚠️ surface_velocity 只驱动主线碰撞面，弯道形态未验证（README 已知限制）
@@ -74,10 +74,26 @@ parser.add_argument(
     metavar="STEP",
     help=(
         "在第 STEP 步把队首箱子搬离带面，模拟机器人取件；"
-        "随后断言后一个箱子补位到工位（流水线节拍验收）"
+        "保持停线后再放入目标框，待稳定驻留后断言后一个箱子补位到工位"
     ),
 )
+parser.add_argument(
+    "--place-lead-after",
+    type=int,
+    default=50,
+    metavar="STEPS",
+    help="配合 --pick-lead-at：取走后保持 STEPS 步，再把箱子放入 robot_1 侧蓝框（默认 50）",
+)
 args = parser.parse_args()
+if args.place_lead_after < 0:
+    parser.error("--place-lead-after 不能为负数")
+if args.pick_lead_at is not None and args.drive_mode != "legacy":
+    parser.error("--pick-lead-at 的投框门验收仅支持 legacy 后端")
+if (
+    args.pick_lead_at is not None
+    and args.pick_lead_at + args.place_lead_after > args.steps
+):
+    parser.error("--steps 必须覆盖 pick-lead-at + place-lead-after，才能完成投框放行验收")
 
 # 环境变量必须在 import tasks 之前定型（env cfg 在 import 时读取）。
 os.environ["ISAACLAB_SCENE_SYNC"] = args.sync
@@ -176,7 +192,7 @@ def main() -> int:
         parts.append(f"peer_robot x={pp[0]:.3f} y={pp[1]:.3f} z={pp[2]:.3f}")
         print(f"[smoke {tag}] " + " | ".join(parts), flush=True)
 
-    def pick_lead_box() -> str | None:
+    def pick_lead_box() -> tuple[str, object] | None:
         """把队首搬离带面，模拟机器人取件。
 
         直接写位姿而不是真去抓：本脚本没有操作臂，而队列判据只看"还在不在带面
@@ -198,7 +214,23 @@ def main() -> int:
         lead_obj.write_root_pose_to_sim(pose)
         lead_obj.write_root_velocity_to_sim(torch.zeros_like(lead_obj.data.root_vel_w))
         print(f"[smoke] 第 {args.pick_lead_at} 步取走队首 {lead_name}（搬到带面外）", flush=True)
-        return lead_name
+        return lead_name, lead_obj
+
+    def place_lead_box(name: str, obj) -> None:
+        """把冒烟测试中的队首放进 robot_1 侧蓝色分拣框接收区。"""
+
+        zone = conveyor_env_cfg.BELT_BOX_DROP_ROOT_ZONES[1]
+        pose = obj.data.root_state_w[:, :7].clone()
+        pose[:, 0] = (zone[0] + zone[1]) * 0.5
+        pose[:, 1] = (zone[2] + zone[3]) * 0.5
+        pose[:, 2] = (zone[4] + zone[5]) * 0.5
+        obj.write_root_pose_to_sim(pose)
+        obj.write_root_velocity_to_sim(torch.zeros_like(obj.data.root_vel_w))
+        print(
+            f"[smoke] 第 {args.pick_lead_at + args.place_lead_after} 步把 {name} 放入 "
+            "robot_1 侧蓝色分拣框，开始稳定驻留判定",
+            flush=True,
+        )
 
     snapshot("start")
     start_xy = {
@@ -207,6 +239,10 @@ def main() -> int:
     }
     start_p = {name: _progress(*xy) for name, xy in start_xy.items()}
     picked_name: str | None = None
+    picked_obj = None
+    hold_lead_name: str | None = None
+    hold_start_p: float | None = None
+    hold_displacement: float | None = None
 
     t0 = monotonic()
     for step in range(1, args.steps + 1):
@@ -214,7 +250,35 @@ def main() -> int:
         for term in pump_terms:
             term.pump()
         if args.pick_lead_at is not None and step == args.pick_lead_at:
-            picked_name = pick_lead_box()
+            picked = pick_lead_box()
+            if picked is not None:
+                picked_name, picked_obj = picked
+                remaining = [name for name in watched_names if name != picked_name]
+                if remaining:
+                    hold_lead_name = max(
+                        remaining,
+                        key=lambda name: _progress(
+                            float(watched[name].data.root_pos_w[0, 0]),
+                            float(watched[name].data.root_pos_w[0, 1]),
+                        ),
+                    )
+                    hold_start_p = _progress(
+                        float(watched[hold_lead_name].data.root_pos_w[0, 0]),
+                        float(watched[hold_lead_name].data.root_pos_w[0, 1]),
+                    )
+        if (
+            picked_name is not None
+            and picked_obj is not None
+            and args.pick_lead_at is not None
+            and step == args.pick_lead_at + args.place_lead_after
+        ):
+            if hold_lead_name is not None and hold_start_p is not None:
+                hold_end_p = _progress(
+                    float(watched[hold_lead_name].data.root_pos_w[0, 0]),
+                    float(watched[hold_lead_name].data.root_pos_w[0, 1]),
+                )
+                hold_displacement = hold_end_p - hold_start_p
+            place_lead_box(picked_name, picked_obj)
         if step % max(1, args.report_every) == 0:
             snapshot(f"step={step}")
     elapsed = monotonic() - t0
@@ -228,8 +292,8 @@ def main() -> int:
     hz = args.steps / max(elapsed, 1e-6)
     print(f"[smoke] {args.steps} steps in {elapsed:.1f}s -> env_hz={hz:.1f}", flush=True)
 
-    # 被取走的那个已经不在带面上，自然退出全部带面判定；剩下的按队列重新编号，
-    # 于是"下一个补位到工位"就落在 graded_names[0] 的槽位断言里。
+    # 被取走的箱子已经放进目标框并完成稳定驻留，退出带面评分；剩下的按队列重新
+    # 编号，于是“稳定投框后下一个补位到工位”落在 graded_names[0] 的槽位断言里。
     graded_names = [name for name in watched_names if name != picked_name]
     moved = {name: round(end_p[name] - start_p[name], 4) for name in graded_names}
     on_belt = {name: abs(end_z[name] - 0.775) < 0.05 for name in graded_names}
@@ -254,6 +318,15 @@ def main() -> int:
         ok = all(m > 0.1 for m in moved.values())
         if not ok:
             print("[smoke] 镜像端筐未动：对端 ID=1 未在跑？（单独跑镜像端时此结果为预期）", flush=True)
+
+    if hold_displacement is not None:
+        hold_ok = abs(hold_displacement) < 0.05
+        print(
+            f"[smoke] 搬运等待期：{hold_lead_name} 位移 {hold_displacement:.4f} m "
+            f"（上限 0.05）| {'PASS' if hold_ok else 'FAIL'}",
+            flush=True,
+        )
+        ok = ok and hold_ok
 
     if (
         expected_stop_y is not None
@@ -319,7 +392,7 @@ def main() -> int:
             )
         if picked_name is not None:
             print(
-                f"[smoke] 节拍验收：取走 {picked_name} 后 {graded_names[0]} 应补位到工位 "
+                f"[smoke] 节拍验收：{picked_name} 稳定入框后 {graded_names[0]} 应补位到工位 "
                 f"y={expected_stop_y:.3f}，实测 y={end_xy[graded_names[0]][1]:.3f}",
                 flush=True,
             )

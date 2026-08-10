@@ -81,7 +81,7 @@ from . import endless_intake
 from .endless_intake import resolve_endless_intake
 from .peer_visual_lod import JOINT_NAMES as PEER_VISUAL_LOD_JOINT_NAMES
 from .peer_visual_lod import resolve_peer_robot_mode
-from .scene_layout import resolve_scene_layout
+from .scene_layout import BELT_BOX_DROP_ROOT_ZONES, resolve_scene_layout
 from .scene_props import resolve_scene_props
 from .tote_assets import resolve_tote_asset
 from .zmq_scene_sync import ZmqEnvResetSyncActionCfg, ZmqSceneStateSyncActionCfg
@@ -526,6 +526,20 @@ else:
     if CONVEYOR_DRIVE_MODE == "surface_velocity":
         BACKGROUND_MODE += "(surface_forced)"
 
+# 默认停止式 legacy 流程的取放闭环：队首离带后继续停线，进入 robot_1/robot_2
+# 身后的 blue_sorting_bin_01/02 才放行下一格。只在目标框物理仍存在且坐标与 clean
+# 布局一致时启用；surface_velocity、循环模式和诊断资产继续保留各自原语义。
+CONVEYOR_BELT_BOX_DROP_GATE_ENABLED = (
+    bool(CONVEYOR_BELT_BOX_NAMES)
+    and CONVEYOR_LEGACY_ENABLED
+    and CONVEYOR_Y_STOP is not None
+    and not CONVEYOR_VISUAL_ONLY_ASSET_ENABLED
+    and BACKGROUND_MODE in {"visual_only", "workcell_lite"}
+)
+CONVEYOR_BELT_BOX_DROP_DWELL_STEPS = 10  # interval=20 ms，即稳定驻留约 0.2 s
+CONVEYOR_BELT_BOX_DROP_MAX_LINEAR_SPEED = 0.10
+CONVEYOR_BELT_BOX_DROP_MAX_ANGULAR_SPEED = 0.50
+
 CONVEYOR_GUIDE_THICKNESS = 0.04
 CONVEYOR_GUIDE_HEIGHT = 0.12
 
@@ -659,7 +673,7 @@ def _make_endless_xleg_cfg(index: int) -> AssetBaseCfg:
 BACKGROUND_LOCK_PRIM_NAMES = ("blue_sorting_bin_02",)
 
 
-def _log_scene_layout() -> None:
+def _log_scene_layout(*, drop_gate_enabled: bool) -> None:
     """启动就把身份、布局与驱动的实际生效值打出来，省得靠现象猜配置。"""
 
     tag = "[conveyor_env_cfg]"
@@ -780,8 +794,19 @@ def _log_scene_layout() -> None:
         print(f"{tag}   箱型: {_sizes}")
         print(
             f"{tag}   排队净间隙 queue_gap={BELT_BOX_QUEUE_GAP:.3f} m"
-            "（按各箱半长算，两种箱型混排时空隙恒定）；队首停工位，抓走后下一个自动补位"
+            "（按各箱半长算，两种箱型混排时空隙恒定）"
         )
+        if drop_gate_enabled:
+            print(
+                f"{tag}   纸箱放行: 队首离带后继续停线，在两侧蓝色分拣框内稳定 "
+                f"{CONVEYOR_BELT_BOX_DROP_DWELL_STEPS * 0.02:.1f}s 才补位"
+                f"（{len(BELT_BOX_DROP_ROOT_ZONES)} 个接收区；完成后锁存至复位）"
+            )
+        elif CONVEYOR_LEGACY_ENABLED and CONVEYOR_Y_STOP is not None:
+            print(
+                f"{tag}   纸箱放行: 投框门关闭（background={BACKGROUND_MODE}；"
+                "当前诊断组合不保证目标框物理/坐标）"
+            )
     if not CONVEYOR_DRIVE.requested_enabled:
         drive = "关 [ISAACLAB_CONVEYOR_ENABLED=0]"
     elif not CONVEYOR_ENABLED:
@@ -1651,13 +1676,14 @@ class ConveyorEventsCfg:
         },
     )
 
-    # 纸箱队列走带挡停的驱动：队首停在工位等抓取，后面的按 queue_pitch 排队，
-    # 工位那个被拎走后下一个自动补位（判据全在当前帧位置里，无状态机）。
+    # 纸箱队列走带挡停的驱动：队首停在工位等抓取，后面的按 queue_pitch 排队；
+    # 工位箱被拎走后仍停线，箱底在两侧蓝色分拣框之一稳定驻留后才让下一个补位。
+    # 每箱完成位锁存到 F12/DDS/env reset，避免堆叠、碰撞或清框导致已经完成的周期反悔。
     # surface_velocity 后端不需要它——那边队列是后车撞前车物理涌现出来的。
     # 入口弯道生效时切两段式路径驱动（西拐）：支线 +X → 圆角弧 → 主线 -Y，排队
     # 坐标是沿路径距离 s，带面判据是主线矩形 ∪ 拐角/支线附加矩形；箱子不旋转。
     drive_belt_boxes = EventTerm(
-        func=conveyor_events.drive_belt_boxes_on_conveyor,
+        func=conveyor_events.DriveBeltBoxesOnConveyor,
         mode="interval",
         interval_range_s=(0.02, 0.02),
         params={
@@ -1673,6 +1699,11 @@ class ConveyorEventsCfg:
             "path_radius": endless_intake.CORNER_RADIUS,
             "path_s_origin_x": endless_intake.S_ORIGIN_X,
             "extra_rects": endless_intake.ON_BELT_EXTRA_RECTS,
+            "drop_gate_enabled": CONVEYOR_BELT_BOX_DROP_GATE_ENABLED,
+            "drop_root_zones": BELT_BOX_DROP_ROOT_ZONES,
+            "drop_dwell_steps": CONVEYOR_BELT_BOX_DROP_DWELL_STEPS,
+            "drop_max_linear_speed": CONVEYOR_BELT_BOX_DROP_MAX_LINEAR_SPEED,
+            "drop_max_angular_speed": CONVEYOR_BELT_BOX_DROP_MAX_ANGULAR_SPEED,
         },
     )
 
@@ -1789,6 +1820,10 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
             if "plain_ground" in _PERF_AB:
                 self.scene.background = None
                 self.events.lock_sorting_bins = None
+                # 诊断地平面没有 blue_sorting_bin_01/02；保留投框门会让队首一离带
+                # 就永久锁线。这里只关闭门控，legacy 速度 A/B 行为保持可测。
+                if self.events.drive_belt_boxes is not None:
+                    self.events.drive_belt_boxes.params["drop_gate_enabled"] = False
                 self.scene.ground = AssetBaseCfg(
                     prim_path="/World/GroundPlane",
                     spawn=sim_utils.GroundPlaneCfg(
@@ -1883,4 +1918,8 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
                     f"({self.sim.device})：kinematic 物体位姿写入可能不生效，"
                     "镜像物体或将冻结——请用 --device cpu"
                 )
-        _log_scene_layout()
+        _drop_gate_enabled = (
+            self.events.drive_belt_boxes is not None
+            and bool(self.events.drive_belt_boxes.params.get("drop_gate_enabled", False))
+        )
+        _log_scene_layout(drop_gate_enabled=_drop_gate_enabled)
