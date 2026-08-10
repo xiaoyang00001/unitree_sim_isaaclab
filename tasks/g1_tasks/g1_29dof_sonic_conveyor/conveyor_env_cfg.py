@@ -74,6 +74,7 @@ from .conveyor_drive import (
     BELT_X_CENTER,
     BELT_Y_MAX,
     BELT_Y_MIN,
+    CONVEYOR_NORTH_SHIFT_Y,
     resolve_conveyor_drive,
 )
 from . import endless_intake
@@ -156,10 +157,11 @@ SCENE_PROPS = resolve_scene_props(
     totes_on_conveyor=TOTES_ON_CONVEYOR,
     belt_box_names=BELT_BOX_NAMES,
 )
-# 看不到头的入料端：西拐弯道 + X 支线（纯视觉资产 + kinematic 托面延伸 + 沿路径
-# 距离的两段式驱动；**不新增货架**，遮挡依赖背景既有结构——洞见 endless_intake
-# docstring 与 README 已知限制）。只在流水线布局且道具策略为 layout 时生成——
-# =0 拖车组与 legacy_props 空车都落在弯道占位内（几何依据见 endless_intake）。
+# 看不到头的入料端：西拐弯道 + X 支线×5（纯视觉资产 + kinematic 托面延伸 + 沿
+# 路径距离的两段式驱动；**不新增货架**，遮挡依赖背景既有结构——Δ=0.25 整体北移
+# 让支线从货架排 B 北侧擦过、回生点深藏排 B 后面：E2 全遮 / E1 缝隙残余，见
+# endless_intake docstring 与 README 已知限制）。只在流水线布局且道具策略为
+# layout 时生成——=0 拖车组与 legacy_props 空车都落在弯道占位内。
 ENDLESS_INTAKE = resolve_endless_intake(
     os.environ,
     totes_on_conveyor=TOTES_ON_CONVEYOR,
@@ -323,10 +325,11 @@ def _env_reset_sync_cfg() -> ZmqEnvResetSyncActionCfg:
 #
 #   1 = 流水线布局：两塑料筐缩小一半（scale 0.005）放上流水线滚轮面的**入料端**，
 #       由 drive_totes 事件沿 -Y 送到第二段工位停住；双机站第二段两侧
-#       (x=-4.54 / -6.7, y=14.148)，pushcart_2 空车留在 y=19.39363
-#       （⚠️ robot_1 x=-4.54 是 2026-08-09 的对称化站位，不是 01cdfaf 的 -4.75）。
+#       (x=-4.54 / -6.7, y=14.398)，pushcart_2 空车留在 y=19.64363
+#       （⚠️ robot_1 x=-4.54 是 2026-08-09 的对称化站位，不是 01cdfaf 的 -4.75；
+#       所有世界 y 已含整体北移 Δ=0.25）。
 #   0 = 原布局：两筐恢复原尺寸（scale 0.01）叠放回 pushcart_2 拖车顶面
-#       (x=-5.62, y=18.75)；双机回到拖车两侧工位；筐被机器人搬上入料端后
+#       (x=-5.62, y=19.0)；双机回到拖车两侧工位；筐被机器人搬上入料端后
 #       自动流到出料段停住（作业闭环）。
 #
 # conveyor_collider 碰撞板常驻不随开关回退；背景 USD 里烘入的桌子/料箱平移
@@ -344,13 +347,13 @@ ROBOT_2_X = SCENE_LAYOUT.robot_2_x
 PUSHCART_2_POS = list(SCENE_LAYOUT.pushcart_2_pos)
 
 # 两塑料筐在流水线上的出生 y：贴着入料端排布，保持原来 0.6 m 的前后错位
-# （tote1 在前，沿 -Y 先到工位）。碰撞板 y 跨度 [10.19, 18.22]，筐在 y 方向半长
-# 0.1 m，所以后车最多到 18.0 左右；再往上会悬出板尾。
+# （tote1 在前，沿 -Y 先到工位）。碰撞板 y 跨度 [10.44, 18.47]，筐在 y 方向半长
+# 0.1 m，所以后车最多到 18.25 左右；再往上会悬出板尾。
 #
 # ⚠️ 这同时是**复位落点**：整场景复位（手动 rt/reset_pose/cmd、倒地自动、对端同步）
 # 走的是 mdp.reset_scene_to_default，把筐写回这里的 init_state。放在入料端才能让
 # 一次复位＝重新完整流一遍。早期取 16.4/17.0 时复位只剩 2.25/2.85 m 的行程。
-# 到工位 14.148 分别是 3.25 / 3.85 m。筐是被拖拽滑行不是被带动，实测速度约
+# 到工位 14.398 分别是 3.25 / 3.85 m。筐是被拖拽滑行不是被带动，实测速度约
 # 0.244 m/s（低于 velocity_y 的 0.3，见 README「已知限制 / 待实测」），所以约
 # 13.3 / 15.8 s 到位，各自越过 y_stop 约 11 mm 后被动摩擦停住
 # （smoke 900 步实测 14.136 / 14.137）。
@@ -528,7 +531,7 @@ def _make_conveyor_side_guide_cfg(prim_name: str, x: float) -> AssetBaseCfg:
 
 
 # ==================================================================
-# 看不到头的入料端：A02 西拐弯道 + A05×3 X 支线（全部 AssetBaseCfg →
+# 看不到头的入料端：A02 西拐弯道 + A05×5 X 支线（全部 AssetBaseCfg →
 # scene.extras，不进 scene_props/同步清单）+ 两块 kinematic 托面延伸。
 # 不新增货架——遮挡依赖背景既有结构（洞已记录在 README 已知限制）。
 # ==================================================================
@@ -662,6 +665,8 @@ def _log_scene_layout() -> None:
         f"{tag}   拖车/筐 x={PUSHCART_2_POS[0]:.3f} y={PUSHCART_2_POS[1]:.3f}"
         f" | robot_1 x={ROBOT_1_X:.3f} robot_2 x={ROBOT_2_X:.3f} y={ROBOT_WORKSTATION_Y:.3f}"
         f" | 流水线中线 x={BELT_X_CENTER:.3f} 入料端 y={BELT_Y_MAX:.3f}"
+        f" | 整体北移 Δ={CONVEYOR_NORTH_SHIFT_Y:.2f}"
+        "（支线越过货架排 B 所需；wrapper 组变换/装饰/地贴同 Δ）"
     )
     if CONVEYOR_TOTE_NAMES and TOTES_ON_CONVEYOR:
         print(
@@ -681,7 +686,8 @@ def _log_scene_layout() -> None:
             f"y[{endless_intake.CURVE_AABB[1][0]:.3f},{endless_intake.CURVE_AABB[1][1]:.3f}]"
             f"（南向母口套带头公头 {endless_intake.PLUG_DEPTH*1000:.0f}mm）"
             f" | 支线中线 y={endless_intake.BRANCH_LANE_Y:.4f} 端头 x={endless_intake.XLEG_AABBS[-1][0][0]:.3f}"
-            f"（距排B护板 {endless_intake.XLEG_AABBS[-1][0][0] - endless_intake.RACK_B_GUARD_EAST_X:.3f}）"
+            f"（从排B北侧擦过：南缘对护板北缘净距 "
+            f"{endless_intake.XLEG_AABBS[-1][1][0] - endless_intake.RACK_B_GUARD_NORTH_Y:.4f}）"
         )
         print(
             f"{tag}     托面延伸: 拐角 x[{endless_intake.CORNER_PLATE_X_RANGE[0]:.2f},"
@@ -694,7 +700,8 @@ def _log_scene_layout() -> None:
         )
         print(
             f"{tag}     回生点 ({endless_intake.RESPAWN_XY[0]:.2f},{endless_intake.RESPAWN_XY[1]:.4f})"
-            "（支线最深处；⚠️ 零新增遮挡下无全遮窗，出生/回生远距可见——README 已知限制）"
+            "（支线最深处，藏在货架排 B 后面：E2 东上角判据全遮（裕量 s=0.09）；"
+            "⚠️ E1 受排 B 首层 216mm 通视缝影响无全遮解，顶面条带经缝可见——README 已知限制）"
         )
         if CONVEYOR_DRIVE_MODE == "surface_velocity":
             print(
@@ -1249,10 +1256,11 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
 
     # ------------------------------------------------------------------
     # 看不到头的入料端（=1 且 layout 道具时生成；开关/几何见 endless_intake）：
-    # A02 弯道套住带头公头向西拐 90°，三段 A05 短直段接成 X 支线伸向背景货架
-    # 排 B 方向。全部 AssetBaseCfg（scene.extras），输送机件纯视觉（coll=0/
-    # rigid=0，裸厘米 ⇒ scale=0.01）；另加两块 kinematic 托面接住弧段/支线上的
-    # 箱子。**零新增货架/遮挡件**（用户要求）。
+    # A02 弯道套住带头公头向西拐 90°，五段 A05 短直段接成 X 支线，从背景货架
+    # 排 B 北侧擦过、端头伸到排 B/叉车后面（Δ=0.25 整体北移换来的通道）。
+    # 全部 AssetBaseCfg（scene.extras），输送机件纯视觉（coll=0/rigid=0，
+    # 裸厘米 ⇒ scale=0.01）；另加两块 kinematic 托面接住弧段/支线上的箱子。
+    # **零新增货架/遮挡件**（用户要求）。
     # ------------------------------------------------------------------
     conveyor_curve: AssetBaseCfg | None = (
         _make_endless_visual_cfg(
@@ -1274,6 +1282,12 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
     conveyor_xleg_3: AssetBaseCfg | None = (
         _make_endless_xleg_cfg(2) if ENDLESS_INTAKE.enabled else None
     )
+    conveyor_xleg_4: AssetBaseCfg | None = (
+        _make_endless_xleg_cfg(3) if ENDLESS_INTAKE.enabled else None
+    )
+    conveyor_xleg_5: AssetBaseCfg | None = (
+        _make_endless_xleg_cfg(4) if ENDLESS_INTAKE.enabled else None
+    )
     conveyor_corner_plate: AssetBaseCfg | None = (
         _make_endless_plate_cfg(
             "ConveyorCornerPlate",
@@ -1294,13 +1308,14 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
     )
 
     # 纸箱推车组（外侧位 x=-6.8）：拖车 + 两纸箱 + 顶上的长条测试箱。
-    # y=19.39363（01cdfaf 原注释口径）。只有 legacy_props 模式才生成
-    # （该模式下弯道组被 endless_intake 布局门拦下，不会与空车同场）。
+    # y=19.64363（=01cdfaf 原注释口径 19.39363 + 整体北移 Δ=0.25，随线同移）。
+    # 只有 legacy_props 模式才生成（该模式下弯道组被 endless_intake 布局门拦下，
+    # 不会与空车同场）。
     pushcart: RigidObjectCfg | None = (
         RigidObjectCfg(
             prim_path="{ENV_REGEX_NS}/Pushcart",
             init_state=RigidObjectCfg.InitialStateCfg(
-                pos=[-6.8, 19.39363, 0.0], rot=[0.0, 0.0, 0.0, 1.0]
+                pos=[-6.8, 19.64363, 0.0], rot=[0.0, 0.0, 0.0, 1.0]
             ),
             spawn=_make_pushcart_spawn_cfg("pushcart"),
         )
@@ -1311,7 +1326,7 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
         RigidObjectCfg(
             prim_path="{ENV_REGEX_NS}/CartBox1",
             init_state=RigidObjectCfg.InitialStateCfg(
-                pos=[-6.8, 19.39363, 0.45], rot=[0.0, 0.0, 0.0, 1.0]
+                pos=[-6.8, 19.64363, 0.45], rot=[0.0, 0.0, 0.0, 1.0]
             ),
             spawn=_make_graspable_cart_box_spawn_cfg("cart_box1"),
         )
@@ -1322,7 +1337,7 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
         RigidObjectCfg(
             prim_path="{ENV_REGEX_NS}/CartBox2",
             init_state=RigidObjectCfg.InitialStateCfg(
-                pos=[-6.8, 19.39363, 0.60], rot=[0.0, 0.0, 0.0, 1.0]
+                pos=[-6.8, 19.64363, 0.60], rot=[0.0, 0.0, 0.0, 1.0]
             ),
             spawn=_make_graspable_cart_box_spawn_cfg("cart_box2"),
         )
@@ -1333,7 +1348,7 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
         RigidObjectCfg(
             prim_path="{ENV_REGEX_NS}/TestBox",
             init_state=RigidObjectCfg.InitialStateCfg(
-                pos=[-6.8, 19.39363, 1.095],
+                pos=[-6.8, 19.64363, 1.095],
                 rot=[0.0, 0.0, 0.0, 1.0],
             ),
             spawn=sim_utils.CuboidCfg(
@@ -1612,9 +1627,9 @@ class ConveyorEventsCfg:
         },
     )
 
-    # 循环模式的回生点：弯道生效时搬到 X 支线最深处 (-12.61, 19.8034)——观感上
-    # 离双机眼位 8~9.6 m、背景是排 B 满货+叉车（零新增遮挡下几何上仍可见，
-    # README 已知限制）；直线形态维持主线 y_respawn。
+    # 循环模式的回生点：弯道生效时搬到 X 支线最深处 (-16.66, 20.0534)，深藏在
+    # 货架排 B（近端还有叉车）后面——E2 眼位东上角判据全遮、E1 受排 B 首层
+    # 216mm 通视缝影响残余可见（README 已知限制）；直线形态维持主线 y_respawn。
     recycle_surface_totes = EventTerm(
         func=conveyor_events.recycle_totes_on_surface_conveyor,
         mode="interval",
@@ -1707,7 +1722,7 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
         # 镜头下方流过来。lookat 用动态常量，Δ/工位变了自动跟随。
         # ⚠️ 西拐弯道落地后复核过：弯道顶（南口门柱）世界 z≈1.169，低于 eye 高
         # 2.4，且机位在弯道东南、视线朝西南下方——俯视无碍。
-        self.viewer.eye = (-5.62, 19.0, 2.4)
+        self.viewer.eye = (-5.62, 19.25, 2.4)  # 随整体北移 Δ=0.25，保持相对构图
         self.viewer.lookat = (BELT_X_CENTER, ROBOT_WORKSTATION_Y, 1.0)
         if _PERF_AB:
             print(f"[conveyor_env_cfg] ⚠️ 性能 A/B 诊断开关生效: {sorted(_PERF_AB)}")

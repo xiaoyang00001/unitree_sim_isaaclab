@@ -132,7 +132,7 @@ class ConveyorDriveConfigTest(unittest.TestCase):
             )
         with self.assertRaisesRegex(ValueError, "停止分区超出"):
             resolve_conveyor_drive(
-                {"ISAACLAB_CONVEYOR_Y_STOP": "18.2"},
+                {"ISAACLAB_CONVEYOR_Y_STOP": "18.45"},
                 object_authority=True,
                 mirror_objects=False,
                 default_y_stop=14.148,
@@ -157,18 +157,18 @@ class ConveyorDriveConfigTest(unittest.TestCase):
 
 
 class ConveyorNorthShiftTest(unittest.TestCase):
-    """流水线整体北移 Δ 已回退为 0；常量与 _shifted 管线保留备日后平移。"""
+    """流水线整体北移 Δ=0.25：X 支线越过货架排 B 所需，wrapper 是几何落地处。"""
 
-    def test_delta_is_zero_after_the_scanner_rollback(self) -> None:
-        # 安检机方案（Δ=3.55 插隧道口）已回退：挡边只比带面高 29mm，箱子露顶，
-        # "藏进机柜"不成立。Δ=0 下带体回实测世界 y[10.188, 18.222]。
-        self.assertAlmostEqual(CONVEYOR_NORTH_SHIFT_Y, 0.0, places=6)
+    def test_delta_is_the_rack_row_b_bypass_shift(self) -> None:
+        # Δ=0.25 由"支线机身南缘 19.4779 对排 B 端护板北缘 19.3946 留 ≥50mm"
+        # 约束决定（最小可行 0.2167，取 50mm 整倍数）；带体世界 y[10.438, 18.472]。
+        self.assertAlmostEqual(CONVEYOR_NORTH_SHIFT_Y, 0.25, places=6)
 
     def test_belt_constants_are_the_measured_base_plus_delta(self) -> None:
         self.assertAlmostEqual(_MODULE.BELT_Y_MIN_BASE, 10.19, places=6)
         self.assertAlmostEqual(_MODULE.BELT_Y_MAX_BASE, 18.22, places=6)
-        self.assertAlmostEqual(BELT_Y_MIN, 10.19, places=6)
-        self.assertAlmostEqual(BELT_Y_MAX, 18.22, places=6)
+        self.assertAlmostEqual(BELT_Y_MIN, 10.44, places=6)
+        self.assertAlmostEqual(BELT_Y_MAX, 18.47, places=6)
         # 带长不随整体平移改变。
         self.assertAlmostEqual(BELT_Y_MAX - BELT_Y_MIN, 8.03, places=6)
 
@@ -177,19 +177,18 @@ class ConveyorNorthShiftTest(unittest.TestCase):
             {"ISAACLAB_CONVEYOR_Y_STOP": "0"},
             object_authority=True,
             mirror_objects=False,
-            default_y_stop=14.148,
+            default_y_stop=14.398,
         )
 
-        self.assertAlmostEqual(config.y_recycle, 10.6, places=6)
-        self.assertAlmostEqual(config.y_respawn, 18.0, places=6)
+        self.assertAlmostEqual(config.y_recycle, 10.85, places=6)
+        self.assertAlmostEqual(config.y_respawn, 18.25, places=6)
         self.assertGreater(config.y_recycle, BELT_Y_MIN)
         self.assertLess(config.y_respawn, BELT_Y_MAX)
 
-    def test_the_background_layer_authors_no_belt_shift(self) -> None:
-        """Δ=0 下 clean wrapper 不得再覆盖 v61 的 ConveyorBelt 组变换。
-
-        位移若要恢复必须同时改 conveyor_drive 常量与 wrapper（世界 y +Δ ≡ 背景
-        局部 x +Δ），这里守住"wrapper 无位移 override"的回退基线。
+    def test_the_background_layer_authors_the_same_belt_shift(self) -> None:
+        """clean wrapper 必须把 Δ 写进 ConveyorBelt 组变换（世界 y +Δ ≡ 背景局部
+        x +Δ），且按 v61 的 TRS-with-orient 形式回写并显式重述 xformOpOrder——
+        只写 translate 不写 order 时 matrix/TRS 混写会静默失效（东拐版实测坑）。
         """
 
         layer = (
@@ -207,9 +206,23 @@ class ConveyorNorthShiftTest(unittest.TestCase):
             layer,
             flags=re.S,
         )
-        if head is not None:
-            self.assertNotIn("xformOp:translate", head.group(1))
-            self.assertNotIn("xformOpOrder", head.group(1))
+        self.assertIsNotNone(head)
+        body = head.group(1)
+        shift = CONVEYOR_NORTH_SHIFT_Y
+        self.assertIn(
+            f"double3 xformOp:translate = ({shift:g}, 0, 0.58)", body
+        )
+        self.assertIn(
+            'uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]',
+            body,
+        )
+        # 三条地面标线是 /Root 下的兄弟 prim，不跟组走，必须各自 +Δ。
+        self.assertIn(f'over "FloorZone_KeepClear"\n    {{\n        double3 xformOp:translate = ({shift:g}, 0.94, 0.01)', layer)
+        self.assertIn(f'over "FloorZone_Robot"\n    {{\n        double3 xformOp:translate = ({4.5 + shift:g}, 1.5, 0.01)', layer)
+        self.assertIn(f'over "Stripe_Conv1"\n    {{\n        double3 xformOp:translate = ({1.0 + shift:g}, 2, 0.01)', layer)
+        # 15 件带面装饰物（active=false 但保留回退路径）各自 +Δ：抽两件锚点验证。
+        self.assertIn(f"double3 xformOp:translate = ({-2.5 + shift:g}, 0.937, 0.633)", layer)
+        self.assertIn(f"double3 xformOp:translate = ({4.19 + shift:g}, 0.937, 0.633)", layer)
 
 
 if __name__ == "__main__":

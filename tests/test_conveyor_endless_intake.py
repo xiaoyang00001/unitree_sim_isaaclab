@@ -63,7 +63,7 @@ class EndlessIntakeModeTest(unittest.TestCase):
             )
 
     def test_pushcart_layout_never_generates_the_curve(self) -> None:
-        """=0 的拖车组 (-5.62, 18.75) 约 83% 落在弯道占位内，必须被布局门拦下。"""
+        """=0 的拖车组 (-5.62, 19.0) 约 83% 落在弯道占位内，必须被布局门拦下。"""
 
         cfg = _EI.resolve_endless_intake(
             {"ISAACLAB_CONVEYOR_ENDLESS": "on"}, totes_on_conveyor=False, props_mode="layout"
@@ -73,7 +73,7 @@ class EndlessIntakeModeTest(unittest.TestCase):
         self.assertIn("=0", cfg.disabled_reason)
 
     def test_legacy_props_never_generates_the_curve(self) -> None:
-        """legacy_props 在 =1 下的空车 pushcart_2 (-5.4, 19.39363) 也在弯道足迹里。"""
+        """legacy_props 在 =1 下的空车 pushcart_2 (-5.4, 19.64363) 也在弯道足迹里。"""
 
         cfg = _EI.resolve_endless_intake(
             {}, totes_on_conveyor=True, props_mode="legacy_props"
@@ -123,39 +123,65 @@ class EndlessIntakeGeometryCrossTest(unittest.TestCase):
                 self.assertAlmostEqual(ty - 0.5014, _EI.BRANCH_LANE_Y, places=9)
 
     def test_curve_and_xleg_stay_clear_of_the_north_wall(self) -> None:
+        # 支线北缘 20.6289 距墙 2.977 m、弯道北缘 20.558 距墙 3.048 m（Δ=0.25 后）。
         for name, aabb in (("curve", _EI.CURVE_AABB), *(
             (f"xleg{i+1}", a) for i, a in enumerate(_EI.XLEG_AABBS)
         )):
             with self.subTest(name):
-                self.assertGreater(_EI.WALL_FACE_Y - aabb[1][1], 3.0)
+                self.assertGreater(_EI.WALL_FACE_Y - aabb[1][1], 2.9)
 
-    def test_branch_tail_respects_the_existing_rack_row(self) -> None:
-        """三段是硬上限：端头距排 B 端护板 0.318 m；南北向与货架排 x 分离。"""
+    def test_branch_skims_north_of_the_existing_rack_row(self) -> None:
+        """Δ=0.25 北移让支线从排 B **北侧**擦过：x 重叠、y 净距 83.3 mm。
 
-        tail_west = _EI.XLEG_AABBS[-1][0][0]
-        gap = tail_west - _EI.RACK_B_GUARD_EAST_X
-        self.assertGreater(gap, 0.25)
-        self.assertLess(gap, 0.40)
-        # 支线 AABB 南缘与排 B 北缘有 y 重叠（0.118），但 x 区间完全分离。
-        self.assertLess(_EI.XLEG_AABBS[-1][1][0], _EI.RACK_B_NORTH_Y)
-        self.assertGreater(tail_west, _EI.RACK_B_GUARD_EAST_X)
-        # 托面条带同样不越过护板。
-        self.assertGreater(_EI.BRANCH_PLATE_X_RANGE[0], _EI.RACK_B_GUARD_EAST_X + 0.3)
+        约束绑定项是端护板北缘 19.3946（mesh 实测）；架板北缘 19.3457、钢架柱
+        北缘 19.3073 更靠南，净距只会更大。五段端头 -17.038 已越过护板东缘
+        -13.386 约 3.65 m——旧版"三段是硬上限"的前提（南北向贴着排 B 走）已随
+        北移失效。
+        """
+
+        south = _EI.XLEG_AABBS[-1][1][0]
+        gap = south - _EI.RACK_B_GUARD_NORTH_Y
+        self.assertGreaterEqual(gap, 0.05)
+        self.assertAlmostEqual(gap, 0.0833, places=3)
+        # 端护板北缘在架板/钢架柱之北（绑定项排序），排 B 本体更不构成约束。
+        self.assertGreater(_EI.RACK_B_GUARD_NORTH_Y, _EI.RACK_B_NORTH_Y)
+        # 托面条带南缘离护板北缘 208.8 mm（x 现已重叠，靠 y 让开）。
+        self.assertGreaterEqual(
+            _EI.BRANCH_PLATE_Y_RANGE[0] - _EI.RACK_B_GUARD_NORTH_Y, 0.15
+        )
+        # 支线整体（含托面）都在排 B 北缘以北。
+        self.assertGreater(south, _EI.RACK_B_NORTH_Y)
+
+    def test_branch_clears_the_forklift_fork_tips(self) -> None:
+        """段 4/5 与叉车 x 重叠：南缘对货叉尖（北伸最远件）净距 156.9 mm。"""
+
+        south = _EI.XLEG_AABBS[-1][1][0]
+        # x 确有重叠（叉车在段 4/5 下方），才有必要验 y 净距。
+        overlap = min(_EI.FORKLIFT_X_RANGE[1], _EI.XLEG_AABBS[-1][0][1]) - max(
+            _EI.FORKLIFT_X_RANGE[0], _EI.XLEG_AABBS[-1][0][0]
+        )
+        self.assertGreater(overlap, 0.5)
+        gap = south - _EI.FORKLIFT_FORK_NORTH_Y
+        self.assertGreaterEqual(gap, 0.15)
+        self.assertAlmostEqual(gap, 0.1569, places=3)
 
     def test_cone4_clears_the_branch(self) -> None:
         (cx0, cx1), (cy0, _cy1) = _EI.CONE_4_AABB
-        xleg3 = _EI.XLEG_AABBS[-1]
+        xleg3 = _EI.XLEG_AABBS[2]
         x_overlap = min(cx1, xleg3[0][1]) - max(cx0, xleg3[0][0])
         y_gap = cy0 - xleg3[1][1]
-        # x 上几乎相切（允许有重叠），但 y 净距必须 > 0.8。
-        self.assertGreater(y_gap, 0.8)
+        # x 上几乎相切（允许有重叠），但 y 净距必须 > 0.55（实测 0.597）。
+        self.assertGreater(y_gap, 0.55)
         self.assertTrue(x_overlap < 0.05 or y_gap > 0.0)
 
     def test_layout_zero_conflicts_are_real(self) -> None:
-        """=0 拖车组与 legacy_props 空车确实落在弯道 xy 占位内——布局门的依据。"""
+        """=0 拖车组与 legacy_props 空车确实落在弯道 xy 占位内——布局门的依据。
+
+        两组道具都走 _shifted 管线随 Δ 同移，相对几何与 Δ=0 完全一致。
+        """
 
         (x0, x1), (y0, y1), _ = _EI.CURVE_AABB
-        for px, py in ((-5.62, 18.75), (-5.4, 19.39363)):
+        for px, py in ((-5.62, 19.0), (-5.4, 19.64363)):
             with self.subTest((px, py)):
                 self.assertTrue(x0 < px < x1)
                 self.assertTrue(y0 < py < y1)
@@ -190,24 +216,45 @@ class EndlessIntakePathTest(unittest.TestCase):
                 self.assertAlmostEqual(_EI.path_s_of_point(x, y), s, places=6)
 
     def test_workstation_maps_onto_the_main_segment(self) -> None:
-        s_stop = _EI.path_s_of_main_y(14.148)
+        # 工位 y=14.398（=14.148+Δ）；s 对 Δ 平移不变，s_stop 仍是 12.1945。
+        s_stop = _EI.path_s_of_main_y(14.398)
         self.assertGreater(s_stop, _EI.S_ARC_END)
         self.assertAlmostEqual(s_stop, 12.194515, places=4)
         x, y = _EI.path_point(s_stop)
         self.assertAlmostEqual(x, _EI.MAIN_LANE_X, places=9)
-        self.assertAlmostEqual(y, 14.148, places=9)
+        self.assertAlmostEqual(y, 14.398, places=9)
 
     def test_recycle_line_maps_downstream_of_the_workstation(self) -> None:
-        self.assertGreater(_EI.path_s_of_main_y(10.6), _EI.path_s_of_main_y(14.148))
+        self.assertGreater(_EI.path_s_of_main_y(10.85), _EI.path_s_of_main_y(14.398))
 
     def test_respawn_point_is_on_the_deepest_xleg_rollers(self) -> None:
         x, y = _EI.RESPAWN_XY
         self.assertEqual(y, _EI.BRANCH_LANE_Y)
         lo, hi = _EI.XLEG_ROLLER_X_RANGES[-1]
         self.assertTrue(lo <= x <= hi)
-        # PATH_S_MIN 同样不越过段 3 滚筒可用端。
+        # PATH_S_MIN 同样不越过段 5 滚筒可用端。
         px, _ = _EI.path_point(_EI.PATH_S_MIN)
         self.assertGreaterEqual(px, lo - 1e-9)
+        # 最大箱型 c01（半长 0.25）在回生点的西缘距滚筒西端还有 ~124 mm。
+        self.assertGreaterEqual(x - 0.25 - lo, 0.12)
+
+    def test_respawn_slot_hides_behind_rack_row_b_for_eye_e2(self) -> None:
+        """回生点的遮挡口径（数值来自本轮 mesh 级射线核算，几何关系锁死）。
+
+        E2=(-6.70, 工位y+0.3, 1.6) 的"东上角"判据全遮边界是箱心 x≤-16.57
+        （s≤-3.81）；RESPAWN_S=-3.90 留 90 mm 裕量。E1 无全遮解（排 B 首层
+        216 mm 通视缝），只锁"深藏在排 B x 覆盖段内"。
+        """
+
+        x, _y = _EI.RESPAWN_XY
+        self.assertLessEqual(x, -16.57)
+        self.assertAlmostEqual(-16.57 - x, 0.09, places=6)
+        # 回生点在排 B 的 x 覆盖段内（排 B 连排到 -29.58，护板东缘 -13.386）。
+        self.assertLess(x, _EI.RACK_B_GUARD_EAST_X)
+        # 通视缝确实存在于箱体高度带内（E1 残余可见的根因，README 已知限制）。
+        seam_lo, seam_hi = _EI.RACK_B_FIRST_TIER_SEAM_Z
+        self.assertLess(seam_lo, 1.0223)  # 箱顶最高 c01
+        self.assertGreater(seam_hi - seam_lo, 0.2)
 
 
 class EndlessIntakePlatesTest(unittest.TestCase):

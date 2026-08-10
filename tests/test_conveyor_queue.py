@@ -279,17 +279,17 @@ class QueueDriveMaskTest(unittest.TestCase):
         self.assertEqual(mask.shape, ys.shape)
 
 
-# —— 西拐入口弯道（endless intake）常量：与 endless_intake.py 同源（Δ=0） ——
-_CORNER_CENTER = (-7.0200, 18.4034)
+# —— 西拐入口弯道（endless intake）常量：与 endless_intake.py 同源（Δ=0.25） ——
+_CORNER_CENTER = (-7.0200, 18.6534)
 _RADIUS = 1.40
 _S_ORIGIN_X = -12.76
-_BRANCH_Y = 19.8034
+_BRANCH_Y = 20.0534
 _S_ARC_START = _CORNER_CENTER[0] - _S_ORIGIN_X  # 5.74
 _S_ARC_END = _S_ARC_START + _RADIUS * 3.141592653589793 / 2.0
 # 与 conveyor_env_cfg 传给事件的 extra_rects 同口径（endless_intake 常量 ±0.10）。
 _EXTRA_RECTS = (
-    (-7.12, -5.07, 18.12, 20.3534),
-    (-13.164, -6.92, 19.2534, 20.3534),
+    (-7.12, -5.07, 18.37, 20.6034),
+    (-17.1342, -6.92, 19.5034, 20.6034),
 )
 
 
@@ -316,8 +316,8 @@ class PathProgressTest(unittest.TestCase):
         self.assertEqual((hx[0], hy[0]), (1.0, 0.0))
 
     def test_main_segment_heads_minus_y(self) -> None:
-        s, hx, hy = self._progress([(-5.62, 14.148, 0.775)])
-        self.assertAlmostEqual(s[0], _S_ARC_END + (18.4034 - 14.148), places=4)
+        s, hx, hy = self._progress([(-5.62, 14.398, 0.775)])
+        self.assertAlmostEqual(s[0], _S_ARC_END + (_CORNER_CENTER[1] - 14.398), places=4)
         self.assertEqual((hx[0], hy[0]), (0.0, -1.0))
 
     def test_arc_midpoint_heads_diagonally(self) -> None:
@@ -435,22 +435,23 @@ class OnBeltExtraRectsTest(unittest.TestCase):
         self.assertEqual(
             self._mask(
                 [
-                    (-12.61, _BRANCH_Y, 0.775),  # 支线回生点
-                    (-7.70, _BRANCH_Y, 0.775),   # 支线队尾出生位
-                    (-6.03, 19.393, 0.775),      # 弧段中点附近
+                    (-16.66, _BRANCH_Y, 0.775),  # 支线回生点/队尾深藏槽位（段 5）
+                    (-12.61, _BRANCH_Y, 0.775),  # 支线中段（段 3）
+                    (-7.70, _BRANCH_Y, 0.775),   # 支线东段
+                    (-6.03, 19.643, 0.775),      # 弧段中点附近
                     (-5.62, 16.0, 0.775),        # 主线（原判据不受影响）
                 ]
             ),
-            [True, True, True, True],
+            [True, True, True, True, True],
         )
 
     def test_off_path_boxes_stay_out(self) -> None:
         self.assertEqual(
             self._mask(
                 [
-                    (-12.61, 20.45, 0.775),   # 支线条带以北（悬出）
-                    (-13.30, _BRANCH_Y, 0.775),  # 越过支线西端（放宽后 -13.164）
-                    (-12.61, _BRANCH_Y, 1.10),   # 被拎起（z 出窗）
+                    (-12.61, 20.70, 0.775),   # 支线条带以北（悬出）
+                    (-17.30, _BRANCH_Y, 0.775),  # 越过支线西端（放宽后 -17.1342）
+                    (-16.66, _BRANCH_Y, 1.10),   # 被拎起（z 出窗）
                     (-4.60, 19.0, 0.775),        # 弯道以东的空地
                 ]
             ),

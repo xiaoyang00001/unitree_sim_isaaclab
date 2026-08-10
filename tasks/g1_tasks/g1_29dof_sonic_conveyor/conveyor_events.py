@@ -454,8 +454,8 @@ def recycle_totes_on_surface_conveyor(
     reaches the outfeed back to the infeed and clears its velocity.
 
     ``respawn_x``: 默认 None 保持各自 X 车道（历史行为）。入口弯道（endless
-    intake）方案把回生点搬到 X 支线最深处（世界 (-12.61, 19.8034)），x 必须
-    跟着写，否则箱子会回生在主车道北端的弯道体内部。
+    intake）方案把回生点搬到 X 支线最深处（世界 (-16.66, 20.0534)，藏在货架
+    排 B 后面），x 必须跟着写，否则箱子会回生在主车道北端的弯道体内部。
 
     Only environments selected by the recycle mask are written.  Objects still
     travelling on the belt are left entirely to PhysX contact motion instead of

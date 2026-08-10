@@ -23,21 +23,28 @@ DRIVE_MODES = (DRIVE_MODE_LEGACY, DRIVE_MODE_SURFACE_VELOCITY)
 # ------------------------------------------------------------------
 # 流水线整体北移量（世界 +Y，单位 m）——**本工程唯一真源**。
 #
-# 当前 Δ=0：安检机时代的整体北移（Δ=3.55，让入料端插进靠墙隧道口）已随安检机
-# 方案一起回退——连续挡边顶只有 0.801、比带面仅高 29mm，箱子在带上露顶，
-# "藏进机柜"的前提不成立。回退后带体回到实测世界 y[10.188, 18.222]
-# （入料端带头 y=18.2223、公头中心 x=-5.617），带头到 +Y 墙面 23.606 有约
-# 5.38 m 余地，留给"西拐弯道 + X 支线"的看不到头方案（见 endless_intake）。
+# 当前 Δ=0.25：**X 支线越过货架排 B 北侧所需的最小北移**（取 50 mm 整倍数）。
+# 西拐方案要把出生/回生点真正藏到货架（和叉车）后面，支线必须向西延长越过
+# 排 B（护板东缘 x=-13.386 曾是三段硬限）；整条线（主线+弯道+支线+工位）北移
+# 后，支线机身南缘 19.4779 从排 B 端护板北缘 19.3946 上方擦过（净距 83.3 mm，
+# 最小可行 Δ=0.2167 ⇒ 取 0.25），支线得以延到 5 段、把回生点压到 (-16.66,
+# 20.0534)。约束绑定项是端护板；叉车货叉尖 19.321（净距 156.9 mm）不绑定。
+# ⚠️ 再加大 Δ 只会加深遮挡阴影需求（眼位同移），勿上调。
+# 历史：安检机时代的 Δ=3.55 已回退（挡边仅高出带面 29mm，箱子露顶，"藏进
+# 机柜"不成立）；本轮 Δ=0.25 与那次的目的、量级都不同。
 #
-# ⚠️ 常量与 _shifted 管线保留：日后再整体平移只改这一个数，出生点/回收线/
-#    判据/布局自动跟随。几何位移（若非零）写在背景 clean wrapper
-#    warehouse-simple6_v61_visual_only.usda 的 over "ConveyorBelt"（世界 y +Δ ≡
-#    背景局部 x +Δ，因为背景挂载时绕 Z 转了 +90°）；Δ=0 下 wrapper 不含任何
-#    位移 override，legacy_v61 裸 v61 回退档与常量一致、恢复可用。
-# ⚠️ scene_layout.py 为保持零相对 import 抄了一份 Δ（shroud_config 已随安检机
-#    删除，抄本从三处收敛为两处），tests/test_conveyor_scene_layout.py 交叉断言
-#    两处一致，别只改一边。
-CONVEYOR_NORTH_SHIFT_Y = 0.0
+# ⚠️ 出生点/回收线/判据/布局经 _shifted 管线自动跟随本常量。几何位移写在背景
+#    clean wrapper warehouse-simple6_v61_visual_only.usda 的 over "ConveyorBelt"
+#    组变换 + 15 件带面装饰 + 3 条地贴（世界 y +Δ ≡ 背景局部 x +Δ，因为背景
+#    挂载时绕 Z 转了 +90°）；改本常量必须同步重写 wrapper 的 override 并重钉
+#    conveyor_workcell_lite.manifest.json 的 source sha。
+# ⚠️ legacy_v61 裸 v61 回退档不含位移（Δ=0 几何），Δ≠0 期间它与代码常量错位
+#    0.25 m，只可作视觉参考、不可作功能 A/B 基线。
+# ⚠️ scene_layout.py 为保持零相对 import 抄了一份 Δ（抄本共两处），
+#    tests/test_conveyor_scene_layout.py 交叉断言两处一致，别只改一边。
+#    endless_intake.py 刻意**不抄 Δ**（绝对坐标 +Δ 重钉），关系锁在
+#    tests/test_conveyor_endless_intake.py 的交叉断言里。
+CONVEYOR_NORTH_SHIFT_Y = 0.25
 
 # Measured usable top surface of the three ConveyorBelt_A08 visual sections.
 # BELT_Y_*_BASE 是北移前的实测值，运行值 = 基准 + Δ。
@@ -45,14 +52,14 @@ BELT_X_CENTER = -5.62
 BELT_WIDTH = 0.90
 BELT_Y_MIN_BASE = 10.19
 BELT_Y_MAX_BASE = 18.22
-BELT_Y_MIN = round(BELT_Y_MIN_BASE + CONVEYOR_NORTH_SHIFT_Y, 6)  # 10.19
-BELT_Y_MAX = round(BELT_Y_MAX_BASE + CONVEYOR_NORTH_SHIFT_Y, 6)  # 18.22
+BELT_Y_MIN = round(BELT_Y_MIN_BASE + CONVEYOR_NORTH_SHIFT_Y, 6)  # 10.44
+BELT_Y_MAX = round(BELT_Y_MAX_BASE + CONVEYOR_NORTH_SHIFT_Y, 6)  # 18.47
 BELT_TOP_Z = 0.772
 BELT_COLLIDER_THICKNESS = 0.04
 
 # 循环模式（y_stop<=0）的回收线与回生落点，同样随北移整体平移。
-DEFAULT_Y_RECYCLE = round(10.6 + CONVEYOR_NORTH_SHIFT_Y, 6)  # 10.6
-DEFAULT_Y_RESPAWN = round(18.0 + CONVEYOR_NORTH_SHIFT_Y, 6)  # 18.0
+DEFAULT_Y_RECYCLE = round(10.6 + CONVEYOR_NORTH_SHIFT_Y, 6)  # 10.85
+DEFAULT_Y_RESPAWN = round(18.0 + CONVEYOR_NORTH_SHIFT_Y, 6)  # 18.25
 
 
 def _env_bool(environ: Mapping[str, str], name: str, default: bool) -> bool:

@@ -5,9 +5,10 @@
 
 不走 DDS/deploy，直接以默认关节位姿 step 环境，验证场景与同步链路本身。
 
-默认布局是"看不到头的入料端"（endless intake，**西拐**）：5 个箱/包沿入口弯道
-路径出生（队首在主线 y≈18.28 刚拐出弯，队尾在 X 支线 (-7.70, 19.80)），经
-支线 +X → 圆角弧 → 主线 -Y 流到工位 y≈14.148 停住；队首行程 ≈4.13 m（实测带速
+默认布局是"看不到头的入料端"（endless intake，**西拐**，Δ=0.25 整体北移）：
+5 个箱/包沿入口弯道路径出生（队首在主线 y≈18.53 刚拐出弯，前四箱等距 0.75，
+**队尾深藏**在 X 支线最深处 (-16.66, 20.05)=回生点、藏在货架排 B 后面），经
+支线 +X → 圆角弧 → 主线 -Y 流到工位 y≈14.398 停住；队首行程 ≈4.13 m（实测带速
 ~0.244 m/s ⇒ ~850 步到位），所以默认步数 1600。位移/停位判定都按沿路径距离 s。
 ISAACLAB_CONVEYOR_ENDLESS=off 回退直线带头（旧行为，y 判定）。
 （expected_stop_y 从 env cfg 动态取，改常量自动跟随）
@@ -264,30 +265,36 @@ def main() -> int:
             endless_intake.path_s_of_main_y(expected_stop_y) if ENDLESS else -expected_stop_y
         )
         if ENDLESS and belt_box_mode:
-            # 弯道形态：弧段拖滑速度（~0.218 m/s）低于直线段（~0.244），箱子过弯
-            # 时相对间距被拉伸（pitch 0.75 实测停稳 ~0.80-0.86）。"槽位 = 出生间距
-            # 整体平移"对拖滑物理不成立，判据改为：
+            # 弯道形态：弧段拖滑速度（~0.218 m/s）低于直线段（~0.244），前车先
+            # 出弧提速时对后车的间距最多被拉伸 ≈ 弧长 2.2 × (0.244/0.218−1)
+            # ≈ 0.26 m（Δ=0.25 布局实测 +0.26）；反过来，深藏队尾（出生间距
+            # 9.71）在前车过弧期间自己还在直线段，间距会收缩 ~0.3 m。"槽位 =
+            # 出生间距整体平移"对拖滑物理不成立，判据改为：
             #   ① 队首停在工位（这是节拍的硬语义）；
-            #   ② 其余仍按下游序排列，且相邻间距落在 [0.45, 出生间距+0.25] 内
-            #     （下界≈最大箱对的半长和+净间隙，上界给弧段拉伸留余量）。
+            #   ② 其余仍按下游序排列，且每对相邻间距落在
+            #      [max(0.45, 出生间距−0.45), 出生间距+0.35] 内（下界的 0.45 ≈
+            #      最大箱对的半长和+净间隙；±界给弧段拉伸/收缩留余量）。
             lead = graded_names[0]
             lead_error = abs(end_p[lead] - stop_p)
             spacing = [
                 round(end_p[graded_names[i]] - end_p[graded_names[i + 1]], 4)
                 for i in range(len(graded_names) - 1)
             ]
-            spawn_pitch = (
-                start_p[graded_names[0]] - start_p[graded_names[1]]
-                if len(graded_names) > 1
-                else 0.75
+            spawn_gaps = [
+                start_p[graded_names[i]] - start_p[graded_names[i + 1]]
+                for i in range(len(graded_names) - 1)
+            ]
+            bounds = [(max(0.45, gap - 0.45), gap + 0.35) for gap in spawn_gaps]
+            spacing_ok = all(
+                lo <= gap <= hi for gap, (lo, hi) in zip(spacing, bounds)
             )
-            spacing_ok = all(0.45 <= gap <= spawn_pitch + 0.25 for gap in spacing)
             stop_ok = lead_error <= args.stop_tolerance and spacing_ok
+            bounds_text = ", ".join(f"[{lo:.2f},{hi:.2f}]" for lo, hi in bounds)
             print(
                 f"[smoke] 停止目标 队首 s={stop_p:.3f}（y={expected_stop_y:.3f}）| "
                 f"队首误差 {lead_error:.4f}（容差 {args.stop_tolerance:.3f}）| "
-                f"停稳间距 {spacing}（界 [0.45,{spawn_pitch + 0.25:.2f}]，出生 {spawn_pitch:.2f}；"
-                f"弧段拖滑拉伸属预期）| {'PASS' if stop_ok else 'FAIL'}",
+                f"停稳间距 {spacing}（按各对出生间距判界 {bounds_text}；"
+                f"弧段拖滑拉伸/深藏队尾收缩属预期）| {'PASS' if stop_ok else 'FAIL'}",
                 flush=True,
             )
         else:
