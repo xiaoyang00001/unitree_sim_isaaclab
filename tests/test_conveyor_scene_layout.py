@@ -157,10 +157,10 @@ class BeltBoxLayoutTest(unittest.TestCase):
             layout.belt_box_names,
             tuple(f"belt_box_{i + 1}" for i in range(17)),
         )
-        # 默认 pattern d01,parcel_a02 循环 → 小纸箱与白色软包裹交错（17 箱首尾都是 d01）。
+        # 默认 pattern d01,c01 循环 → 小纸箱与大纸箱交错（17 箱首尾都是 d01）。
         self.assertEqual(
             [kind.key for kind in layout.belt_box_kinds],
-            ["d01" if i % 2 == 0 else "parcel_a02" for i in range(17)],
+            ["d01" if i % 2 == 0 else "c01" for i in range(17)],
         )
         self.assertEqual(layout.belt_box_queue_gap, 0.07)
         # 槽位序列 = 队首 8.06 为锚、pitch 0.75 向上游铺满（最深 -3.94）。
@@ -184,7 +184,7 @@ class BeltBoxLayoutTest(unittest.TestCase):
         )
         self.assertEqual(
             layout.belt_box_half_lengths,
-            tuple(0.19 if i % 2 == 0 else 0.2263 for i in range(17)),
+            tuple(0.19 if i % 2 == 0 else 0.25 for i in range(17)),
         )
 
     def test_deepest_slot_clears_the_roller_end_and_deepens_the_e2_hide(self) -> None:
@@ -286,8 +286,8 @@ class BeltBoxLayoutTest(unittest.TestCase):
             ["c01" if i % 2 == 0 else "d01" for i in range(17)],
         )
 
-    def test_two_cardbox_rollback_pattern_still_works(self) -> None:
-        """软包裹只是默认 pattern 的替换项：d01,c01 双纸箱形态必须随时能切回。"""
+    def test_default_two_cardbox_pattern_can_be_selected_explicitly(self) -> None:
+        """显式指定 d01,c01 与默认双纸箱形态一致。"""
 
         layout = resolve_scene_layout({"ISAACLAB_BELT_BOX_PATTERN": "d01,c01"})
         self.assertEqual(
@@ -466,10 +466,10 @@ class BeltBoxLayoutTest(unittest.TestCase):
     def test_spawn_pitch_too_small_for_the_actual_pair_fails_fast(self) -> None:
         """出生间距按**相邻两箱各自的半长**校验，而不是一个统一箱长。"""
 
-        with self.assertRaisesRegex(ValueError, "放不下相邻的 d01/parcel_a02"):
+        with self.assertRaisesRegex(ValueError, "放不下相邻的 d01/c01"):
             resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_PITCH": "0.3"})
 
-        # 全 d01 时 0.40 够（0.19+0.19=0.38），但混排时放不下 d01/parcel_a02（要 0.4163）。
+        # 全 d01 时 0.40 够（0.19+0.19=0.38），但默认混排放不下 d01/c01（要 0.44）。
         resolve_scene_layout(
             {"ISAACLAB_BELT_BOX_PATTERN": "d01", "ISAACLAB_BELT_BOX_SPAWN_PITCH": "0.40"}
         )

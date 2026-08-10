@@ -130,9 +130,9 @@ BELT_BOX_KINDS = {
         mass=0.22,
     ),
 }
-# 默认交错：小纸箱 + 白色软包裹（软包裹替换掉原来的大纸箱 c01；
-# ISAACLAB_BELT_BOX_PATTERN=d01,c01 可随时切回两种纸箱）。
-DEFAULT_BELT_BOX_PATTERN = ("d01", "parcel_a02")
+# 默认交错：小纸箱 + 大纸箱。三种软包裹仍可通过
+# ISAACLAB_BELT_BOX_PATTERN=parcel_a01,parcel_a02,parcel_a03 显式选用。
+DEFAULT_BELT_BOX_PATTERN = ("d01", "c01")
 
 # 带面几何与 conveyor_drive 的常量保持一致（那边是驱动/分段的真源，这里只用来
 # 定位出生点；两处数值若要改必须同时改）。y 值必须过 _shifted（Δ 非零时自动
@@ -347,7 +347,7 @@ def resolve_belt_box_positions(
     def _check_adjacent_clearance(gaps: list[float], what: str) -> None:
         # 相邻箱子出生就不能互穿：中心距至少是两个半长之和（直线/弯道形态同判据，
         # 弯道形态下间距是沿路径距离，弧段上的弦距略小于弧距，仍然安全——最小
-        # 间距余量 0.75-0.4163=0.33 远大于 R=1.4、θ≤0.54rad 下的弦弧差 <0.01）。
+        # 间距余量 0.75-0.44=0.31 远大于 R=1.4、θ≤0.54rad 下的弦弧差 <0.01）。
         for index, gap in enumerate(gaps):
             need = halves[index] + halves[index + 1]
             if gap < need:
