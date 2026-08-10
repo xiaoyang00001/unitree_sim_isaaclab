@@ -134,7 +134,7 @@ BELT_BOX_BELT_Y_MAX = _shifted(18.22)
 BELT_BOX_BELT_WIDTH = 0.90
 # SceneCfg 里的 belt_box_N 字段是显式声明的（configclass 需要类属性），所以数量
 # 有硬上限。调大必须同时在 conveyor_env_cfg.G129SonicConveyorSceneCfg 里补字段。
-BELT_BOX_MAX_COUNT = 5
+BELT_BOX_MAX_COUNT = 17
 
 # ------------------------------------------------------------------
 # 入口弯道（endless intake，**西拐**）出生路径：真源是 endless_intake.py 的路径
@@ -154,13 +154,25 @@ BELT_BOX_PATH_S_ORIGIN_X = -12.76
 BELT_BOX_PATH_S_MIN = -4.27
 # 默认队首 s=8.06：队首刚拐出弯 0.121 m、落在主线 y≈18.533（整箱上主线）。
 BELT_BOX_DEFAULT_S_LEAD = 8.06
-# 默认出生**显式槽位序列**（沿路径距离 s，队首→上游）：前四位维持历史 pitch
-# 0.75（主线 1 + 弧上 3，开局即"绕弯而来"的刻意揭示点），**队尾单列深藏**在
-# 支线最深处 s=-3.90 = endless_intake.RESPAWN_S（箱心 (-16.66, 20.0534)，藏在
-# 货架排 B 后面：E2 眼位东上角判据全遮、E1 剩余可见性见 endless_intake 注释）。
-# 显式给出 S_LEAD / Y_LEAD / PITCH 任一环境变量时回退等距排布（不深藏队尾）。
-# COUNT<5 时取序列前缀（少于 5 箱就不再深藏队尾）。
-BELT_BOX_DEFAULT_SLOT_S = (8.06, 7.31, 6.56, 5.81, -3.90)
+# 直线回退形态（endless off / legacy_props）的默认箱数：上游带面只有 ~4.07 m，
+# "17 箱铺满"是弯道路径才有的容量，直排默认维持历史 5 箱（显式 COUNT 对两种
+# 形态都生效，直排给大了会被"悬出带面"fail-fast 拦住）。
+BELT_BOX_STRAIGHT_DEFAULT_COUNT = 5
+# 默认出生**显式槽位序列**（沿路径距离 s，队首→上游）：以队首 s=8.06 为锚、
+# pitch 0.75 一路向上游**铺满整条上游路径**——主线 1 + 弧上 3 + X 支线 13，
+# 共 17 箱（2026-08-10"放满"改版；此前是前四位 + 队尾单列深藏 -3.90）。
+# 最深槽位 s = 8.06 − 0.75×16 = -3.94，逐项核算：
+# * 对支线滚筒可用端 PATH_S_MIN=-4.27 的净距（最坏 c01 半长 0.25 口径）
+#   = -3.94 − 0.25 − (-4.27) = 80 mm ≥ 50 mm 红线；
+# * 比旧深藏位 -3.90（= endless_intake.RESPAWN_S，循环模式回生点**仍是**它）
+#   更深 40 mm：E2 眼位"东上角"全遮边界 s≤-3.81 ⇒ 遮挡结论只强不弱（裕量
+#   90→130 mm）；E1 通视缝残余口径不变——E2/E1 结论沿用 endless_intake
+#   「遮挡核算」，未重跑射线。
+# 显式给出 S_LEAD / Y_LEAD / PITCH 任一环境变量时回退等距排布。
+# COUNT<17 时取序列前缀（从队首往上游数；队尾不再有单独的深藏特例）。
+BELT_BOX_DEFAULT_SLOT_S = tuple(
+    round(BELT_BOX_DEFAULT_S_LEAD - 0.75 * index, 6) for index in range(BELT_BOX_MAX_COUNT)
+)
 
 
 def _endless_intake_active(environ: Mapping[str, str], totes_on_conveyor: bool) -> bool:
@@ -273,10 +285,11 @@ def resolve_belt_box_positions(
     小箱之间留出突兀的空档。
 
     **弯道形态（endless intake 生效，默认）**：出生点按显式槽位序列
-    ``BELT_BOX_DEFAULT_SLOT_S``（前四位 pitch 0.75：队首 s=8.06 刚拐出弯落主线
-    y≈18.533、弧上 3 箱；**队尾深藏**在支线最深处 s=-3.90 = 回生点，藏进货架
-    排 B 后面）。显式给出 ``S_LEAD``/``Y_LEAD``/``PITCH`` 任一旋钮时回退等距
-    排布 ``s_lead − k·pitch``（不深藏队尾），pitch 语义是"沿路径距离间距"。
+    ``BELT_BOX_DEFAULT_SLOT_S``（以队首 s=8.06 为锚、pitch 0.75 铺满整条上游
+    路径：主线 1 + 弧上 3 + X 支线 13 共 17 箱；最深 s=-3.94 比回生点 -3.90
+    更深、藏进货架排 B 后面——净距/遮挡核算见常量注释）。显式给出
+    ``S_LEAD``/``Y_LEAD``/``PITCH`` 任一旋钮时回退等距
+    排布 ``s_lead − k·pitch``，pitch 语义是"沿路径距离间距"。
     队首覆盖优先级：``ISAACLAB_BELT_BOX_SPAWN_S_LEAD``（路径距离）>
     ``ISAACLAB_BELT_BOX_SPAWN_Y_LEAD``（仅接受主线段 y，自动换算成 s）> 默认。
     ``ISAACLAB_BELT_BOX_LANE_X`` 在弯道形态下**不生效**（x 由路径决定）。
@@ -290,7 +303,14 @@ def resolve_belt_box_positions(
     穿模再回头猜。
     """
 
-    count = _env_int(environ, "ISAACLAB_BELT_BOX_COUNT", BELT_BOX_MAX_COUNT)
+    endless = _endless_intake_active(environ, totes_on_conveyor=True)
+    # 弯道形态默认铺满 17 槽；直线回退的上游带面只有 ~4.07 m，默认维持历史 5 箱
+    # （legacy_props 也走直线分支，默认 17 会启动即"悬出带面"）。
+    count = _env_int(
+        environ,
+        "ISAACLAB_BELT_BOX_COUNT",
+        BELT_BOX_MAX_COUNT if endless else BELT_BOX_STRAIGHT_DEFAULT_COUNT,
+    )
     if count < 0:
         raise ValueError(f"ISAACLAB_BELT_BOX_COUNT 必须非负，当前 {count}")
     if count > BELT_BOX_MAX_COUNT:
@@ -304,7 +324,6 @@ def resolve_belt_box_positions(
     spawn_z = _env_float(environ, "ISAACLAB_BELT_BOX_SPAWN_Z", BELT_BOX_SPAWN_Z)
     spawn_pitch = _env_float(environ, "ISAACLAB_BELT_BOX_SPAWN_PITCH", 0.75)
     queue_gap = _env_float(environ, "ISAACLAB_BELT_BOX_QUEUE_GAP", 0.07)
-    endless = _endless_intake_active(environ, totes_on_conveyor=True)
 
     kinds = resolve_belt_box_pattern(environ, count)
     if count == 0:
@@ -360,10 +379,10 @@ def resolve_belt_box_positions(
             s_lead = None
 
         if s_lead is None and not raw_pitch:
-            # 默认：显式槽位序列——前四位等距 0.75，队尾深藏在回生点（见常量注释）。
+            # 默认：显式槽位序列——pitch 0.75 从队首铺满上游路径（见常量注释）。
             slots = list(BELT_BOX_DEFAULT_SLOT_S[:count])
         else:
-            # 显式覆盖任一旋钮 ⇒ 回退等距排布（不深藏队尾），语义与历史一致。
+            # 显式覆盖任一旋钮 ⇒ 回退等距排布，语义与历史一致。
             if s_lead is None:
                 s_lead = BELT_BOX_DEFAULT_S_LEAD
             slots = [s_lead - spawn_pitch * index for index in range(count)]

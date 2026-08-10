@@ -147,22 +147,26 @@ class ConveyorLayoutNorthShiftTest(unittest.TestCase):
 
 
 class BeltBoxLayoutTest(unittest.TestCase):
-    """纸箱队列默认沿西拐入口弯道路径排（队尾伸上 X 支线），两种箱型交错。"""
+    """纸箱队列默认沿西拐入口弯道路径**铺满**（pitch 0.75 × 17 槽），两种箱型交错。"""
 
-    def test_default_conveyor_layout_spawns_five_boxes_along_the_path(self) -> None:
+    def test_default_conveyor_layout_fills_seventeen_slots_along_the_path(self) -> None:
         layout = resolve_scene_layout({})
 
-        self.assertEqual(layout.belt_box_count, 5)
+        self.assertEqual(layout.belt_box_count, 17)
         self.assertEqual(
             layout.belt_box_names,
-            ("belt_box_1", "belt_box_2", "belt_box_3", "belt_box_4", "belt_box_5"),
+            tuple(f"belt_box_{i + 1}" for i in range(17)),
         )
-        # 默认 pattern d01,parcel_a02 循环 → 小纸箱与白色软包裹交错。
+        # 默认 pattern d01,parcel_a02 循环 → 小纸箱与白色软包裹交错（17 箱首尾都是 d01）。
         self.assertEqual(
             [kind.key for kind in layout.belt_box_kinds],
-            ["d01", "parcel_a02", "d01", "parcel_a02", "d01"],
+            ["d01" if i % 2 == 0 else "parcel_a02" for i in range(17)],
         )
         self.assertEqual(layout.belt_box_queue_gap, 0.07)
+        # 槽位序列 = 队首 8.06 为锚、pitch 0.75 向上游铺满（最深 -3.94）。
+        self.assertEqual(len(_SLOTS_DEFAULT), 17)
+        for index, s in enumerate(_SLOTS_DEFAULT):
+            self.assertAlmostEqual(s, 8.06 - 0.75 * index, places=9)
         # 出生点 = 显式槽位序列的路径点（与 endless_intake 交叉核对）。
         for index, (x, y, z) in enumerate(layout.belt_box_positions):
             expected = _EI_MODULE.path_point(_SLOTS_DEFAULT[index])
@@ -170,20 +174,75 @@ class BeltBoxLayoutTest(unittest.TestCase):
                 self.assertAlmostEqual(x, expected[0], places=9)
                 self.assertAlmostEqual(y, expected[1], places=9)
                 self.assertEqual(z, 0.775)
-        # 队首刚拐出弯 0.121 m、整箱上主线；弧上 3 箱是刻意的"绕弯而来"揭示点；
-        # **队尾深藏**在支线最深处 = 回生点（藏进货架排 B 后面）。
+        # 队首刚拐出弯 0.121 m、整箱上主线；弧上 3 箱维持"绕弯而来"的揭示点；
+        # 其余 13 箱一路排上 X 支线，队尾深藏在货架排 B 后面。
         self.assertAlmostEqual(layout.belt_box_positions[0][0], -5.62, places=9)
         self.assertAlmostEqual(layout.belt_box_positions[0][1], 18.5325, places=3)
-        self.assertAlmostEqual(layout.belt_box_positions[4][0], -16.66, places=6)
+        self.assertAlmostEqual(layout.belt_box_positions[16][0], -16.70, places=6)
         self.assertAlmostEqual(
-            layout.belt_box_positions[4][1], _EI_MODULE.BRANCH_LANE_Y, places=9
+            layout.belt_box_positions[16][1], _EI_MODULE.BRANCH_LANE_Y, places=9
         )
-        # 队尾槽位 = 回生点（真源交叉断言：补位与回生共用同一个"深藏"落点）。
-        self.assertAlmostEqual(_SLOTS_DEFAULT[-1], _EI_MODULE.RESPAWN_S, places=9)
-        self.assertAlmostEqual(
-            layout.belt_box_positions[4][0], _EI_MODULE.RESPAWN_XY[0], places=9
+        self.assertEqual(
+            layout.belt_box_half_lengths,
+            tuple(0.19 if i % 2 == 0 else 0.2263 for i in range(17)),
         )
-        self.assertEqual(layout.belt_box_half_lengths, (0.19, 0.2263, 0.19, 0.2263, 0.19))
+
+    def test_deepest_slot_clears_the_roller_end_and_deepens_the_e2_hide(self) -> None:
+        """最深槽位 -3.94 的两条红线：滚筒端净距 ≥50 mm、E2 遮挡只强不弱。
+
+        * 对支线滚筒可用端 PATH_S_MIN=-4.27 的净距按**最坏箱型 c01 半长 0.25**
+          算（pattern 可被环境变量换成全 c01）：80 mm ≥ 50 mm；
+        * 比旧深藏位 -3.90（=RESPAWN_S，回生点**不动**）更深 ⇒ E2"东上角"全遮
+          边界 s≤-3.81 的裕量从 90 mm 加深到 130 mm，结论沿用不需重算。
+        """
+
+        deepest = _SLOTS_DEFAULT[-1]
+        self.assertAlmostEqual(deepest, -3.94, places=9)
+        worst_half = _LAYOUT_MODULE.BELT_BOX_KINDS["c01"].half_length_y
+        self.assertAlmostEqual(worst_half, 0.25, places=9)
+        self.assertGreaterEqual(
+            (deepest - worst_half) - _EI_MODULE.PATH_S_MIN, 0.05 - 1e-9
+        )
+        # 更深于回生点（E2 全遮沿用依据）；回生点自身不随槽位改动。
+        self.assertLess(deepest, _EI_MODULE.RESPAWN_S)
+        self.assertLessEqual(deepest, -3.81)
+        self.assertAlmostEqual(_EI_MODULE.RESPAWN_S, -3.90, places=9)
+
+    def test_count_override_takes_the_prefix_from_the_lead(self) -> None:
+        """COUNT<17 取序列前缀（从队首往上游数），不再有队尾深藏特例。"""
+
+        layout = resolve_scene_layout({"ISAACLAB_BELT_BOX_COUNT": "5"})
+
+        self.assertEqual(layout.belt_box_count, 5)
+        for index, (x, y, _z) in enumerate(layout.belt_box_positions):
+            expected = _EI_MODULE.path_point(8.06 - 0.75 * index)
+            with self.subTest(index=index):
+                self.assertAlmostEqual(x, expected[0], places=9)
+                self.assertAlmostEqual(y, expected[1], places=9)
+
+    def test_loop_mode_wrap_gap_fits_the_full_queue(self) -> None:
+        """循环模式复核：17 箱在回生→回收环路上循环不追尾。
+
+        环路等价周长 = s(y_recycle) − RESPAWN_S ≈ 19.64 m；整带同速 ⇒ 出生间距
+        永久保持，唯一约束是回绕缺口 = 周长 − 队列跨度（12.0 m）≈ 7.64 m 必须
+        ≥ 首尾防撞下限（最坏半长和 + queue_gap）。与 conveyor_env_cfg 的运行时
+        fail-fast 同一算式（那边 import Isaac 不可单测，这里锁默认值）。
+        """
+
+        layout = resolve_scene_layout({})
+        ss = [_EI_MODULE.path_s_of_point(x, y) for x, y, _z in layout.belt_box_positions]
+        span = max(ss) - min(ss)
+        self.assertAlmostEqual(span, 12.0, places=6)
+
+        s_recycle = _EI_MODULE.path_s_of_main_y(_DRIVE_MODULE.DEFAULT_Y_RECYCLE)
+        loop_length = s_recycle - _EI_MODULE.RESPAWN_S
+        self.assertAlmostEqual(loop_length, 19.6425, places=3)
+
+        wrap_gap = loop_length - span
+        worst_half = max(_LAYOUT_MODULE.BELT_BOX_KINDS["c01"].half_length_y, *layout.belt_box_half_lengths)
+        need = 2 * worst_half + layout.belt_box_queue_gap
+        # 留 ≥1 m 余量：回收事件 20ms 判定的瞬移落点抖动与弧段拖滑漂移都吃不掉它。
+        self.assertGreaterEqual(wrap_gap, need + 1.0)
 
     def test_endless_off_falls_back_to_the_straight_head(self) -> None:
         """三态开关 off / legacy_props 回退：沿主车道直排（历史行为）。"""
@@ -219,11 +278,12 @@ class BeltBoxLayoutTest(unittest.TestCase):
 
     def test_pattern_is_configurable_and_cycles(self) -> None:
         single = resolve_scene_layout({"ISAACLAB_BELT_BOX_PATTERN": "c01"})
-        self.assertEqual([k.key for k in single.belt_box_kinds], ["c01"] * 5)
+        self.assertEqual([k.key for k in single.belt_box_kinds], ["c01"] * 17)
 
         flipped = resolve_scene_layout({"ISAACLAB_BELT_BOX_PATTERN": " C01 , D01 "})
         self.assertEqual(
-            [k.key for k in flipped.belt_box_kinds], ["c01", "d01", "c01", "d01", "c01"]
+            [k.key for k in flipped.belt_box_kinds],
+            ["c01" if i % 2 == 0 else "d01" for i in range(17)],
         )
 
     def test_two_cardbox_rollback_pattern_still_works(self) -> None:
@@ -231,17 +291,22 @@ class BeltBoxLayoutTest(unittest.TestCase):
 
         layout = resolve_scene_layout({"ISAACLAB_BELT_BOX_PATTERN": "d01,c01"})
         self.assertEqual(
-            [k.key for k in layout.belt_box_kinds], ["d01", "c01", "d01", "c01", "d01"]
+            [k.key for k in layout.belt_box_kinds],
+            ["d01" if i % 2 == 0 else "c01" for i in range(17)],
         )
-        self.assertEqual(layout.belt_box_half_lengths, (0.19, 0.25, 0.19, 0.25, 0.19))
+        self.assertEqual(
+            layout.belt_box_half_lengths,
+            tuple(0.19 if i % 2 == 0 else 0.25 for i in range(17)),
+        )
 
     def test_all_three_parcel_variants_are_registered(self) -> None:
         layout = resolve_scene_layout(
             {"ISAACLAB_BELT_BOX_PATTERN": "parcel_a01,parcel_a02,parcel_a03"}
         )
+        cycle = ("parcel_a01", "parcel_a02", "parcel_a03")
         self.assertEqual(
             [k.key for k in layout.belt_box_kinds],
-            ["parcel_a01", "parcel_a02", "parcel_a03", "parcel_a01", "parcel_a02"],
+            [cycle[i % 3] for i in range(17)],
         )
 
     def test_unknown_pattern_key_fails_fast(self) -> None:
@@ -277,13 +342,14 @@ class BeltBoxLayoutTest(unittest.TestCase):
 
         停稳位一定比出生位更靠下游（队首从 s_lead 走到更大的 s_stop），所以这条
         由出生位校验蕴含；这里显式钉住，防止以后换回积放语义时无声失守。
-        深藏队尾（槽位 -3.90）停稳后仍在支线段上——它要等前面被逐一取走才逐格
-        拐出来，这是"看不到头"的刻意语义。
+        17 箱跨度 12.0 ⇒ 停稳队尾 s = 12.1945 − 12.0 ≈ 0.19，仍深在支线段上
+        ——要等前面被逐一取走才逐格拐出来，这是"看不到头"的刻意语义。
         """
 
         layout = resolve_scene_layout({})
         halves = layout.belt_box_half_lengths
-        spawn_spread = _SLOTS_DEFAULT[0] - _SLOTS_DEFAULT[-1]  # 11.96
+        spawn_spread = _SLOTS_DEFAULT[0] - _SLOTS_DEFAULT[-1]
+        self.assertAlmostEqual(spawn_spread, 12.0, places=9)
         settled_tail_s = _S_STOP_DEFAULT - spawn_spread
 
         # 停稳队尾仍在支线滚筒可用带上（不越出西端），且比出生位更靠下游。
@@ -293,13 +359,17 @@ class BeltBoxLayoutTest(unittest.TestCase):
         tail_x, tail_y = _EI_MODULE.path_point(settled_tail_s)
         self.assertAlmostEqual(tail_y, _EI_MODULE.BRANCH_LANE_Y, places=9)
         self.assertGreater(
-            settled_tail_s, _EI_MODULE.path_s_of_point(*layout.belt_box_positions[4][:2])
+            settled_tail_s,
+            _EI_MODULE.path_s_of_point(*layout.belt_box_positions[-1][:2]),
         )
-        # 前四箱（等距 0.75）的停稳位全部仍在主线/弧段的带面上。
-        for index in range(4):
+        # 全列 17 箱的停稳位全部仍在带面/托面覆盖内：主线段不越过带尾 y_min，
+        # 弧段/支线段不越出滚筒可用端 s_min。
+        for index in range(layout.belt_box_count):
             settled = _S_STOP_DEFAULT - (_SLOTS_DEFAULT[0] - _SLOTS_DEFAULT[index])
+            self.assertGreaterEqual(settled - halves[index], _EI_MODULE.PATH_S_MIN)
             _x, y = _EI_MODULE.path_point(settled)
-            self.assertGreater(y - halves[index], _DRIVE_MODULE.BELT_Y_MIN)
+            if settled >= _EI_MODULE.S_ARC_END:  # 主线段
+                self.assertGreater(y - halves[index], _DRIVE_MODULE.BELT_Y_MIN)
 
     def test_count_and_geometry_are_overridable(self) -> None:
         """Y_LEAD 仍可用（主线段 y 自动换算成 s）；弯道形态下 LANE_X 不生效。"""
@@ -383,7 +453,7 @@ class BeltBoxLayoutTest(unittest.TestCase):
 
     def test_count_above_the_scene_cfg_limit_fails_fast(self) -> None:
         with self.assertRaisesRegex(ValueError, "超过上限"):
-            resolve_scene_layout({"ISAACLAB_BELT_BOX_COUNT": "6"})
+            resolve_scene_layout({"ISAACLAB_BELT_BOX_COUNT": "18"})
 
     def test_negative_count_fails_fast(self) -> None:
         with self.assertRaisesRegex(ValueError, "必须非负"):
@@ -437,14 +507,21 @@ class BeltBoxLayoutTest(unittest.TestCase):
     def test_enlarging_the_pitch_without_room_fails_fast(self) -> None:
         """间距、行程、数量此消彼长：只调大 pitch 而不让出空间就会被拦住。
 
-        弯道形态下五段支线给了 ~8.3 m 排队长度，等距 pitch=3.0 都放得下（显式
-        PITCH 覆盖回退等距排布）；3.1 会顶穿支线可用端 s_min=-4.27。直线回退
-        维持旧的 1.0 拦截。
+        弯道形态默认 17 箱铺满，等距 pitch 上限 ≈0.758（队尾缘顶到支线可用端
+        s_min=-4.27）：0.75 放得下，0.76 顶穿。显式 COUNT=5 时空间富余，等距
+        pitch=3.0 仍放得下（历史容量口径）、3.1 顶穿。直线回退维持旧的 1.0 拦截。
         """
 
-        resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_PITCH": "3.0"})
+        resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_PITCH": "0.75"})
         with self.assertRaisesRegex(ValueError, "悬出支线带面"):
-            resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_PITCH": "3.1"})
+            resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_PITCH": "0.76"})
+        resolve_scene_layout(
+            {"ISAACLAB_BELT_BOX_COUNT": "5", "ISAACLAB_BELT_BOX_SPAWN_PITCH": "3.0"}
+        )
+        with self.assertRaisesRegex(ValueError, "悬出支线带面"):
+            resolve_scene_layout(
+                {"ISAACLAB_BELT_BOX_COUNT": "5", "ISAACLAB_BELT_BOX_SPAWN_PITCH": "3.1"}
+            )
         with self.assertRaisesRegex(ValueError, "悬出带面"):
             resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_PITCH": "1.0", **_ENDLESS_OFF})
 

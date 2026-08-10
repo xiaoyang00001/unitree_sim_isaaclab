@@ -365,8 +365,9 @@ CART2_TOTE1_POS = list(SCENE_LAYOUT.cart2_tote1_pos)
 CART2_TOTE2_POS = list(SCENE_LAYOUT.cart2_tote2_pos)
 
 # 流水线纸箱队列（v61 的 ConveyorBelt_Box 同款视觉资产，见
-# scene_assets/props/cart_box_d01_physics.usda）。默认 5 个，只排在工位
-# ``ROBOT_WORKSTATION_Y`` **上游**那一段带面上——布局与校验在 scene_layout。
+# scene_assets/props/cart_box_d01_physics.usda）。弯道形态默认 17 个（pitch 0.75
+# 铺满整条上游路径；直线回退默认 5），只排在工位 ``ROBOT_WORKSTATION_Y``
+# **上游**那一段带面上——布局与校验在 scene_layout。
 #
 # ⚠️ 与两塑料筐时代同一条约定：出生 y 同时是**复位落点**（整场景复位走
 # mdp.reset_scene_to_default，把箱子写回这里的 init_state），排在上游才能让一次
@@ -459,6 +460,41 @@ CONVEYOR_BELT_BOX_RECYCLE_ENABLED = (
     bool(CONVEYOR_BELT_BOX_NAMES) and CONVEYOR_Y_STOP is None and CONVEYOR_ENABLED
 )
 CONVEYOR_RECYCLE_ENABLED = CONVEYOR_SURFACE_RECYCLE_ENABLED or CONVEYOR_BELT_BOX_RECYCLE_ENABLED
+
+# 循环模式容量复核（17 箱铺满后新增的 fail-fast）：整列在"回生点→回收线→瞬移回
+# 回生点"的环路上循环，等价一个周长 = s(y_recycle) − RESPAWN_S 的圆（默认弯道
+# 形态 ≈ 15.7425 − (-3.90) = 19.64 m）。整带同速 ⇒ 出生间距永久保持，唯一会变
+# 的是"回绕缺口"= 周长 − 出生跨度（17 箱 × pitch 0.75 ⇒ 跨度 12.0，缺口 ≈7.64
+# m）；缺口 < 首尾半长和 + queue_gap 才会追尾。默认远够，这里拦的是以后加箱/
+# 调 pitch/收 y_recycle 时的无声追尾（回收事件每 20 ms 判一次，瞬移落点抖动
+# ≤ 带速×20ms ≈ 6 mm，量级不影响判据）。默认停止模式（y_stop>0）不进环路，
+# 该检查不触发。
+if CONVEYOR_BELT_BOX_RECYCLE_ENABLED and len(BELT_BOX_POSITIONS) > 1:
+    if ENDLESS_INTAKE.enabled:
+        _loop_spawn_ss = [
+            endless_intake.path_s_of_point(pos[0], pos[1]) for pos in BELT_BOX_POSITIONS
+        ]
+        _loop_length = (
+            endless_intake.path_s_of_main_y(CONVEYOR_Y_RECYCLE) - endless_intake.RESPAWN_S
+        )
+    else:
+        # 直线回退：进度 = -y（下游递增），环路 = y_respawn → y_recycle。
+        _loop_spawn_ss = [-pos[1] for pos in BELT_BOX_POSITIONS]
+        _loop_length = CONVEYOR_Y_RESPAWN - CONVEYOR_Y_RECYCLE
+    _loop_wrap_gap = _loop_length - (max(_loop_spawn_ss) - min(_loop_spawn_ss))
+    _loop_wrap_need = (
+        CONVEYOR_BELT_BOX_HALF_LENGTHS[0]
+        + CONVEYOR_BELT_BOX_HALF_LENGTHS[-1]
+        + BELT_BOX_QUEUE_GAP
+    )
+    if _loop_wrap_gap < _loop_wrap_need:
+        raise ValueError(
+            f"循环模式下 {len(BELT_BOX_POSITIONS)} 箱在回生环路上放不下："
+            f"环路周长 {_loop_length:.3f} m − 队列跨度 "
+            f"{max(_loop_spawn_ss) - min(_loop_spawn_ss):.3f} m = 回绕缺口 "
+            f"{_loop_wrap_gap:.3f} m < 首尾防撞下限 {_loop_wrap_need:.3f} m；"
+            "请调小 ISAACLAB_BELT_BOX_COUNT / SPAWN_PITCH 或下调 ISAACLAB_CONVEYOR_Y_RECYCLE"
+        )
 
 # 背景清理和输送机物理是两层独立选择：默认 legacy 后端沿用第一阶段的 clean
 # background，但保留 ConveyorBelt02 原生物理；显式资产开关可让 legacy 也使用纯视觉
@@ -732,12 +768,13 @@ def _log_scene_layout() -> None:
         )
         if ENDLESS_INTAKE.enabled:
             print(
-                f"{tag}   纸箱出生/复位落点（队首→上游，沿弯道路径）: {_spawn}"
+                f"{tag}   纸箱出生/复位落点（共 {len(BELT_BOX_POSITIONS)} 箱，"
+                f"队首→上游，沿弯道路径）: {_spawn}"
                 f" | z={BELT_BOX_POSITIONS[0][2]:.3f}"
             )
         else:
             print(
-                f"{tag}   纸箱出生/复位落点（队首→上游）: {_spawn}"
+                f"{tag}   纸箱出生/复位落点（共 {len(BELT_BOX_POSITIONS)} 箱，队首→上游）: {_spawn}"
                 f" | 车道 x={BELT_BOX_POSITIONS[0][0]:.3f} z={BELT_BOX_POSITIONS[0][2]:.3f}"
             )
         print(f"{tag}   箱型: {_sizes}")
@@ -1424,6 +1461,18 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
     belt_box_3: RigidObjectCfg | None = _make_belt_box_cfg(2)
     belt_box_4: RigidObjectCfg | None = _make_belt_box_cfg(3)
     belt_box_5: RigidObjectCfg | None = _make_belt_box_cfg(4)
+    belt_box_6: RigidObjectCfg | None = _make_belt_box_cfg(5)
+    belt_box_7: RigidObjectCfg | None = _make_belt_box_cfg(6)
+    belt_box_8: RigidObjectCfg | None = _make_belt_box_cfg(7)
+    belt_box_9: RigidObjectCfg | None = _make_belt_box_cfg(8)
+    belt_box_10: RigidObjectCfg | None = _make_belt_box_cfg(9)
+    belt_box_11: RigidObjectCfg | None = _make_belt_box_cfg(10)
+    belt_box_12: RigidObjectCfg | None = _make_belt_box_cfg(11)
+    belt_box_13: RigidObjectCfg | None = _make_belt_box_cfg(12)
+    belt_box_14: RigidObjectCfg | None = _make_belt_box_cfg(13)
+    belt_box_15: RigidObjectCfg | None = _make_belt_box_cfg(14)
+    belt_box_16: RigidObjectCfg | None = _make_belt_box_cfg(15)
+    belt_box_17: RigidObjectCfg | None = _make_belt_box_cfg(16)
 
     # 底座打包桌三方块换成镜像感知版（位置/颜色与底座一致）：不同步的话
     # 两端各自模拟，任一端机器人碰一下就静默分叉。
