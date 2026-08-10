@@ -1220,6 +1220,21 @@ def main():
                         if is_scene_sync_viewer:
                             # viewer 有第二个镜像体（robot_2 工位）
                             apply_g1_sonic_visual_materials("/World/envs/env_0/PeerRobot2")
+                    # 以 InteractiveScene 实际生成的 extras 为真源，不再重复解析布局
+                    # 环境变量，也不写死数量。=0 时列表自然为空；=1 默认找到三台。
+                    standby_prim_paths = [
+                        prim_path
+                        for asset_name, view in env.scene.extras.items()
+                        if asset_name.startswith("standby_robot_")
+                        for prim_path in view.prim_paths
+                    ]
+                    for standby_prim_path in standby_prim_paths:
+                        apply_g1_sonic_visual_materials(standby_prim_path)
+                    if standby_prim_paths:
+                        print(
+                            "[g1_materials] full-fidelity standby robots "
+                            f"×{len(standby_prim_paths)} applied"
+                        )
             except Exception as e:
                 # Appearance must never prevent the DDS/physics validation from
                 # starting.  A missing material asset is therefore reported but

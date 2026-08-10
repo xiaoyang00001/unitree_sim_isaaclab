@@ -1,0 +1,509 @@
+#usda 1.0
+(
+    defaultPrim = "StandbyG1Visual"
+    doc = "Full SONIC G1 visuals in the baked default stance; no physics"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "StandbyG1Visual"
+(
+    customData = {
+        string generatedBy = "tools/build_standby_robot_visual_only_usd.py"
+        string sourceAsset = "g1_43dof_peer.usd"
+        string sourceSha256 = "1067daccb984191645636f50ecea6b53755ddcd27c7a951640ba20e3681b8fc8"
+        string visualDependencySha256 = "1b827b7ad59728bcc44dfab112b2e296e5a5c8bef3196984fb976b99700999b9"
+        string standbyVisualRole = "full_fidelity_baked_pose_no_physics"
+    }
+    prepend references = @./g1_43dof_peer.usd@
+    variants = {
+        string Physics = "None"
+        string Robot = "None"
+        string Sensor = "None"
+    }
+)
+{
+    over "pelvis"
+    {
+        matrix4d xformOp:transform = (
+            (1, 0, 0, 0),
+            (0, 1, 0, 0),
+            (0, 0, 1, 0),
+            (0, 0, 0, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "left_hip_pitch_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.951721548353, 0, 0.306962692196, 0),
+            (0, 1, 0, 0),
+            (-0.306962692196, 0, 0.951721548353, 0),
+            (0, 0.064452, -0.1027, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "left_hip_roll_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.883787556921, 0, 0.467888399335, 0),
+            (0, 1, 0, 0),
+            (-0.467888399335, 0, 0.883787556921, 0),
+            (0.00935161841776, 0.116452, -0.131694196971, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "left_hip_yaw_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.883787556921, 0, 0.467888399335, 0),
+            (0, 1, 0, 0),
+            (-0.467888399335, 0, 0.883787556921, 0),
+            (0.0895214992538, 0.116452, -0.229692230664, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "left_knee_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.93694943326, 0, -0.349464961783, 0),
+            (0, 1, 0, 0),
+            (0.349464961783, 0, 0.93694943326, 0),
+            (0.103320124549, 0.1186009, -0.423046144689, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "left_ankle_pitch_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.999982000054, 0, 0.00599996400006, 0),
+            (0, 1, 0, 0),
+            (-0.00599996400006, 0, 0.999982000054, 0),
+            (-0.00152285863548, 0.118506455, -0.704140344162, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "left_ankle_roll_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.999982000054, 0, 0.00599996400006, 0),
+            (0, 1, 0, 0),
+            (-0.00599996400006, 0, 0.999982000054, 0),
+            (-0.00141751126757, 0.118506455, -0.721698028119, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "right_hip_pitch_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.951721548353, 0, 0.306962692196, 0),
+            (0, 1, 0, 0),
+            (-0.306962692196, 0, 0.951721548353, 0),
+            (0, -0.064452, -0.1027, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "right_hip_roll_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.883787556921, 0, 0.467888399335, 0),
+            (0, 1, 0, 0),
+            (-0.467888399335, 0, 0.883787556921, 0),
+            (0.00935161841776, -0.116452, -0.131694196971, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "right_hip_yaw_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.883787556921, 0, 0.467888399335, 0),
+            (0, 1, 0, 0),
+            (-0.467888399335, 0, 0.883787556921, 0),
+            (0.0895214992538, -0.116452, -0.229692230664, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "right_knee_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.93694943326, 0, -0.349464961783, 0),
+            (0, 1, 0, 0),
+            (0.349464961783, 0, 0.93694943326, 0),
+            (0.103320124549, -0.1186009, -0.423046144689, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "right_ankle_pitch_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.999982000054, 0, 0.00599996400006, 0),
+            (0, 1, 0, 0),
+            (-0.00599996400006, 0, 0.999982000054, 0),
+            (-0.00152285863548, -0.118506455, -0.704140344162, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "right_ankle_roll_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.999982000054, 0, 0.00599996400006, 0),
+            (0, 1, 0, 0),
+            (-0.00599996400006, 0, 0.999982000054, 0),
+            (-0.00141751126757, -0.118506455, -0.721698028119, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "waist_yaw_link"
+    {
+        matrix4d xformOp:transform = (
+            (1, 0, 0, 0),
+            (0, 1, 0, 0),
+            (0, 0, 1, 0),
+            (0, 0, 0, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "waist_roll_link"
+    {
+        matrix4d xformOp:transform = (
+            (1, 0, 0, 0),
+            (0, 1, 0, 0),
+            (0, 0, 1, 0),
+            (-0.0039635, 0, 0.044, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "torso_link"
+    {
+        matrix4d xformOp:transform = (
+            (1, 0, 0, 0),
+            (0, 1, 0, 0),
+            (0, 0, 1, 0),
+            (-0.0039635, 0, 0.044, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "left_shoulder_pitch_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.980066558457, 0.0545838655072, -0.191023932062, 0),
+            (0.000199314124281, 0.961245874369, 0.275692454162, 0),
+            (0.19866932644, -0.27023502851, 0.942074056589, 0),
+            (-7.2e-06, 0.10022, 0.29178, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "left_shoulder_roll_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.980066558457, 0.0545838655072, -0.191023932062, 0),
+            (-0.0155293799801, 0.979622587004, 0.200245912289, 0),
+            (0.198061554451, -0.193287838876, 0.96094299102, 0),
+            (-0.00274742151727, 0.140484963905, 0.289226486981, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "left_shoulder_yaw_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.980066558457, 0.0545838655072, -0.191023932062, 0),
+            (-0.0155293799801, 0.979622587004, 0.200245912289, 0),
+            (0.198061554451, -0.193287838876, 0.96094299102, 0),
+            (-0.0232842772677, 0.16654511382, 0.191306704801, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "left_elbow_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.697049869687, 0.154188531623, -0.700248081672, 0),
+            (-0.0155293799801, 0.979622587004, 0.200245912289, 0),
+            (0.716854460492, -0.128706968526, 0.68524024891, 0),
+            (-0.0237634070169, 0.18296976118, 0.11091856633, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "left_wrist_roll_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.697049869687, 0.154188531623, -0.700248081672, 0),
+            (-0.0155293799801, 0.979622587004, 0.200245912289, 0),
+            (0.716854460492, -0.128706968526, 0.68524024891, 0),
+            (0.0387437172751, 0.201525123306, 0.0344194019341, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "left_wrist_pitch_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.697049869687, 0.154188531623, -0.700248081672, 0),
+            (-0.0155293799801, 0.979622587004, 0.200245912289, 0),
+            (0.716854460492, -0.128706968526, 0.68524024891, 0),
+            (0.0652316123232, 0.207384287508, 0.00780997483056, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "left_wrist_yaw_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.697049869687, 0.154188531623, -0.700248081672, 0),
+            (-0.0155293799801, 0.979622587004, 0.200245912289, 0),
+            (0.716854460492, -0.128706968526, 0.68524024891, 0),
+            (0.0972959063288, 0.214476959962, -0.0244014369264, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "right_shoulder_pitch_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.980066558457, -0.0545838655072, -0.191023932062, 0),
+            (-0.000199314124281, 0.961245874369, -0.275692454162, 0),
+            (0.19866932644, 0.27023502851, 0.942074056589, 0),
+            (-7.2e-06, -0.10021, 0.29178, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "right_shoulder_roll_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.980066558457, -0.0545838655072, -0.191023932062, 0),
+            (0.0155293799801, 0.979622587004, -0.200245912289, 0),
+            (0.198061554451, 0.193287838876, 0.96094299102, 0),
+            (-0.00274742151727, -0.140474963905, 0.289226486981, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "right_shoulder_yaw_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.980066558457, -0.0545838655072, -0.191023932062, 0),
+            (0.0155293799801, 0.979622587004, -0.200245912289, 0),
+            (0.198061554451, 0.193287838876, 0.96094299102, 0),
+            (-0.0232842772677, -0.16653511382, 0.191306704801, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "right_elbow_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.697049869687, -0.154188531623, -0.700248081672, 0),
+            (0.0155293799801, 0.979622587004, -0.200245912289, 0),
+            (0.716854460492, 0.128706968526, 0.68524024891, 0),
+            (-0.0237634070169, -0.18295976118, 0.11091856633, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "right_wrist_roll_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.697049869687, -0.154188531623, -0.700248081672, 0),
+            (0.0155293799801, 0.979622587004, -0.200245912289, 0),
+            (0.716854460492, 0.128706968526, 0.68524024891, 0),
+            (0.0387437172751, -0.201515123306, 0.0344194019341, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "right_wrist_pitch_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.697049869687, -0.154188531623, -0.700248081672, 0),
+            (0.0155293799801, 0.979622587004, -0.200245912289, 0),
+            (0.716854460492, 0.128706968526, 0.68524024891, 0),
+            (0.0652316123232, -0.207374287508, 0.00780997483056, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "right_wrist_yaw_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.697049869687, -0.154188531623, -0.700248081672, 0),
+            (0.0155293799801, 0.979622587004, -0.200245912289, 0),
+            (0.716854460492, 0.128706968526, 0.68524024891, 0),
+            (0.0972959063288, -0.214466959962, -0.0244014369264, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "left_hand_thumb_0_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.697049869687, 0.154188531623, -0.700248081672, 0),
+            (-0.0155293799801, 0.979622587004, 0.200245912289, 0),
+            (0.716854460492, -0.128706968526, 0.68524024891, 0),
+            (0.143951659458, 0.227746459342, -0.0707173206615, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "left_hand_thumb_1_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.697049869687, 0.154188531623, -0.700248081672, 0),
+            (-0.0155293799801, 0.979622587004, 0.200245912289, 0),
+            (0.716854460492, -0.128706968526, 0.68524024891, 0),
+            (0.142508751817, 0.208454272084, -0.0728314465645, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "left_hand_thumb_2_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.697049869687, 0.154188531623, -0.700248081672, 0),
+            (-0.0155293799801, 0.979622587004, 0.200245912289, 0),
+            (0.716854460492, -0.128706968526, 0.68524024891, 0),
+            (0.14321999742, 0.163587557599, -0.0820027093474, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "left_hand_middle_0_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.697049869687, 0.154188531623, -0.700248081672, 0),
+            (-0.0155293799801, 0.979622587004, 0.200245912289, 0),
+            (0.716854460492, -0.128706968526, 0.68524024891, 0),
+            (0.159882463524, 0.241030645435, -0.126479224159, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "left_hand_middle_1_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.697049869687, 0.154188531623, -0.700248081672, 0),
+            (-0.0155293799801, 0.979622587004, 0.200245912289, 0),
+            (0.716854460492, -0.128706968526, 0.68524024891, 0),
+            (0.191807347555, 0.248092480183, -0.1585505863, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "left_hand_index_0_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.697049869687, 0.154188531623, -0.700248081672, 0),
+            (-0.0155293799801, 0.979622587004, 0.200245912289, 0),
+            (0.716854460492, -0.128706968526, 0.68524024891, 0),
+            (0.200743167772, 0.233694348229, -0.0874205299712, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "left_hand_index_1_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.697049869687, 0.154188531623, -0.700248081672, 0),
+            (-0.0155293799801, 0.979622587004, 0.200245912289, 0),
+            (0.716854460492, -0.128706968526, 0.68524024891, 0),
+            (0.232668051803, 0.240756182977, -0.119491892112, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "right_hand_thumb_0_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.697049869687, -0.154188531623, -0.700248081672, 0),
+            (0.0155293799801, 0.979622587004, -0.200245912289, 0),
+            (0.716854460492, 0.128706968526, 0.68524024891, 0),
+            (0.143951659458, -0.227736459342, -0.0707173206615, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "right_hand_thumb_1_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.697049869687, -0.154188531623, -0.700248081672, 0),
+            (0.0155293799801, 0.979622587004, -0.200245912289, 0),
+            (0.716854460492, 0.128706968526, 0.68524024891, 0),
+            (0.142508751817, -0.208444272084, -0.0728314465645, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "right_hand_thumb_2_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.697049869687, -0.154188531623, -0.700248081672, 0),
+            (0.0155293799801, 0.979622587004, -0.200245912289, 0),
+            (0.716854460492, 0.128706968526, 0.68524024891, 0),
+            (0.14321999742, -0.163577557599, -0.0820027093474, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "right_hand_middle_0_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.697049869687, -0.154188531623, -0.700248081672, 0),
+            (0.0155293799801, 0.979622587004, -0.200245912289, 0),
+            (0.716854460492, 0.128706968526, 0.68524024891, 0),
+            (0.159882463524, -0.241020645435, -0.126479224159, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "right_hand_middle_1_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.697049869687, -0.154188531623, -0.700248081672, 0),
+            (0.0155293799801, 0.979622587004, -0.200245912289, 0),
+            (0.716854460492, 0.128706968526, 0.68524024891, 0),
+            (0.191807347555, -0.248082480183, -0.1585505863, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "right_hand_index_0_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.697049869687, -0.154188531623, -0.700248081672, 0),
+            (0.0155293799801, 0.979622587004, -0.200245912289, 0),
+            (0.716854460492, 0.128706968526, 0.68524024891, 0),
+            (0.200743167772, -0.233684348229, -0.0874205299712, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    over "right_hand_index_1_link"
+    {
+        matrix4d xformOp:transform = (
+            (0.697049869687, -0.154188531623, -0.700248081672, 0),
+            (0.0155293799801, 0.979622587004, -0.200245912289, 0),
+            (0.716854460492, 0.128706968526, 0.68524024891, 0),
+            (0.232668051803, -0.240746182977, -0.119491892112, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+}

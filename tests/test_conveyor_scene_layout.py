@@ -104,6 +104,47 @@ class ConveyorSceneLayoutTest(unittest.TestCase):
         self.assertEqual(layout.conveyor_y_stop, 12.25)
 
 
+class StandbyRobotLayoutTest(unittest.TestCase):
+    """流水线布局最多增加三台分散、非面对面的纯显示机器人。"""
+
+    def test_conveyor_layout_adds_three_scattered_standby_robots(self) -> None:
+        layout = resolve_scene_layout({})
+
+        self.assertLessEqual(len(layout.standby_robot_poses), 3)
+        self.assertEqual(
+            tuple((pose.pos, pose.rot) for pose in layout.standby_robot_poses),
+            (
+                ((-7.02, 18.6534, 0.76), (0.0, 0.0, 0.0, 1.0)),
+                ((-6.7, 17.2, 0.76), (1.0, 0.0, 0.0, 0.0)),
+                (
+                    (-9.5, 21.15, 0.76),
+                    (0.70710678, 0.0, 0.0, -0.70710678),
+                ),
+            ),
+        )
+        # 三台分处弯道内侧、主线上游和 X 支线，不在同一横截面相向站立。
+        self.assertEqual(len({pose.pos[1] for pose in layout.standby_robot_poses}), 3)
+        self.assertEqual(len({pose.rot for pose in layout.standby_robot_poses}), 3)
+
+    def test_pushcart_layout_does_not_add_standby_robots(self) -> None:
+        layout = resolve_scene_layout({"ISAACLAB_TOTES_ON_CONVEYOR": "0"})
+
+        self.assertEqual(layout.standby_robot_poses, ())
+
+    def test_existing_two_robot_workstations_are_unchanged(self) -> None:
+        conveyor = resolve_scene_layout({})
+        pushcart = resolve_scene_layout({"ISAACLAB_TOTES_ON_CONVEYOR": "0"})
+
+        self.assertEqual(
+            (conveyor.robot_1_x, conveyor.robot_2_x, conveyor.robot_workstation_y),
+            (-4.54, -6.7, 14.398),
+        )
+        self.assertEqual(
+            (pushcart.robot_1_x, pushcart.robot_2_x, pushcart.robot_workstation_y),
+            (-4.82, -6.42, 19.0),
+        )
+
+
 class ConveyorLayoutNorthShiftTest(unittest.TestCase):
     """北移量在 scene_layout / conveyor_drive 两处副本必须一致。"""
 

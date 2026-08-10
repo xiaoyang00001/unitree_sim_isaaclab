@@ -35,6 +35,7 @@ SYNC_PATH = (
     REPO_ROOT
     / "tasks/g1_tasks/g1_29dof_sonic_conveyor/zmq_scene_sync.py"
 )
+SIM_MAIN_PATH = REPO_ROOT / "sim_main.py"
 
 
 def _load_module(name: str, path: Path):
@@ -202,6 +203,50 @@ class PeerVisualLodWiringTests(unittest.TestCase):
         self.assertIn('"robot_1": "/World/envs/env_0/PeerRobot"', source)
         self.assertIn('"robot_2": "/World/envs/env_0/PeerRobot2"', source)
         self.assertIn("_make_second_peer_scene_cfg() if VIEWER_MODE", source)
+
+    def test_conveyor_standby_robots_use_full_meshes_without_physics(self) -> None:
+        source = CONFIG_PATH.read_text(encoding="utf-8")
+        factory = source.split("def _make_standby_robot_cfg(", 1)[1].split(
+            "# ==================================================================\n# 场景", 1
+        )[0]
+
+        self.assertIn("if index >= len(STANDBY_ROBOT_POSES):", factory)
+        self.assertIn("pose = STANDBY_ROBOT_POSES[index]", factory)
+        self.assertIn("return AssetBaseCfg(", factory)
+        self.assertIn("pos=pose.pos, rot=pose.rot", factory)
+        self.assertIn("usd_path=str(_STANDBY_ROBOT_USD)", factory)
+        self.assertIn(
+            'variants={"Physics": "None", "Robot": "None", "Sensor": "None"}',
+            factory,
+        )
+        self.assertIn("activate_contact_sensors=False", factory)
+        self.assertNotIn("_make_peer_visual_lod_cfg(", factory)
+        self.assertNotIn("ArticulationCfg(", factory)
+        self.assertNotIn("RigidBodyPropertiesCfg", factory)
+        self.assertEqual(source.count("= _make_standby_robot_cfg("), 3)
+        for name in ("StandbyRobot1", "StandbyRobot2", "StandbyRobot3"):
+            self.assertIn(f'"{name}"', source)
+
+        # 新增展示体不能改动原有两台的朝向契约。
+        self.assertIn(
+            "_ROBOT_1_ROT = (1.0, 0.0, 0.0, 0.0) if _ROBOT_YAW_IDENTITY "
+            "else (0.0, 0.0, 0.0, 1.0)",
+            source,
+        )
+        self.assertIn("_ROBOT_2_ROT = (1.0, 0.0, 0.0, 0.0)", source)
+
+        # 涂装跟随实际 scene.extras，不重复读取开关、不硬编码三条 Prim 路径。
+        sim_source = SIM_MAIN_PATH.read_text(encoding="utf-8")
+        material_block = sim_source.split("standby_prim_paths = [", 1)[1].split(
+            "except Exception as e:", 1
+        )[0]
+        self.assertIn("for asset_name, view in env.scene.extras.items()", material_block)
+        self.assertIn('asset_name.startswith("standby_robot_")', material_block)
+        self.assertIn("for prim_path in view.prim_paths", material_block)
+        self.assertIn("apply_g1_sonic_visual_materials(standby_prim_path)", material_block)
+        self.assertNotIn("os.environ", material_block)
+        for name in ("StandbyRobot1", "StandbyRobot2", "StandbyRobot3"):
+            self.assertNotIn(name, material_block)
 
     def test_sync_uses_visual_writer_before_articulation_methods(self) -> None:
         source = SYNC_PATH.read_text(encoding="utf-8")

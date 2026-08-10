@@ -18,6 +18,11 @@ from typing import Mapping
 # tests/test_conveyor_scene_layout.py 交叉断言两边一致，别只改一边。
 CONVEYOR_NORTH_SHIFT_Y = 0.25
 
+# 纯显示站位机器人使用与现有两台相同的 SONIC 默认姿态。该姿态烘焙后的完整
+# G1 网格包围盒 min z=-0.757501582；沿用工作机器人 root z=0.76 时脚底离地
+# 约 2.5 mm，视觉贴地且 pelvis 高度一致。
+STANDBY_ROBOT_ROOT_Z = 0.76
+
 
 def _shifted(base_y: float) -> float:
     """把北移前的世界 y 基准值平移到当前布局；round 掉二进制浮点尾巴。"""
@@ -244,6 +249,15 @@ def _path_s_of_main_y(y: float) -> float:
 
 
 @dataclass(frozen=True)
+class StandbyRobotPose:
+    """One physics-free G1 pose in the conveyor workcell."""
+
+    pos: tuple[float, float, float]
+    # 当前项目的 Isaac Lab InitialStateCfg 约定为 (w, x, y, z)。
+    rot: tuple[float, float, float, float]
+
+
+@dataclass(frozen=True)
 class ConveyorSceneLayout:
     """Resolved positions and scale shared by all conveyor scene assets."""
 
@@ -254,6 +268,7 @@ class ConveyorSceneLayout:
     robot_workstation_y: float
     robot_1_x: float
     robot_2_x: float
+    standby_robot_poses: tuple[StandbyRobotPose, ...]
     pushcart_2_pos: tuple[float, float, float]
     cart2_tote1_pos: tuple[float, float, float]
     cart2_tote2_pos: tuple[float, float, float]
@@ -505,6 +520,33 @@ def resolve_scene_layout(environ: Mapping[str, str]) -> ConveyorSceneLayout:
         -6.7 if totes_on_conveyor else cart_group_x - robot_side_offset,
     )
 
+    # 只在 =1 流水线布局生成三台纯显示 G1。它们分散在弯道内侧、主线上游和 X 支线，
+    # 不组成同一横截面的面对面队列。第一台站在弯道圆心内侧、朝 -X 看向支线队尾；
+    # 第二台沿用现有机器人到主带中线的横向站距；第三台在支线北侧。现有两台的
+    # 坐标和朝向保持不变。
+    standby_robot_poses = (
+        (
+            StandbyRobotPose(
+                pos=(
+                    BELT_BOX_LANE_X - BELT_BOX_CORNER_RADIUS,
+                    BELT_BOX_BRANCH_LANE_Y - BELT_BOX_CORNER_RADIUS,
+                    STANDBY_ROBOT_ROOT_Z,
+                ),
+                rot=(0.0, 0.0, 0.0, 1.0),  # yaw 180°，朝 -X
+            ),
+            StandbyRobotPose(
+                pos=(robot_2_x, _shifted(16.95), STANDBY_ROBOT_ROOT_Z),
+                rot=(1.0, 0.0, 0.0, 0.0),  # yaw 0°，朝 +X
+            ),
+            StandbyRobotPose(
+                pos=(-9.50, _shifted(20.90), STANDBY_ROBOT_ROOT_Z),
+                rot=(0.70710678, 0.0, 0.0, -0.70710678),  # yaw -90°，朝 -Y
+            ),
+        )
+        if totes_on_conveyor
+        else ()
+    )
+
     # Δ=0.25 下两个出生点在 17.65 / 18.25（贴着入料端）。出生瞬间可见是已知限制
     # （见 README「已知限制」；西拐弯道方案的遮挡评估属 endless_intake）。
     tote_spawn_y_lead = _env_float(
@@ -547,6 +589,7 @@ def resolve_scene_layout(environ: Mapping[str, str]) -> ConveyorSceneLayout:
         robot_workstation_y=robot_workstation_y,
         robot_1_x=robot_1_x,
         robot_2_x=robot_2_x,
+        standby_robot_poses=standby_robot_poses,
         pushcart_2_pos=pushcart_2_pos,
         cart2_tote1_pos=cart2_tote1_pos,
         cart2_tote2_pos=cart2_tote2_pos,

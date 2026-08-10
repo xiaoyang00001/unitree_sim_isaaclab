@@ -54,10 +54,16 @@ ISAACLAB_PEER_ROBOT_MODE=visual_lod
 
 | 值 | 布局 | 关键世界坐标 |
 |---|---|---|
-| `1`（默认） | 17 个箱/包沿**西拐入口弯道路径**以 pitch 0.75 **铺满**工位上游、挡停放行流向工位；机器人分站流水线两侧 | 工位 `y=14.398`（机器人对称分站 `x=-4.54 / -6.7`，各距带中线 1.08 m）；出生槽位 s=`8.06 − 0.75k (k=0..16)`（队首主线 `y≈18.53` 刚拐出弯 + 弧上 3 箱 + X 支线 13 箱，队尾深藏 s=`-3.94` `(-16.70,20.05)`、藏在货架排 B 后面）；`y_stop=14.398` |
+| `1`（默认） | 17 个箱/包沿**西拐入口弯道路径**以 pitch 0.75 **铺满**工位上游、挡停放行流向工位；现有两台机器人保持原工位，另有 3 台纯显示 G1 在弯道内侧、主线和 X 支线分散站位，不组成面对面队列 | 现有工位 `y=14.398`（机器人 `x=-4.54 / -6.7` 不变）；新增站位 `(-7.02,18.65)`（弯道内侧）朝 `-X`、`(-6.70,17.20)` 朝 `+X`、`(-9.50,21.15)` 朝 `-Y`；出生槽位 s=`8.06 − 0.75k (k=0..16)`；`y_stop=14.398` |
 | `0` | 两个原尺寸塑料筐叠放在入料口推车上；机器人面对面站在推车两侧 | 作业组 `(-5.62, 19.0)`（机器人 `x=-4.82 / -6.42`）；`y_stop=11.75` |
 
 例如：`ISAACLAB_TOTES_ON_CONVEYOR=0 python sim_main.py ...`。
+
+流水线布局新增的三台站位机器人使用 `g1_43dof_standby_visual_only.usda`：它引用原两台
+同源的完整 G1 网格，烘焙相同的 SONIC 默认关节姿态，并复用同一套白/黑分区和 Logo
+涂装；资产的 `Physics/Robot/Sensor` 三组 variant 全部选为 `None`。因此组合后外形与
+原机一致，但没有 articulation、关节、刚体、碰撞、执行器或接触传感器，也不参与
+`scene_state` 同步。切到 `ISAACLAB_TOTES_ON_CONVEYOR=0` 时不会生成这三台。
 
 默认的 `ISAACLAB_CONVEYOR_PROPS=layout` 会真正不生成当前布局用不到的道具：
 
@@ -466,8 +472,9 @@ HandCmd 默认超时为 `0.20 s`；超时后保持最后安全的 `q/kp/kd`、�
 | conveyor_workcell_lite.usd | `tools/build_conveyor_workcell_lite.py` 生成的 ASCII USD 薄层 | opt-in 背景；白名单引用 63 个 v61 根 Prim，当前静态审计为 27,802→1,052 active Prim、1,818→13 used layer |
 | conveyor_workcell_lite.manifest.json | 本仓库可复现生成清单 | 锁定源哈希、保留规则、必须存在/缺席的 Prim 和组合降幅门槛 |
 | ConveyorBelt02.usd (46.7MB) | 分叉工作区拷入（**已入本仓库 git**） | 被 warehouse USD 以 `./ConveyorBelt02.usd` 相对引用，必须与 warehouse 层保持可解析的相对路径；后续 visual-only 派生层不直接重写这个二进制源资产 |
-| peer_robot/g1_43dof_peer.usd | `tools/build_peer_robot_usd.py` 生成（已入 git） | 默认 articulation 模式的无碰撞镜像机器人；缺失时任务启动 fail-fast |
+| peer_robot/g1_43dof_peer.usd | `tools/build_peer_robot_usd.py` 生成（已入 git） | 默认 articulation 模式的无碰撞镜像机器人；流水线布局的三台站位机器人也复用其完整网格；缺失时任务启动 fail-fast |
 | peer_robot/g1_43dof_visual_lod.usda | `tools/build_peer_visual_lod_usd.py` 生成（入 git） | 43-DoF 纯显示镜像；47 个解析 Gprim、3 份共享材质、无 PhysX schema |
+| peer_robot/g1_43dof_standby_visual_only.usda | `tools/build_standby_robot_visual_only_usd.py` 生成（入 git） | 静态站位机器人专用；引用完整 G1 网格、烘焙 SONIC 默认姿态，三组物理 variant 全关，无活动 Physics schema |
 | nolo_label.png | 分叉 git | warehouse USD 相对引用的地面贴花 |
 | props/pushcart_physics.usda | 分叉工作区手拷（未入 git） | 引用 Nucleus 5.1 SM_PushcartA_02 |
 | props/cart_box_d05_physics.usda | 分叉 git-LFS tip 版 | 已含关 CCD 修复（ae9118a2e） |

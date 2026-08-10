@@ -325,7 +325,8 @@ def _env_reset_sync_cfg() -> ZmqEnvResetSyncActionCfg:
 #
 #   1 = 流水线布局：两塑料筐缩小一半（scale 0.005）放上流水线滚轮面的**入料端**，
 #       由 drive_totes 事件沿 -Y 送到第二段工位停住；双机站第二段两侧
-#       (x=-4.54 / -6.7, y=14.398)，pushcart_2 空车留在 y=19.64363
+#       (x=-4.54 / -6.7, y=14.398)，另有三台无物理 G1 在弯道内侧、主线和 X 支线分散站位，
+#       不组成面对面队列；pushcart_2 空车留在 y=19.64363
 #       （⚠️ robot_1 x=-4.54 是 2026-08-09 的对称化站位，不是 01cdfaf 的 -4.75；
 #       所有世界 y 已含整体北移 Δ=0.25）。
 #   0 = 原布局：两筐恢复原尺寸（scale 0.01）叠放回 pushcart_2 拖车顶面
@@ -342,6 +343,7 @@ ROBOT_SIDE_OFFSET = SCENE_LAYOUT.robot_side_offset
 ROBOT_WORKSTATION_Y = SCENE_LAYOUT.robot_workstation_y
 ROBOT_1_X = SCENE_LAYOUT.robot_1_x
 ROBOT_2_X = SCENE_LAYOUT.robot_2_x
+STANDBY_ROBOT_POSES = SCENE_LAYOUT.standby_robot_poses
 
 # 第二台拖车。流水线布局下是留在原工作位的空车；原布局下载着两筐顶到流水线入料端。
 PUSHCART_2_POS = list(SCENE_LAYOUT.pushcart_2_pos)
@@ -718,6 +720,15 @@ def _log_scene_layout(*, drop_gate_enabled: bool) -> None:
         f" | 整体北移 Δ={CONVEYOR_NORTH_SHIFT_Y:.2f}"
         "（支线越过货架排 B 所需；wrapper 组变换/装饰/地贴同 Δ）"
     )
+    if STANDBY_ROBOT_POSES:
+        _standby_xy = " / ".join(
+            f"({pose.pos[0]:.2f},{pose.pos[1]:.2f})"
+            for pose in STANDBY_ROBOT_POSES
+        )
+        print(
+            f"{tag}   纯显示站位机器人 ×{len(STANDBY_ROBOT_POSES)}: "
+            f"{_standby_xy}（沿流水线分散、非面对面、无物理）"
+        )
     if CONVEYOR_TOTE_NAMES and TOTES_ON_CONVEYOR:
         print(
             f"{tag}   筐出生/复位落点 y: tote1={CART2_TOTE1_POS[1]:.3f} tote2={CART2_TOTE2_POS[1]:.3f}"
@@ -1042,6 +1053,7 @@ def _make_second_local_robot_cfg() -> ArticulationCfg:
 
 _PEER_ROBOT_USD = _ASSETS_DIR / "peer_robot" / "g1_43dof_peer.usd"
 _PEER_VISUAL_LOD_USD = _ASSETS_DIR / "peer_robot" / "g1_43dof_visual_lod.usda"
+_STANDBY_ROBOT_USD = _ASSETS_DIR / "peer_robot" / "g1_43dof_standby_visual_only.usda"
 
 # 镜像体的无重力/零阻尼自由体刚体参数：关节与 root 由 scene_state 帧直写，
 # 去穿透无意义，但 PhysX 不接受 0，只能不设置（None）。
@@ -1188,6 +1200,33 @@ def _make_second_peer_scene_cfg() -> ArticulationCfg | AssetBaseCfg:
             rot=PEER2_ROBOT_ROT,
         )
     return _make_second_peer_robot_cfg()
+
+
+_STANDBY_ROBOT_PRIM_NAMES = (
+    "StandbyRobot1",
+    "StandbyRobot2",
+    "StandbyRobot3",
+)
+
+
+def _make_standby_robot_cfg(index: int) -> AssetBaseCfg | None:
+    """Create one full-fidelity, render-only G1 beside the conveyor."""
+
+    if index >= len(STANDBY_ROBOT_POSES):
+        return None
+    pose = STANDBY_ROBOT_POSES[index]
+    return AssetBaseCfg(
+        prim_path=f"{{ENV_REGEX_NS}}/{_STANDBY_ROBOT_PRIM_NAMES[index]}",
+        init_state=AssetBaseCfg.InitialStateCfg(pos=pose.pos, rot=pose.rot),
+        # 引用原两台同源的完整 SONIC G1，切掉物理/控制/传感 variant，并烘焙
+        # 相同默认关节姿态。组合后保留完整网格与材质，但没有 joint、rigid body、
+        # articulation、collision 或 sensor schema，PhysX 不会解析它。
+        spawn=UsdFileCfg(
+            usd_path=str(_STANDBY_ROBOT_USD),
+            variants={"Physics": "None", "Robot": "None", "Sensor": "None"},
+            activate_contact_sensors=False,
+        ),
+    )
 
 
 # ==================================================================
@@ -1540,6 +1579,13 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
         _make_foot_contact_sensor("Robot2") if HOST_MODE else None
     )
 
+    # 仅流水线布局（TOTES_ON_CONVEYOR=1）生成：三台完整外观 G1 在弯道内侧、主线和 X 支线
+    # 分散站立，各自朝向明确且不组成面对面队列。它们没有 articulation、刚体、
+    # 碰撞、执行器或传感器，也不进入 scene_state 同步；现有两台机器人配置不变。
+    standby_robot_1: AssetBaseCfg | None = _make_standby_robot_cfg(0)
+    standby_robot_2: AssetBaseCfg | None = _make_standby_robot_cfg(1)
+    standby_robot_3: AssetBaseCfg | None = _make_standby_robot_cfg(2)
+
     # 方向光制造明暗面，避免 DomeLight 均匀照明导致的"塑料感"。
     sun = AssetBaseCfg(
         prim_path="/World/sunLight",
@@ -1853,6 +1899,16 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
             raise RuntimeError(
                 f"缺少纯显示镜像机器人资产 {_PEER_VISUAL_LOD_USD}\n"
                 "先运行: python tools/build_peer_visual_lod_usd.py"
+            )
+        if STANDBY_ROBOT_POSES and not _STANDBY_ROBOT_USD.exists():
+            raise RuntimeError(
+                f"流水线布局缺少完整 G1 纯显示站位资产 {_STANDBY_ROBOT_USD}\n"
+                "先运行: python tools/build_standby_robot_visual_only_usd.py"
+            )
+        if STANDBY_ROBOT_POSES and not _PEER_ROBOT_USD.exists():
+            raise RuntimeError(
+                f"纯显示站位资产缺少同源完整 G1 引用 {_PEER_ROBOT_USD}\n"
+                "先运行: python tools/build_peer_robot_usd.py"
             )
         if not HOST_MODE:
             print(f"[conveyor_env_cfg] 镜像机器人模式: {PEER_ROBOT_MODE}")
