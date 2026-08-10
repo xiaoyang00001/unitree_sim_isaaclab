@@ -162,7 +162,7 @@ BELT_BOX_PATH_S_ORIGIN_X = -12.76
 # 支线滚筒可用端（段 5 西端 x=-17.0342 ⇒ s=-4.2742，取 -4.27）：队尾不得越过。
 BELT_BOX_PATH_S_MIN = -4.27
 # 默认队首 s=8.06：队首刚拐出弯 0.121 m、落在主线 y≈18.533（整箱上主线）。
-BELT_BOX_DEFAULT_S_LEAD = 8.06
+BELT_BOX_DEFAULT_S_LEAD = 11.06
 # 直线回退形态（endless off / legacy_props）的默认箱数：上游带面只有 ~4.07 m，
 # "17 箱铺满"是弯道路径才有的容量，直排默认维持历史 5 箱（显式 COUNT 对两种
 # 形态都生效，直排给大了会被"悬出带面"fail-fast 拦住）。
