@@ -252,6 +252,9 @@ def drive_belt_boxes_on_conveyor(
     # —— 工位箱平面偏离门控（仅停止式 legacy 后端使用） ——
     departure_completed: torch.Tensor | None = None,
     arrived: torch.Tensor | None = None,
+    lifted: torch.Tensor | None = None,
+    belt_dwell: torch.Tensor | None = None,
+    release_settle_steps: int = 25,
 ):
     """把纸箱队列沿带面送到工位，工位箱偏出流水线通道后放行下一格。
 
@@ -275,6 +278,17 @@ def drive_belt_boxes_on_conveyor(
     直到该箱平面偏出流水线（completed）才解除——启停节拍在一次抱取内只翻转一次。
     已放行（completed）的箱子同时从队首判定与驱动输出中剔除，手臂回摆把它带回
     带面上方时不会再按停整带或被重新拖走。
+
+    ``lifted`` / ``belt_dwell`` 是悬空压停锁存及其驻留计数（推导见
+    ``update_lift_hold_latch``）：上游截抓的箱子既没有 arrived 也没有 completed，
+    携行高度又恰好横跨 z 窗阈值，瞬时判会让整带跟着手臂颠簸启停；锁存化后抬离
+    带面即稳定压停，回带连续驻留 ``release_settle_steps`` 步（默认 25 步 = 0.5 s
+    @50Hz tick）才解除。同一驻留判据同时给 completed 提供场内解除
+    （``release_resettled_boxes``）：脱手掉回带上的已放行箱重新入队，不再变成
+    堵死队列的呆滞障碍。已知限制：箱子被抱住但仍贴在带面 z 窗内的瞬间（尚未
+    抬起），几何判据无法区分"被抱住"与"自由躺放"，若恰逢整带此刻放行，该箱在
+    抬离前仍会被短暂写输送速度——这是纯几何判据的固有盲区，靠缩短贴带抱取
+    时间缓解。
 
     弯道形态下箱子**不旋转**（保持世界朝向）：速度矢量沿路径航向逐步更新，
     姿态不动——双机同步/镜像端零改动，观感是箱子"平移着拐弯"。
@@ -347,13 +361,12 @@ def drive_belt_boxes_on_conveyor(
     transfer_complete = None
     completed = None
     if y_stop is not None:
-        if departure_completed is None or arrived is None:
-            raise ValueError("停止式纸箱队列必须由有状态事件 term 提供平面偏离与到位锁存")
+        if departure_completed is None or arrived is None or lifted is None or belt_dwell is None:
+            raise ValueError("停止式纸箱队列必须由有状态事件 term 提供平面偏离/到位/悬空锁存")
         completed = conveyor_queue.update_departure_completion_latch(
             departure_completed[:, env_ids],
             in_conveyor_corridor,
         )
-        departure_completed[:, env_ids] = completed
         if path_enabled:
             arrived_now = conveyor_queue.update_arrival_latch_along_path(
                 arrived[:, env_ids], ss, s_stop=s_stop
@@ -362,11 +375,24 @@ def drive_belt_boxes_on_conveyor(
             arrived_now = conveyor_queue.update_arrival_latch(
                 arrived[:, env_ids], pos_local[..., 1], y_stop=y_stop
             )
-        arrived[:, env_ids] = arrived_now
-        # 两道门相与：既没有"悬空未离线"的箱子，也没有"到位未离线"的箱子。
-        transfer_complete = conveyor_queue.transfer_complete_mask(
+        lifted_now, dwell_now, settled = conveyor_queue.update_lift_hold_latch(
+            lifted[:, env_ids],
+            belt_dwell[:, env_ids],
             on_belt,
+            in_conveyor_corridor,
             completed,
+            release_steps=release_settle_steps,
+        )
+        completed, arrived_now = conveyor_queue.release_resettled_boxes(
+            completed, arrived_now, settled
+        )
+        departure_completed[:, env_ids] = completed
+        arrived[:, env_ids] = arrived_now
+        lifted[:, env_ids] = lifted_now
+        belt_dwell[:, env_ids] = dwell_now
+        # 两道门相与：既没有"悬空未离线"的箱子，也没有"到位未离线"的箱子。
+        transfer_complete = conveyor_queue.lift_hold_gate(
+            lifted_now
         ) & conveyor_queue.belt_release_gate(arrived_now, completed)  # (E,)
     # (N, 1)：广播到 (N, E)。箱型通常只有十余个，每周期重建此小张量成本可忽略。
     half_len = pos_local.new_tensor(half_lengths).unsqueeze(-1)
@@ -408,7 +434,7 @@ def drive_belt_boxes_on_conveyor(
 
 
 class DriveBeltBoxesOnConveyor(ManagerTermBase):
-    """带 per-box 平面偏离/到位双锁存的纸箱驱动事件 term。"""
+    """带 per-box 平面偏离/到位/悬空三锁存的纸箱驱动事件 term。"""
 
     def __init__(self, cfg, env: ManagerBasedEnv):
         super().__init__(cfg, env)
@@ -419,11 +445,19 @@ class DriveBeltBoxesOnConveyor(ManagerTermBase):
             dtype=torch.bool,
         )
         self._arrived = torch.zeros_like(self._departure_completed)
+        self._lifted = torch.zeros_like(self._departure_completed)
+        self._belt_dwell = torch.zeros(
+            (num_objects, env.num_envs),
+            device=env.device,
+            dtype=torch.int32,
+        )
 
     def reset(self, env_ids=None) -> None:
         ids = slice(None) if env_ids is None else env_ids
         self._departure_completed[:, ids] = False
         self._arrived[:, ids] = False
+        self._lifted[:, ids] = False
+        self._belt_dwell[:, ids] = 0
 
     def __call__(
         self,
@@ -444,6 +478,7 @@ class DriveBeltBoxesOnConveyor(ManagerTermBase):
         path_radius: float = 1.40,
         path_s_origin_x: float = 0.0,
         extra_rects: tuple[tuple[float, float, float, float], ...] = (),
+        release_settle_steps: int = 25,
     ) -> None:
         drive_belt_boxes_on_conveyor(
             env,
@@ -465,6 +500,9 @@ class DriveBeltBoxesOnConveyor(ManagerTermBase):
             extra_rects=extra_rects,
             departure_completed=self._departure_completed,
             arrived=self._arrived,
+            lifted=self._lifted,
+            belt_dwell=self._belt_dwell,
+            release_settle_steps=release_settle_steps,
         )
 
 

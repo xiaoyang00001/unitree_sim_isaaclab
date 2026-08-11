@@ -90,8 +90,12 @@ def transfer_complete_mask(
 
     每个箱子必须满足二选一：仍在带面高度窗口内，或根位置的 XY 投影已经偏出过流水线
     通道。于是队首只被竖直抬高时 ``on_belt=False`` 但仍在通道内，整带继续停住；
-    横向搬出通道后立即放行，不再依赖蓝箱位置、速度阈值或驻留时间。完成位按箱锁存，
-    避免抓取轨迹回摆或在边界附近抖动时把已经启动的流水线再次按停。
+    横向搬出通道后立即放行，不再依赖蓝箱位置或速度阈值。
+
+    ⚠️ 这是**瞬时**判据：z 窗边界抖动会让它逐帧翻转。事件层
+    ``drive_belt_boxes_on_conveyor`` 已改用锁存化的 ``update_lift_hold_latch`` +
+    ``lift_hold_gate`` 承担同一职责（悬空未离线压停），本函数保留作瞬时口径的
+    定义参照与直接调用方兼容。
     """
 
     if on_belt.shape != departure_completed.shape:
@@ -164,10 +168,10 @@ def belt_release_gate(
 ) -> torch.Tensor:
     """整带放行门：存在"已到位但尚未偏出流水线"的箱子时禁止整带运行。
 
-    输入均为 ``(N, E)``，输出 ``(E,)``。与 ``transfer_complete_mask`` 互补：
-    那张 mask 拦的是"被抬离带面但 XY 未偏出"的悬空箱，这里拦的是"仍躺在工位
-    （含被抓取推挤回上游）"的到位箱——两者一起构成"箱子被拿到流水线之外才
-    重新开带"的完整口径。``.any(dim=0)`` 是张量 reduce，不产生 GPU→CPU 同步。
+    输入均为 ``(N, E)``，输出 ``(E,)``。与 ``update_lift_hold_latch`` 生成的悬空
+    压停互补：那边拦的是"被抬离带面但 XY 未偏出"的悬空箱，这里拦的是"仍躺在
+    工位（含被抓取推挤回上游）"的到位箱——两者一起构成"箱子被拿到流水线之外
+    才重新开带"的完整口径。``.any(dim=0)`` 是张量 reduce，不产生 GPU→CPU 同步。
     """
 
     if arrived.shape != completed.shape:
@@ -176,6 +180,75 @@ def belt_release_gate(
             f"{tuple(arrived.shape)} vs {tuple(completed.shape)}"
         )
     return ~((arrived & ~completed).any(dim=0))
+
+
+def update_lift_hold_latch(
+    lifted: torch.Tensor,
+    dwell: torch.Tensor,
+    on_belt: torch.Tensor,
+    in_conveyor_corridor: torch.Tensor,
+    completed: torch.Tensor,
+    *,
+    release_steps: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """悬空压停锁存：未放行箱被抬离带面即锁存，回带稳定驻留后才解除。
+
+    裸瞬时判 ``(on_belt | completed).all`` 会被 z 窗边界抖动打穿：抱抱式携行的
+    自然高度恰好横跨 ``belt_top_z + z_tolerance`` 阈值，手臂每次颠簸重穿越一次，
+    整带就跟着启停一次（上游截抓的箱子既没有 arrived 也没有 completed，全靠这道
+    门）。锁存化后箱子首次抬离带面（``~on_belt & in_corridor``）置位 ``lifted``，
+    z 再怎么抖都保持压停，两条出路：
+
+    * 箱子平面偏出流水线 → ``completed`` 置位 → 本锁存即刻让位（放行）；
+    * 箱子被放回带面并**连续驻留** ``release_steps`` 步（``dwell`` 计数）→ 解除
+      压停，重新当普通队列箱——放弃抓取、脱手掉回都能自愈，短暂回摆（不足
+      驻留步数）不会误解除。
+
+    返回 ``(lifted, dwell, settled)``；``settled``（连续在带 ≥ release_steps）
+    另供 ``release_resettled_boxes`` 做 completed 的场内解除。输入输出均为
+    ``(N, E)``，全程张量运算无 GPU→CPU 同步。
+    """
+
+    if not (lifted.shape == dwell.shape == on_belt.shape == in_conveyor_corridor.shape == completed.shape):
+        raise ValueError(
+            "lifted/dwell/on_belt/in_conveyor_corridor/completed 形状必须一致："
+            f"{tuple(lifted.shape)} / {tuple(dwell.shape)} / {tuple(on_belt.shape)}"
+            f" / {tuple(in_conveyor_corridor.shape)} / {tuple(completed.shape)}"
+        )
+    dwell = torch.where(on_belt, dwell + 1, torch.zeros_like(dwell))
+    settled = dwell >= release_steps
+    lifted = (lifted | (~on_belt & in_conveyor_corridor)) & ~settled & ~completed
+    return lifted, dwell, settled
+
+
+def lift_hold_gate(lifted: torch.Tensor) -> torch.Tensor:
+    """悬空压停门：存在被抬离带面且未放行的箱子时禁止整带运行。输出 ``(E,)``。"""
+
+    return ~lifted.any(dim=0)
+
+
+def release_resettled_boxes(
+    completed: torch.Tensor,
+    arrived: torch.Tensor,
+    settled: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """已放行箱稳定回到带面后清除其锁存，重新入队。
+
+    没有这条场内解除路径，抓取脱手掉回带上的已放行箱会变成永不被驱动的呆滞
+    障碍：它被 ``completed`` 从驱动集合剔除，靠摩擦钉在原地，后车在防撞兜底线
+    外排死，整条队列断供直到整场景复位。``settled``（连续驻留带面 ≥
+    release_steps，见 ``update_lift_hold_latch``）确保只有真正放回带上的箱子才
+    重新入队，抓取回摆的短暂贴带不会误触发。解除后 ``arrived`` 一并清零：箱子
+    落在工位区就重新当工位箱压停整带等抓取，落在上游就正常排队。
+    """
+
+    if not (completed.shape == arrived.shape == settled.shape):
+        raise ValueError(
+            "completed/arrived/settled 形状必须一致："
+            f"{tuple(completed.shape)} / {tuple(arrived.shape)} / {tuple(settled.shape)}"
+        )
+    release = completed & settled
+    return completed & ~release, arrived & ~release
 
 
 def path_progress(
@@ -328,7 +401,9 @@ def queue_drive_mask(
         active = on_belt
 
     if y_stop is None:
-        return on_belt & clear_of_leader
+        # active 而非 on_belt：循环模式虽不走锁存（事件层恒传 completed=None），
+        # 但直接调用方传了 completed 时同样必须兑现"已放行箱不再被驱动"的契约。
+        return active & clear_of_leader
 
     # —— 整带节拍 ——
     # 只看仍在队列里的箱子来确定新队首；被抓走的箱子是否已经横向偏出流水线，则由
