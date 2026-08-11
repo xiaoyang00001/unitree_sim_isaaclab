@@ -101,7 +101,7 @@ BELT_BOX_KINDS = {
         length_y=0.25,
         width_x=0.38,
         height_z=0.1487,
-        mass=1.0,
+        mass=0.1,
     ),
     "d02": BeltBoxKind(
         key="d02",
@@ -109,7 +109,7 @@ BELT_BOX_KINDS = {
         length_y=0.25,
         width_x=0.38,
         height_z=0.1663,
-        mass=1.0,
+        mass=0.1,
     ),
     # 尺寸取实测组合包围盒（生成器标称 40×30 / 45×35 / 32×24 cm，鼓包略溢出）。
     "parcel_a01": BeltBoxKind(
