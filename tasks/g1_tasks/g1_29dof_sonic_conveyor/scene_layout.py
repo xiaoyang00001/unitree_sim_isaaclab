@@ -6,6 +6,7 @@ tests verify the environment-variable switch without importing Isaac Lab.
 
 from __future__ import annotations
 
+import hashlib
 import math
 from dataclasses import dataclass
 from typing import Mapping
@@ -87,10 +88,10 @@ class BeltBoxKind:
         return max(self.length_y, self.width_x) * 0.5
 
 
-# 两种纸箱使用 Simple Warehouse 的 SM_CardBoxD_01 / SM_CardBoxD_02；D02 保持
-# 与 D01 相同的横向尺寸，但顶部有明显压皱，替换掉跨度过大的 SM_CardBoxC_01。
-# 软包裹三种取自
-# IsaacLab 分叉 feat/pickplace-parcel-assets 的
+# C01/C02 与 D01~D05 是 Simple Warehouse 里真实存在的 canonical 纸箱资产；场景
+# 树中的 C03~C09、D06~D11 只是复用这些网格的别名，不重复登记。每个登记项都用
+# 任务级平底碰撞 wrapper，避免官方视觉 mesh 自带的 triangle collision 被动态刚体
+# 退化处理。软包裹三种取自 IsaacLab 分叉 feat/pickplace-parcel-assets 的
 # 程序化快递袋资产（塑料袋装衣服：枕形鼓包+热封边+顶面白色面单）。⚠️ 软包裹是
 # **刚体不是软体**——"软"只是视觉造型，物理上与纸箱同一套约定（根挂 RigidBody+Mass、
 # convexHull 碰撞、原点在袋底），所以能直接进队列/同步/镜像分流，CPU pipeline 可用。
@@ -110,6 +111,46 @@ BELT_BOX_KINDS = {
         width_x=0.38,
         height_z=0.1663,
         mass=0.1,
+    ),
+    "c01": BeltBoxKind(
+        key="c01",
+        asset="cart_box_c01_physics.usda",
+        length_y=0.50,
+        width_x=0.50,
+        height_z=0.25,
+        mass=1.5,
+    ),
+    "c02": BeltBoxKind(
+        key="c02",
+        asset="cart_box_c02_physics.usda",
+        length_y=0.50,
+        width_x=0.50,
+        height_z=0.311,
+        mass=1.5,
+    ),
+    "d03": BeltBoxKind(
+        key="d03",
+        asset="cart_box_d03_physics.usda",
+        length_y=0.2606,
+        width_x=0.4126,
+        height_z=0.2656,
+        mass=1.5,
+    ),
+    "d04": BeltBoxKind(
+        key="d04",
+        asset="cart_box_d04_physics.usda",
+        length_y=0.25,
+        width_x=0.38,
+        height_z=0.149,
+        mass=1.5,
+    ),
+    "d05": BeltBoxKind(
+        key="d05",
+        asset="cart_box_d05_physics.usda",
+        length_y=0.25,
+        width_x=0.38,
+        height_z=0.149,
+        mass=1.5,
     ),
     # 尺寸取实测组合包围盒（生成器标称 40×30 / 45×35 / 32×24 cm，鼓包略溢出）。
     "parcel_a01": BeltBoxKind(
@@ -137,9 +178,54 @@ BELT_BOX_KINDS = {
         mass=0.22,
     ),
 }
-# 默认交错：横向尺寸相同、外形不同的 D01 + 压皱 D02。三种软包裹仍可通过
-# ISAACLAB_BELT_BOX_PATTERN=parcel_a01,parcel_a02,parcel_a03 显式选用。
-DEFAULT_BELT_BOX_PATTERN = ("d01", "d02")
+# 默认队首永远保持 D01 + 压皱 D02；后 15 件从全部十种箱/包中做带 seed 的
+# 平衡随机：每轮先让池中每种资产各出现一次，再进入下一轮，避免纯抽样漏掉某种
+# 外观。排序只用 SHA-256，不依赖 Python hash / 全局 random / 系统熵，所以 Linux
+# 权威端与 Windows viewer 在相同 seed 下会得到逐槽一致的 USD。
+BELT_BOX_FIXED_FRONT = ("d01", "d02")
+DEFAULT_BELT_BOX_RANDOM_POOL = (
+    "d01",
+    "d02",
+    "c01",
+    "c02",
+    "d03",
+    "d04",
+    "d05",
+    "parcel_a01",
+    "parcel_a02",
+    "parcel_a03",
+)
+DEFAULT_BELT_BOX_RANDOM_SEED = "20260811"
+BELT_BOX_RANDOM_SEED_ENV = "ISAACLAB_BELT_BOX_RANDOM_SEED"
+
+
+def _stable_shuffled_cycle(seed: str, cycle: int) -> list[str]:
+    """跨进程/平台稳定地打乱一轮默认资产池。"""
+
+    decorated = []
+    for index, key in enumerate(DEFAULT_BELT_BOX_RANDOM_POOL):
+        token = f"belt-box-v1\0{seed}\0{cycle}\0{index}\0{key}".encode("utf-8")
+        decorated.append((hashlib.sha256(token).digest(), index, key))
+    return [key for _digest, _index, key in sorted(decorated)]
+
+
+def _default_belt_box_keys(seed: str, count: int = 17) -> tuple[str, ...]:
+    """固定队首 + 平衡随机尾队列；先生成完整队列再截前缀。"""
+
+    keys = list(BELT_BOX_FIXED_FRONT[:count])
+    cycle = 0
+    while len(keys) < count:
+        shuffled = _stable_shuffled_cycle(seed, cycle)
+        # 两轮边界或固定队首边界若刚好同型，稳定交换本轮前两个不同项，避免视觉连号。
+        if keys and shuffled[0] == keys[-1]:
+            swap_index = next(index for index, key in enumerate(shuffled[1:], 1) if key != keys[-1])
+            shuffled[0], shuffled[swap_index] = shuffled[swap_index], shuffled[0]
+        keys.extend(shuffled[: count - len(keys)])
+        cycle += 1
+    return tuple(keys)
+
+
+DEFAULT_BELT_BOX_PATTERN = _default_belt_box_keys(DEFAULT_BELT_BOX_RANDOM_SEED)
 
 # 带面几何与 conveyor_drive 的常量保持一致（那边是驱动/分段的真源，这里只用来
 # 定位出生点；两处数值若要改必须同时改）。y 值必须过 _shifted（Δ 非零时自动
@@ -151,8 +237,10 @@ BELT_BOX_BELT_WIDTH = 0.90
 
 # 队首两箱（belt_box_1/2）不摆在带面正中线：并排都在中线上，机器人得伸手越过
 # 中线去够对面那只；分别偏西/偏东后各自贴近同侧机器人，一台一箱都能从近侧直接
-# 抱（2026-08-10 用户反馈）。偏移量 0.20 m：带半宽 0.45 − 箱半宽（d01/d02 0.19、
-# 本模块登记的最宽箱型 parcel_a02 0.2263）留 ≥0.06 m 到带边裕量；带面驱动判据
+# 抱（2026-08-10 用户反馈）。偏移量 0.20 m：默认队首固定 d01/d02，带半宽
+# 0.45 − 箱半宽 0.19 − 偏移 0.20 = 0.06 m，仍留 60 mm 到带边；显式 PATTERN
+# 若把更宽的 C 型箱放到队首，下面仍会按真实半宽校验（0.50 m C 型恰好贴边，
+# 因此不作为默认队首）。带面驱动判据
 # on_belt_mask 的 x_range 半宽 0.55、主线段 s 只按 y 取值（见 conveyor_queue.
 # path_progress / endless_intake.path_s_of_point），偏移量在直线段上恒定，
 # 不会被驱动逻辑纠偏回中线，也不影响排队/防撞判据（那些只看 s，s 只看 y）。
@@ -180,22 +268,19 @@ BELT_BOX_CORNER_RADIUS = 1.40
 BELT_BOX_PATH_S_ORIGIN_X = -12.76
 # 支线滚筒可用端（段 5 西端 x=-17.0342 ⇒ s=-4.2742，取 -4.27）：队尾不得越过。
 BELT_BOX_PATH_S_MIN = -4.27
-# 默认队首 s=8.06：队首刚拐出弯 0.121 m、落在主线 y≈18.533（整箱上主线）。
+# 默认队首 s=11.06：落在主线 y≈15.533，距工位停止点约 1.135 m。
 BELT_BOX_DEFAULT_S_LEAD = 11.06
 # 直线回退形态（endless off / legacy_props）的默认箱数：上游带面只有 ~4.07 m，
-# "17 箱铺满"是弯道路径才有的容量，直排默认维持历史 5 箱（显式 COUNT 对两种
+# 17 箱队列依赖弯道路径的额外容量，直排默认维持历史 5 箱（显式 COUNT 对两种
 # 形态都生效，直排给大了会被"悬出带面"fail-fast 拦住）。
 BELT_BOX_STRAIGHT_DEFAULT_COUNT = 5
-# 默认出生**显式槽位序列**（沿路径距离 s，队首→上游）：以队首 s=8.06 为锚、
-# pitch 0.75 一路向上游**铺满整条上游路径**——主线 1 + 弧上 3 + X 支线 13，
-# 共 17 箱（2026-08-10"放满"改版；此前是前四位 + 队尾单列深藏 -3.90）。
-# 最深槽位 s = 8.06 − 0.75×16 = -3.94，逐项核算：
+# 默认出生**显式槽位序列**（沿路径距离 s，队首→上游）：以队首 s=11.06 为锚，
+# pitch 0.75 排成主线 5 + 弧上 3 + X 支线 9，共 17 箱/包。
+# 队尾槽位 s = 11.06 − 0.75×16 = -0.94，逐项核算：
 # * 对支线滚筒可用端 PATH_S_MIN=-4.27 的净距（d01/d02 路径半长 0.19 口径）
-#   = -3.94 − 0.19 − (-4.27) = 140 mm ≥ 50 mm 红线；
-# * 比旧深藏位 -3.90（= endless_intake.RESPAWN_S，循环模式回生点**仍是**它）
-#   更深 40 mm：E2 眼位"东上角"全遮边界 s≤-3.81 ⇒ 遮挡结论只强不弱（裕量
-#   90→130 mm）；E1 通视缝残余口径不变——E2/E1 结论沿用 endless_intake
-#   「遮挡核算」，未重跑射线。
+#   = -0.94 − 0.19 − (-4.27) = 3.14 m；
+# * endless_intake.RESPAWN_S=-3.90 是循环模式独立使用的回生点，比默认出生队尾
+#   再向上游 2.96 m，不随这组出生槽位改变。
 # 显式给出 S_LEAD / Y_LEAD / PITCH 任一环境变量时回退等距排布。
 # COUNT<17 时取序列前缀（从队首往上游数；队尾不再有单独的深藏特例）。
 BELT_BOX_DEFAULT_SLOT_S = tuple(
@@ -287,15 +372,20 @@ class ConveyorSceneLayout:
 
 
 def resolve_belt_box_pattern(environ: Mapping[str, str], count: int) -> tuple[BeltBoxKind, ...]:
-    """按 ``ISAACLAB_BELT_BOX_PATTERN`` 循环出每个位置的箱型。
+    """解析每个位置的箱型。
 
-    默认 ``d01,d02`` ⇒ 交错排布 d01/d02/d01/d02/d01。写单个 key（如 ``d01``）就是
-    全用一种。未知 key 一律 fail-fast，不静默回退——否则场景里会悄悄少一种箱型。
+    默认前两位固定 d01/d02，后面按 ``ISAACLAB_BELT_BOX_RANDOM_SEED`` 做可复现的
+    平衡随机；始终先生成完整 17 项再取前缀，因此 COUNT 不会重排已有槽位。显式
+    ``ISAACLAB_BELT_BOX_PATTERN`` 保留历史完整覆盖语义并优先于 seed：按给定
+    pattern 从第 1 件开始循环，写单个 key 就是全用一种。未知 key 一律 fail-fast。
     """
 
     raw = environ.get("ISAACLAB_BELT_BOX_PATTERN")
     if raw is None or not str(raw).strip():
-        pattern = DEFAULT_BELT_BOX_PATTERN
+        seed = str(environ.get(BELT_BOX_RANDOM_SEED_ENV, DEFAULT_BELT_BOX_RANDOM_SEED)).strip()
+        if not seed:
+            seed = DEFAULT_BELT_BOX_RANDOM_SEED
+        pattern = _default_belt_box_keys(seed, BELT_BOX_MAX_COUNT)
     else:
         pattern = tuple(item.strip().lower() for item in str(raw).split(",") if item.strip())
     if not pattern:
@@ -338,16 +428,16 @@ def resolve_belt_box_positions(
 ) -> tuple[int, tuple[tuple[float, float, float], ...], tuple[BeltBoxKind, ...], float]:
     """把 N 个纸箱排在工位**上游**（默认沿西拐入口弯道路径，退化态沿主线直排）。
 
-    ``belt_box_1`` 是队首（最靠下游、最先到工位），编号递增向上游排。箱型按
-    ``ISAACLAB_BELT_BOX_PATTERN`` 循环（默认两种交错）。出生间距 ``spawn_pitch``
+    ``belt_box_1`` 是队首（最靠下游、最先到工位），编号递增向上游排。默认队首两箱
+    固定为 D01/D02，其余 15 件从十种纸箱/软包中做带 seed 的平衡随机；显式
+    ``ISAACLAB_BELT_BOX_PATTERN`` 则保留完整覆盖语义。出生间距 ``spawn_pitch``
     只决定初始队形；停下来后的实际队距由**每个箱子自己的半长**加净间隙
-    ``queue_gap`` 决定。当前 D01/D02 横向尺寸相同，但仍保留逐箱型半长口径，确保显式
-    切换到软包裹时防撞计算正确。
+    ``queue_gap`` 决定，因此 C 型大箱和软包混排时也使用各自真实占位。
 
     **弯道形态（endless intake 生效，默认）**：出生点按显式槽位序列
-    ``BELT_BOX_DEFAULT_SLOT_S``（以队首 s=8.06 为锚、pitch 0.75 铺满整条上游
-    路径：主线 1 + 弧上 3 + X 支线 13 共 17 箱；最深 s=-3.94 比回生点 -3.90
-    更深、藏进货架排 B 后面——净距/遮挡核算见常量注释）。显式给出
+    ``BELT_BOX_DEFAULT_SLOT_S``（以队首 s=11.06 为锚、pitch 0.75 排成主线 5 +
+    弧上 3 + X 支线 9 共 17 箱/包；队尾 s=-0.94，对支线可用端仍留 3.14 m
+    净距）。显式给出
     ``S_LEAD``/``Y_LEAD``/``PITCH`` 任一旋钮时回退等距
     排布 ``s_lead − k·pitch``，pitch 语义是"沿路径距离间距"。
     队首覆盖优先级：``ISAACLAB_BELT_BOX_SPAWN_S_LEAD``（路径距离）>
@@ -364,7 +454,7 @@ def resolve_belt_box_positions(
     """
 
     endless = _endless_intake_active(environ, totes_on_conveyor=True)
-    # 弯道形态默认铺满 17 槽；直线回退的上游带面只有 ~4.07 m，默认维持历史 5 箱
+    # 弯道形态默认使用 17 槽；直线回退的上游带面只有 ~4.07 m，默认维持历史 5 箱
     # （legacy_props 也走直线分支，默认 17 会启动即"悬出带面"）。
     count = _env_int(
         environ,
@@ -452,7 +542,7 @@ def resolve_belt_box_positions(
             s_lead = None
 
         if s_lead is None and not raw_pitch:
-            # 默认：显式槽位序列——pitch 0.75 从队首铺满上游路径（见常量注释）。
+            # 默认：显式槽位序列——pitch 0.75 从队首向上游排列（见常量注释）。
             slots = list(BELT_BOX_DEFAULT_SLOT_S[:count])
         else:
             # 显式覆盖任一旋钮 ⇒ 回退等距排布，语义与历史一致。

@@ -1,0 +1,84 @@
+#usda 1.0
+(
+    defaultPrim = "CartBoxD03"
+    metersPerUnit = 1
+    upAxis = "Z"
+    doc = """Dynamic conveyor wrapper for the tall, irregular SM_CardBoxD_03 carton.
+
+    Its visual AABB is asymmetric around the root.  The flat collider uses the
+    largest absolute X/Y extents on both sides (0.4126 x 0.2606 x 0.2656 m),
+    conservatively enclosing the complete visual while keeping a stable base."""
+)
+
+def Xform "CartBoxD03" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "PhysxRigidBodyAPI"]
+)
+{
+    bool physics:rigidBodyEnabled = 1
+    bool physics:kinematicEnabled = 0
+    float physics:mass = 1.5
+    float physxRigidBody:angularDamping = 0.1
+    bool physxRigidBody:disableGravity = 0
+    bool physxRigidBody:enableCCD = 0
+    bool physxRigidBody:enableGyroscopicForces = 1
+    float physxRigidBody:linearDamping = 0.1
+    float physxRigidBody:maxDepenetrationVelocity = 0.5
+    int physxRigidBody:solverPositionIterationCount = 8
+    int physxRigidBody:solverVelocityIterationCount = 2
+
+    def Xform "Visual" (
+        prepend references = @https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Environments/Simple_Warehouse/Props/SM_CardBoxD_03.usd@
+    )
+    {
+        over "SM_CardBoxD_03" (
+            delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+        )
+        {
+        }
+    }
+
+    def Material "GraspPhysicsMaterial" (
+        prepend apiSchemas = ["PhysicsMaterialAPI", "PhysxMaterialAPI"]
+    )
+    {
+        float physics:dynamicFriction = 1.1
+        float physics:restitution = 0
+        float physics:staticFriction = 1.4
+        token physxMaterial:frictionCombineMode = "multiply"
+        token physxMaterial:restitutionCombineMode = "min"
+    }
+
+    def Mesh "ConvexHullCollider" (
+        prepend apiSchemas = ["MaterialBindingAPI", "PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "PhysxCollisionAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+        int[] faceVertexIndices = [
+            0, 1, 2, 3,
+            4, 7, 6, 5,
+            0, 4, 5, 1,
+            1, 5, 6, 2,
+            2, 6, 7, 3,
+            3, 7, 4, 0,
+        ]
+        # 官方视觉 AABB = x[-0.206246,0.19] y[-0.130277,0.127523]
+        # z[0,0.265583]；碰撞盒按最大绝对值向两侧保守对称化。
+        point3f[] points = [
+            (-0.2063, -0.1303, 0),
+            (0.2063, -0.1303, 0),
+            (0.2063, 0.1303, 0),
+            (-0.2063, 0.1303, 0),
+            (-0.2063, -0.1303, 0.2656),
+            (0.2063, -0.1303, 0.2656),
+            (0.2063, 0.1303, 0.2656),
+            (-0.2063, 0.1303, 0.2656),
+        ]
+        bool physics:collisionEnabled = 1
+        uniform token physics:approximation = "convexHull"
+        float physxCollision:contactOffset = 0.005
+        float physxCollision:restOffset = 0
+        rel material:binding:physics = </CartBoxD03/GraspPhysicsMaterial>
+        uniform token subdivisionScheme = "none"
+        token visibility = "invisible"
+    }
+}

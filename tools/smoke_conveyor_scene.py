@@ -6,10 +6,10 @@
 不走 DDS/deploy，直接以默认关节位姿 step 环境，验证场景与同步链路本身。
 
 默认布局是"看不到头的入料端"（endless intake，**西拐**，Δ=0.25 整体北移）：
-17 个箱/包以 pitch 0.75 沿入口弯道路径**铺满**出生（队首在主线 y≈18.53 刚拐出
-弯，主线 1 + 弧上 3 + X 支线 13，队尾深藏 s=-3.94 (-16.70, 20.05)、藏在货架
-排 B 后面），经支线 +X → 圆角弧 → 主线 -Y 流到工位 y≈14.398 停住；队首行程
-≈4.13 m（实测带速 ~0.244 m/s ⇒ ~850 步到位），所以默认步数 1600。
+17 个箱/包以 pitch 0.75 沿入口弯道路径出生（队首在主线 y≈15.53，主线 5 +
+弧上 3 + X 支线 9，队尾 s=-0.94 (-13.70, 20.05)），经支线 +X → 圆角弧 →
+主线 -Y 流到工位 y≈14.398 停住；队首行程≈1.13 m（实测带速 ~0.244 m/s ⇒
+约 230 步到位），默认 1600 步为整列稳定和可选取件补位留出时间。
 位移/停位判定都按沿路径距离 s。
 ISAACLAB_CONVEYOR_ENDLESS=off 回退直线带头（旧行为，y 判定）。
 （expected_stop_y 从 env cfg 动态取，改常量自动跟随）
@@ -170,6 +170,12 @@ def main() -> int:
         env.close()
         return 1
     watched = {name: env.scene[name] for name in watched_names}
+    half_by_name = dict(
+        zip(
+            conveyor_env_cfg.CONVEYOR_BELT_BOX_NAMES,
+            conveyor_env_cfg.CONVEYOR_BELT_BOX_HALF_LENGTHS,
+        )
+    )
     # 纸箱走整带节拍：队首压到工位，整条带一起停，后面的**保持出生时的相对间距**
     # （不会挤到贴紧前车）。所以停位 = y_stop + 该箱相对队首的出生偏移。
     # 塑料筐没有队列语义，两个筐各自直接停在工位（偏移取 0 即退化成这种）。
@@ -351,8 +357,9 @@ def main() -> int:
             # 出生间距整体平移"对拖滑物理不成立，判据改为：
             #   ① 队首停在工位（这是节拍的硬语义）；
             #   ② 其余仍按下游序排列，且每对相邻间距落在
-            #      [max(0.45, 出生间距−0.45), 出生间距+0.35] 内（下界的 0.45 ≈
-            #      最大箱对的半长和+净间隙；±界给弧段拉伸/收缩留余量）。
+            #      [max(该对真实半长和+queue_gap, 出生间距−0.45),
+            #       出生间距+0.35] 内（C 型大箱把最小安全间距抬到 0.57 m；±界给
+            #      弧段拉伸/收缩留余量）。
             lead = graded_names[0]
             lead_error = abs(end_p[lead] - stop_p)
             spacing = [
@@ -363,7 +370,18 @@ def main() -> int:
                 start_p[graded_names[i]] - start_p[graded_names[i + 1]]
                 for i in range(len(graded_names) - 1)
             ]
-            bounds = [(max(0.45, gap - 0.45), gap + 0.35) for gap in spawn_gaps]
+            bounds = [
+                (
+                    max(
+                        half_by_name.get(graded_names[index], 0.19)
+                        + half_by_name.get(graded_names[index + 1], 0.19)
+                        + conveyor_env_cfg.BELT_BOX_QUEUE_GAP,
+                        gap - 0.45,
+                    ),
+                    gap + 0.35,
+                )
+                for index, gap in enumerate(spawn_gaps)
+            ]
             spacing_ok = all(
                 lo <= gap <= hi for gap, (lo, hi) in zip(spacing, bounds)
             )

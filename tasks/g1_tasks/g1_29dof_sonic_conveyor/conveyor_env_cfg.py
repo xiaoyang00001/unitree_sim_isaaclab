@@ -230,8 +230,8 @@ SCENE_SYNC_CONNECT_ENDPOINT = _env_str(
 )
 
 # 进 scene_state 帧的场景物体（两端清单必须逐字一致）。默认清单直接取布局实际
-# 生成的刚体：流水线布局只有两筐，推车布局是 pushcart_2+两筐；legacy_props 才恢复
-# 旧的两组推车、纸箱、test_box 和打包桌三方块。
+# 生成的刚体：流水线布局是 belt_box_1..17，推车布局是 pushcart_2+两筐；
+# legacy_props 才恢复旧的两组推车、纸箱、test_box 和打包桌三方块。
 SYNC_OBJECT_NAMES = _env_str_tuple(
     "ISAACLAB_SCENE_SYNC_OBJECTS",
     SCENE_PROPS.spawned_names,
@@ -323,8 +323,8 @@ def _env_reset_sync_cfg() -> ZmqEnvResetSyncActionCfg:
 # ==================================================================
 # 场景布局开关 ISAACLAB_TOTES_ON_CONVEYOR（默认 1）——语义与源分支一致：
 #
-#   1 = 流水线布局：两塑料筐缩小一半（scale 0.005）放上流水线滚轮面的**入料端**，
-#       由 drive_totes 事件沿 -Y 送到第二段工位停住；双机站第二段两侧
+#   1 = 流水线布局：17 个箱/包沿西拐 L 路径排在**入料端**，由
+#       drive_belt_boxes 事件沿路径送到第二段工位挡停；双机站第二段两侧
 #       (x=-4.54 / -6.7, y=14.398)，另有三台无物理 G1 在支线队尾、主线和支线中段分散站位，
 #       不组成面对面队列；pushcart_2 空车留在 y=19.64363
 #       （⚠️ robot_1 x=-4.54 是 2026-08-09 的对称化站位，不是 01cdfaf 的 -4.75；
@@ -368,7 +368,7 @@ CART2_TOTE2_POS = list(SCENE_LAYOUT.cart2_tote2_pos)
 
 # 流水线纸箱队列（v61 的 ConveyorBelt_Box 同款视觉资产，见
 # scene_assets/props/cart_box_d01_physics.usda）。弯道形态默认 17 个（pitch 0.75
-# 铺满整条上游路径；直线回退默认 5），只排在工位 ``ROBOT_WORKSTATION_Y``
+# 沿入口路径排列；直线回退默认 5），只排在工位 ``ROBOT_WORKSTATION_Y``
 # **上游**那一段带面上——布局与校验在 scene_layout。
 #
 # ⚠️ 与两塑料筐时代同一条约定：出生 y 同时是**复位落点**（整场景复位走
@@ -435,7 +435,7 @@ CONVEYOR_DRIVE = resolve_conveyor_drive(
     mirror_objects=MIRROR_OBJECTS,
     default_y_stop=SCENE_LAYOUT.conveyor_y_stop,
     # 移动带面在期望停位上游 handoff_offset 处结束，取作业对象沿带方向的半长。
-    # 流水线布局有两种箱型，取**队首**那个（它才是停在工位上的那个）；推车布局
+    # 流水线布局有十种箱/包，取**队首**那个（它才是停在工位上的那个）；推车布局
     # 仍是原尺寸塑料筐（0.20）。
     default_handoff_offset=(
         (BELT_BOX_HALF_LENGTHS[0] if BELT_BOX_HALF_LENGTHS else 0.19)
@@ -463,7 +463,7 @@ CONVEYOR_BELT_BOX_RECYCLE_ENABLED = (
 )
 CONVEYOR_RECYCLE_ENABLED = CONVEYOR_SURFACE_RECYCLE_ENABLED or CONVEYOR_BELT_BOX_RECYCLE_ENABLED
 
-# 循环模式容量复核（17 箱铺满后新增的 fail-fast）：整列在"回生点→回收线→瞬移回
+# 循环模式容量复核（17 箱队列新增的 fail-fast）：整列在"回生点→回收线→瞬移回
 # 回生点"的环路上循环，等价一个周长 = s(y_recycle) − RESPAWN_S 的圆（默认弯道
 # 形态 ≈ 15.7425 − (-3.90) = 19.64 m）。整带同速 ⇒ 出生间距永久保持，唯一会变
 # 的是"回绕缺口"= 周长 − 出生跨度（17 箱 × pitch 0.75 ⇒ 跨度 12.0，缺口 ≈7.64
@@ -638,6 +638,22 @@ def _make_endless_plate_cfg(
     )
 
 
+def _make_endless_path_support_cfg(prim_name: str) -> AssetBaseCfg:
+    """完整 L 路径的一体静态托面；单 Mesh 消除 Cuboid 对接处的内部竖直面。"""
+
+    return AssetBaseCfg(
+        prim_path=f"{{ENV_REGEX_NS}}/{prim_name}",
+        init_state=AssetBaseCfg.InitialStateCfg(
+            # USD 局部原点约定为主车道中心、主带北端、带面顶。
+            pos=[BELT_X_CENTER, endless_intake.CORNER_PLATE_Y_RANGE[0], BELT_TOP_Z],
+            rot=[1.0, 0.0, 0.0, 0.0],
+        ),
+        spawn=UsdFileCfg(
+            usd_path=str(_ASSETS_DIR / "props" / "conveyor_path_support_physics.usda")
+        ),
+    )
+
+
 _ENDLESS_CURVE_USD = f"{NVIDIA_NUCLEUS_DIR}/{endless_intake.CURVE_ASSET_NVIDIA_RELPATH}"
 _ENDLESS_XLEG_USD = f"{NVIDIA_NUCLEUS_DIR}/{endless_intake.XLEG_ASSET_NVIDIA_RELPATH}"
 _ENDLESS_UNIT_SCALE = (
@@ -645,6 +661,9 @@ _ENDLESS_UNIT_SCALE = (
     endless_intake.CONVEYOR_UNIT_SCALE,
     endless_intake.CONVEYOR_UNIT_SCALE,
 )
+# legacy 默认使用一体托面；surface_velocity 仍保留可单独施加 -Y 表面速度的主线
+# Cuboid（该实验后端本来就不驱动支线/弧段）。
+_USE_SEAM_FREE_PATH_SUPPORT = ENDLESS_INTAKE.enabled and CONVEYOR_DRIVE_MODE == "legacy"
 
 
 def _make_endless_xleg_cfg(index: int) -> AssetBaseCfg:
@@ -736,8 +755,9 @@ def _log_scene_layout() -> None:
             f"（从排B北侧擦过：南缘对护板北缘净距 "
             f"{endless_intake.XLEG_AABBS[-1][1][0] - endless_intake.RACK_B_GUARD_NORTH_Y:.4f}）"
         )
+        support_label = "连续单 Mesh 托面" if _USE_SEAM_FREE_PATH_SUPPORT else "托面延伸"
         print(
-            f"{tag}     托面延伸: 拐角 x[{endless_intake.CORNER_PLATE_X_RANGE[0]:.2f},"
+            f"{tag}     {support_label}: 拐角 x[{endless_intake.CORNER_PLATE_X_RANGE[0]:.2f},"
             f"{endless_intake.CORNER_PLATE_X_RANGE[1]:.2f}]"
             f"y[{endless_intake.CORNER_PLATE_Y_RANGE[0]:.2f},{endless_intake.CORNER_PLATE_Y_RANGE[1]:.2f}]"
             f" + 支线 x[{endless_intake.BRANCH_PLATE_X_RANGE[0]:.3f},"
@@ -791,7 +811,7 @@ def _log_scene_layout() -> None:
         print(f"{tag}   箱型: {_sizes}")
         print(
             f"{tag}   排队净间隙 queue_gap={BELT_BOX_QUEUE_GAP:.3f} m"
-            "（按各箱半长算，两种箱型混排时空隙恒定）"
+            "（按各箱/包半长算，多种箱型混排时空隙口径一致）"
         )
         if CONVEYOR_LEGACY_ENABLED and CONVEYOR_Y_STOP is not None:
             print(
@@ -811,8 +831,13 @@ def _log_scene_layout() -> None:
         f"{CONVEYOR_SPEED} m/s 沿 -Y）"
     )
     if CONVEYOR_DRIVE.stop_segment is not None:
+        partition_label = (
+            "逻辑驱动分区（共用连续静态托面）"
+            if _USE_SEAM_FREE_PATH_SUPPORT
+            else "碰撞面分区"
+        )
         print(
-            f"{tag}   碰撞面分区: 驱动 y[{CONVEYOR_DRIVE.drive_segment.y_min:.3f},"
+            f"{tag}   {partition_label}: 驱动 y[{CONVEYOR_DRIVE.drive_segment.y_min:.3f},"
             f"{CONVEYOR_DRIVE.drive_segment.y_max:.3f}] | 静态停止/抓取 "
             f"y[{CONVEYOR_DRIVE.stop_segment.y_min:.3f},{CONVEYOR_DRIVE.stop_segment.y_max:.3f}] "
             f"(handoff_offset={CONVEYOR_DRIVE.handoff_offset:.3f})"
@@ -947,8 +972,9 @@ def _make_cart2_tote_spawn_cfg(object_name: str) -> UsdFileCfg:
 def _make_belt_box_spawn_cfg(object_name: str, kind) -> UsdFileCfg:
     """流水线纸箱：v61 同款视觉资产 + convexHull 碰撞。
 
-    ``kind`` 是 ``scene_layout.BeltBoxKind``，决定用哪份物理封装和质量。两种箱型
-    （d01 = SM_CardBoxD_01、d02 = 顶部压皱的 SM_CardBoxD_02）横向尺寸相同，交错排布。
+    ``kind`` 是 ``scene_layout.BeltBoxKind``，决定用哪份物理封装和质量。默认队首是
+    D01 / 顶部压皱的 D02，后续从 C01/C02、D01~D05 和三种程序化软包中做平衡
+    随机；十种都共用同一套刚体、碰撞和权威/镜像分流逻辑。
 
     刻意**不**就地提升背景 USD 里的 ``ConveyorBelt_Box_XX`` / ``KLT_Bin_XX``：那些
     Prim 带的是 triangle-mesh 碰撞（PhysX 对动态刚体只能退化成凸包 fallback 并刷
@@ -1256,32 +1282,38 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
     # visual-only 资产和同一组简化碰撞几何，用于严格 driver A/B。
     # 顶面对齐滚轮顶 z≈0.772（板厚 0.04 → 中心 z=0.752），可用宽度
     # x∈[-6.07,-5.17]。y_stop<=0 的循环模式不生成静态停止段，驱动段覆盖全长。
-    conveyor_collider = AssetBaseCfg(
-        prim_path="{ENV_REGEX_NS}/ConveyorCollider",
-        init_state=AssetBaseCfg.InitialStateCfg(
-            pos=[
-                BELT_X_CENTER,
-                CONVEYOR_DRIVE.drive_segment.center_y,
-                BELT_TOP_Z - BELT_COLLIDER_THICKNESS * 0.5,
-            ],
-            rot=[1.0, 0.0, 0.0, 0.0],
-        ),
-        spawn=sim_utils.CuboidCfg(
-            func=conveyor_events.spawn_surface_velocity_cuboid,
-            size=(
-                BELT_WIDTH,
-                CONVEYOR_DRIVE.drive_segment.length,
-                BELT_COLLIDER_THICKNESS,
+    conveyor_collider = (
+        _make_endless_path_support_cfg("ConveyorCollider")
+        if _USE_SEAM_FREE_PATH_SUPPORT
+        else AssetBaseCfg(
+            prim_path="{ENV_REGEX_NS}/ConveyorCollider",
+            init_state=AssetBaseCfg.InitialStateCfg(
+                pos=[
+                    BELT_X_CENTER,
+                    CONVEYOR_DRIVE.drive_segment.center_y,
+                    BELT_TOP_Z - BELT_COLLIDER_THICKNESS * 0.5,
+                ],
+                rot=[1.0, 0.0, 0.0, 0.0],
             ),
-            visible=False,  # 只提供碰撞，视觉沿用背景 USD 的流水线模型
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
-            collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.003, rest_offset=0.0),
-            physics_material=sim_utils.RigidBodyMaterialCfg(
-                static_friction=0.8,
-                dynamic_friction=0.6,
-                restitution=0.0,
+            spawn=sim_utils.CuboidCfg(
+                func=conveyor_events.spawn_surface_velocity_cuboid,
+                size=(
+                    BELT_WIDTH,
+                    CONVEYOR_DRIVE.drive_segment.length,
+                    BELT_COLLIDER_THICKNESS,
+                ),
+                visible=False,  # 只提供碰撞，视觉沿用背景 USD 的流水线模型
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+                collision_props=sim_utils.CollisionPropertiesCfg(
+                    contact_offset=0.003, rest_offset=0.0
+                ),
+                physics_material=sim_utils.RigidBodyMaterialCfg(
+                    static_friction=0.8,
+                    dynamic_friction=0.6,
+                    restitution=0.0,
+                ),
             ),
-        ),
+        )
     )
 
     conveyor_stop_collider: AssetBaseCfg | None = (
@@ -1311,7 +1343,7 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
                 ),
             ),
         )
-        if CONVEYOR_DRIVE.stop_segment is not None
+        if CONVEYOR_DRIVE.stop_segment is not None and not _USE_SEAM_FREE_PATH_SUPPORT
         else None
     )
 
@@ -1340,7 +1372,8 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
     # A02 弯道套住带头公头向西拐 90°，五段 A05 短直段接成 X 支线，从背景货架
     # 排 B 北侧擦过、端头伸到排 B/叉车后面（Δ=0.25 整体北移换来的通道）。
     # 全部 AssetBaseCfg（scene.extras），输送机件纯视觉（coll=0/rigid=0，
-    # 裸厘米 ⇒ scale=0.01）；另加两块 kinematic 托面接住弧段/支线上的箱子。
+    # 裸厘米 ⇒ scale=0.01）；legacy 用一张连续静态托面覆盖主线/弧段/支线，
+    # surface_velocity 实验后端仍用可单独驱动的主线 + 两块扩展 Cuboid。
     # **零新增货架/遮挡件**（用户要求）。
     # ------------------------------------------------------------------
     conveyor_curve: AssetBaseCfg | None = (
@@ -1375,7 +1408,7 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
             endless_intake.CORNER_PLATE_X_RANGE,
             endless_intake.CORNER_PLATE_Y_RANGE,
         )
-        if ENDLESS_INTAKE.enabled
+        if ENDLESS_INTAKE.enabled and not _USE_SEAM_FREE_PATH_SUPPORT
         else None
     )
     conveyor_branch_plate: AssetBaseCfg | None = (
@@ -1384,7 +1417,7 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
             endless_intake.BRANCH_PLATE_X_RANGE,
             endless_intake.BRANCH_PLATE_Y_RANGE,
         )
-        if ENDLESS_INTAKE.enabled
+        if ENDLESS_INTAKE.enabled and not _USE_SEAM_FREE_PATH_SUPPORT
         else None
     )
 
@@ -1752,7 +1785,7 @@ class ConveyorEventsCfg:
 # 性能 A/B 诊断开关（默认全关，不影响任务语义）。用途:拆分 conveyor 相对底座
 # SONIC 任务多出的 env.step 成本。取值逗号分隔,如 ISAACLAB_CONVEYOR_PERF_AB=no_peer,no_props:
 #   no_peer      摘掉对端镜像机器人(第二台 43-DoF articulation)
-#   no_props     摘掉流水线道具(双拖车/纸箱/测试箱/两筐,连带关 drive_totes)
+#   no_props     摘掉流水线道具(双拖车/箱包/测试箱/两筐,连带关输送事件)
 #   plain_ground warehouse 背景换回底座的无限地平面(连带关 lock_sorting_bins)
 # ⚠️ no_peer/no_props 只能配 ISAACLAB_SCENE_SYNC=0 用(同步 term 会引用被摘的实体)。
 _PERF_AB = {

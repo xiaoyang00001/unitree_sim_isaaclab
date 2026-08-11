@@ -105,6 +105,12 @@ def configure_conveyor_surface_velocity(
     velocity writes from running together.
     """
 
+    # legacy + endless 使用一张无内部竖缝的静态三角托面，不带 RigidBody / Surface
+    # Velocity API；该后端本来也只靠逐物体写速度。普通 legacy Cuboid 上预置的 API
+    # 出生即 disabled，同样无需再逐 prim 写一遍零值。
+    if not enabled:
+        return
+
     stage = get_current_stage()
     if stage is None:
         raise RuntimeError("无法配置流水线 Surface Velocity：当前 USD Stage 不存在")

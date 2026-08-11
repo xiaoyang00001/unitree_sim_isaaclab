@@ -1,0 +1,83 @@
+#usda 1.0
+(
+    defaultPrim = "CartBoxC02"
+    metersPerUnit = 1
+    upAxis = "Z"
+    doc = """Dynamic conveyor wrapper for the tall SM_CardBoxC_02 carton.
+
+    The official asset is visual-only for this task and carries triangle-mesh
+    collision on its mesh.  This wrapper removes that collision and supplies a
+    flat 0.50 x 0.50 x 0.311 m convex box collider rooted at the carton bottom."""
+)
+
+def Xform "CartBoxC02" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "PhysxRigidBodyAPI"]
+)
+{
+    bool physics:rigidBodyEnabled = 1
+    bool physics:kinematicEnabled = 0
+    float physics:mass = 1.5
+    float physxRigidBody:angularDamping = 0.1
+    bool physxRigidBody:disableGravity = 0
+    bool physxRigidBody:enableCCD = 0
+    bool physxRigidBody:enableGyroscopicForces = 1
+    float physxRigidBody:linearDamping = 0.1
+    float physxRigidBody:maxDepenetrationVelocity = 0.5
+    int physxRigidBody:solverPositionIterationCount = 8
+    int physxRigidBody:solverVelocityIterationCount = 2
+
+    def Xform "Visual" (
+        prepend references = @https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Environments/Simple_Warehouse/Props/SM_CardBoxC_02.usd@
+    )
+    {
+        over "SM_CardBoxC_02" (
+            delete apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+        )
+        {
+        }
+    }
+
+    def Material "GraspPhysicsMaterial" (
+        prepend apiSchemas = ["PhysicsMaterialAPI", "PhysxMaterialAPI"]
+    )
+    {
+        float physics:dynamicFriction = 1.1
+        float physics:restitution = 0
+        float physics:staticFriction = 1.4
+        token physxMaterial:frictionCombineMode = "multiply"
+        token physxMaterial:restitutionCombineMode = "min"
+    }
+
+    def Mesh "ConvexHullCollider" (
+        prepend apiSchemas = ["MaterialBindingAPI", "PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "PhysxCollisionAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+        int[] faceVertexIndices = [
+            0, 1, 2, 3,
+            4, 7, 6, 5,
+            0, 4, 5, 1,
+            1, 5, 6, 2,
+            2, 6, 7, 3,
+            3, 7, 4, 0,
+        ]
+        # 官方 mesh extent = (-25,-25,0)~(25,25,31.0868) × scale 0.01。
+        point3f[] points = [
+            (-0.25, -0.25, 0),
+            (0.25, -0.25, 0),
+            (0.25, 0.25, 0),
+            (-0.25, 0.25, 0),
+            (-0.25, -0.25, 0.311),
+            (0.25, -0.25, 0.311),
+            (0.25, 0.25, 0.311),
+            (-0.25, 0.25, 0.311),
+        ]
+        bool physics:collisionEnabled = 1
+        uniform token physics:approximation = "convexHull"
+        float physxCollision:contactOffset = 0.005
+        float physxCollision:restOffset = 0
+        rel material:binding:physics = </CartBoxC02/GraspPhysicsMaterial>
+        uniform token subdivisionScheme = "none"
+        token visibility = "invisible"
+    }
+}

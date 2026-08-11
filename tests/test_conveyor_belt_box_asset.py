@@ -1,11 +1,11 @@
-"""两种流水线纸箱物理封装的契约体检。
+"""流水线纸箱与连续路径托面的物理资产契约体检。
 
-箱型都取自 v61 背景：`ConveyorBelt_Box_XX` 引 SM_CardBoxD_01、`KLT_Bin_XX` 引
-SM_CardBoxC_01。任务不直接提升那些背景 Prim，而是各包一层：背景那份带
-triangle-mesh 碰撞（PhysX 对动态刚体只能退化成凸包 fallback 并刷警告），摆位也是
-v48→v61 换版遗留。这里锁住封装层的关键不变量——碰撞盒尺寸必须与视觉资产缩放后的
-包围盒一致，且必须与 scene_layout 的箱型表逐值吻合，否则箱子会浮在带面上或陷进去、
-排队间距也会算错，而这两种错位在画面上都很难一眼看出来。
+C01/C02、D01~D05 都取自 Simple Warehouse canonical 纸箱；v61 背景里实际摆出的
+`ConveyorBelt_Box_XX` / `KLT_Bin_XX` 只是其中 D01/C01 的实例。任务不直接提升背景
+Prim，而是为每种独立外观包一层：官方 mesh 带 triangle-mesh 碰撞（PhysX 对动态刚体
+只能退化成凸包 fallback 并刷警告），背景摆位还有 v48→v61 换版遗留。这里锁住封装层
+的关键不变量——碰撞盒尺寸必须与视觉资产缩放后的包围盒一致，且必须与 scene_layout
+的箱型表逐值吻合，否则箱子会浮在带面上或陷进去、排队间距也会算错。
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _TASK_DIR = _REPO_ROOT / "tasks/g1_tasks/g1_29dof_sonic_conveyor"
 _PROPS_DIR = _TASK_DIR / "scene_assets/props"
 _ENV_CFG_PATH = _TASK_DIR / "conveyor_env_cfg.py"
+_PATH_SUPPORT_PATH = _PROPS_DIR / "conveyor_path_support_physics.usda"
 
 _SPEC = importlib.util.spec_from_file_location(
     "conveyor_scene_layout_for_box_asset_test", _TASK_DIR / "scene_layout.py"
@@ -30,12 +31,17 @@ _LAYOUT = importlib.util.module_from_spec(_SPEC)
 sys.modules[_SPEC.name] = _LAYOUT
 _SPEC.loader.exec_module(_LAYOUT)
 
-# key -> (defaultPrim, 视觉资产名, 半宽x, 半宽y, 高)。数值取自本机 Isaac 5.1 资产包实测：
-# SM_CardBoxD_01 extent (-19,-12.5,0)~(19,12.5,14.875) × scale 0.01
-# SM_CardBoxD_02 extent (-19,-12.5,0)~(19,12.5,16.6338) × scale 0.01
+# key -> (defaultPrim, 视觉资产名, 碰撞半宽x, 碰撞半宽y, 碰撞高)。规则箱取
+# Isaac 5.1 官方视觉包围盒；D03 的视觉 AABB 关于原点不对称，wrapper 按两轴最大
+# 绝对值向两侧扩成保守平底盒，因此这里锁的是任务实际使用的碰撞尺寸。
 _EXPECTED = {
+    "c01": ("CartBoxC01", "SM_CardBoxC_01", 0.25, 0.25, 0.25),
+    "c02": ("CartBoxC02", "SM_CardBoxC_02", 0.25, 0.25, 0.311),
     "d01": ("CartBoxD01", "SM_CardBoxD_01", 0.19, 0.125, 0.149),
     "d02": ("CartBoxD02", "SM_CardBoxD_02", 0.19, 0.125, 0.1663),
+    "d03": ("CartBoxD03", "SM_CardBoxD_03", 0.2063, 0.1303, 0.2656),
+    "d04": ("CartBoxD04", "SM_CardBoxD_04", 0.19, 0.125, 0.149),
+    "d05": ("CartBoxD05", "SM_CardBoxD_05", 0.19, 0.125, 0.149),
 }
 
 # 软包裹是自包含的程序化资产（IsaacLab 分叉 feat/pickplace-parcel-assets 生成），
@@ -159,7 +165,7 @@ class BeltBoxPhysicsAssetTest(unittest.TestCase):
                 # 高度容差放宽到 mm：碰撞盒取整到 0.149，视觉包围盒是 0.1487。
                 self.assertAlmostEqual(kind.height_z, height, places=2)
 
-    def test_both_kinds_fit_the_belt_width(self) -> None:
+    def test_all_kinds_fit_the_belt_width(self) -> None:
         """最宽的箱型也要放得进带面，否则会一直蹭侧导轨。"""
 
         for key, kind in _LAYOUT.BELT_BOX_KINDS.items():
@@ -239,6 +245,127 @@ class BeltBoxPhysicsAssetTest(unittest.TestCase):
                     f"rel material:binding:physics = </{default_prim}/GraspPhysicsMaterial>",
                     text,
                 )
+
+
+class ConveyorPathSupportPhysicsAssetTest(unittest.TestCase):
+    def _text(self) -> str:
+        return _PATH_SUPPORT_PATH.read_text(encoding="utf-8")
+
+    def _mesh_topology(
+        self,
+    ) -> tuple[list[tuple[float, float, float]], list[tuple[int, int, int]]]:
+        text = self._text()
+        points_block = re.search(r"point3f\[\] points = \[(.*?)\]", text, re.S)
+        counts_block = re.search(r"int\[\] faceVertexCounts = \[(.*?)\]", text, re.S)
+        indices_block = re.search(r"int\[\] faceVertexIndices = \[(.*?)\]", text, re.S)
+        self.assertIsNotNone(points_block, "找不到托面 points")
+        self.assertIsNotNone(counts_block, "找不到托面 faceVertexCounts")
+        self.assertIsNotNone(indices_block, "找不到托面 faceVertexIndices")
+        assert points_block is not None
+        assert counts_block is not None
+        assert indices_block is not None
+
+        number = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
+        points = [
+            tuple(float(value) for value in match)
+            for match in re.findall(
+                rf"\(\s*({number})\s*,\s*({number})\s*,\s*({number})\s*\)",
+                points_block.group(1),
+            )
+        ]
+        counts = [int(value) for value in re.findall(r"\d+", counts_block.group(1))]
+        indices = [int(value) for value in re.findall(r"\d+", indices_block.group(1))]
+        self.assertTrue(points)
+        self.assertTrue(counts)
+        self.assertTrue(indices)
+        self.assertEqual(set(counts), {3}, "连续托面只允许三角面")
+        self.assertEqual(len(indices), sum(counts))
+        self.assertEqual(len(indices) % 3, 0)
+        self.assertTrue(all(index < len(points) for index in indices))
+        faces = [tuple(indices[offset : offset + 3]) for offset in range(0, len(indices), 3)]
+        return points, faces
+
+    def test_support_is_one_static_collision_surface(self) -> None:
+        """托面只能提供静态接触，不能意外变成会受重力影响的刚体。"""
+
+        self.assertTrue(_PATH_SUPPORT_PATH.is_file())
+        text = self._text()
+        self.assertTrue(text.startswith("#usda 1.0\n"))
+        self.assertIn('defaultPrim = "ConveyorPathSupport"', text)
+        self.assertIn("metersPerUnit = 1", text)
+        self.assertIn('upAxis = "Z"', text)
+        self.assertEqual(text.count('def Mesh "SupportSurface"'), 1)
+        self.assertEqual(text.count('"PhysicsCollisionAPI"'), 1)
+        self.assertIn("bool physics:collisionEnabled = 1", text)
+        self.assertIn('uniform token physics:approximation = "none"', text)
+        self.assertIn('token visibility = "invisible"', text)
+        self.assertNotIn("PhysicsRigidBodyAPI", text)
+        self.assertNotIn("PhysicsMassAPI", text)
+        self.assertNotIn("physics:rigidBodyEnabled", text)
+        self.assertNotIn("physics:kinematicEnabled", text)
+
+    def test_support_faces_are_horizontal_and_upward_only(self) -> None:
+        """所有碰撞面共面且朝上，因此网格内部不可能藏有卡包裹的竖直端面。"""
+
+        points, faces = self._mesh_topology()
+        self.assertEqual({point[2] for point in points}, {0.0})
+        self.assertEqual(len(set(points)), len(points), "同坐标重复顶点会把连续托面暗中切开")
+        for face in faces:
+            with self.subTest(face=face):
+                a, b, c = (points[index] for index in face)
+                signed_double_area = (b[0] - a[0]) * (c[1] - a[1]) - (
+                    b[1] - a[1]
+                ) * (c[0] - a[0])
+                self.assertGreater(signed_double_area, 0.0, "面必须非退化且法向朝 +Z")
+
+    def test_support_triangles_form_one_seam_free_manifold(self) -> None:
+        """三角形须按共享边连成一个无洞平面，不能退回多块对接托面。"""
+
+        _points, faces = self._mesh_topology()
+        edge_faces: dict[tuple[int, int], list[int]] = {}
+        for face_index, (a, b, c) in enumerate(faces):
+            for edge in ((a, b), (b, c), (c, a)):
+                edge_faces.setdefault(tuple(sorted(edge)), []).append(face_index)
+
+        self.assertTrue(all(len(owners) in (1, 2) for owners in edge_faces.values()))
+        neighbours = [set() for _ in faces]
+        for owners in edge_faces.values():
+            if len(owners) == 2:
+                left, right = owners
+                neighbours[left].add(right)
+                neighbours[right].add(left)
+        visited_faces = {0}
+        pending_faces = [0]
+        while pending_faces:
+            current = pending_faces.pop()
+            for neighbour in neighbours[current] - visited_faces:
+                visited_faces.add(neighbour)
+                pending_faces.append(neighbour)
+        self.assertEqual(len(visited_faces), len(faces), "全部三角形必须经共享边连通")
+
+        boundary_edges = [edge for edge, owners in edge_faces.items() if len(owners) == 1]
+        boundary_neighbours: dict[int, set[int]] = {}
+        for left, right in boundary_edges:
+            boundary_neighbours.setdefault(left, set()).add(right)
+            boundary_neighbours.setdefault(right, set()).add(left)
+        self.assertTrue(boundary_neighbours)
+        self.assertTrue(
+            all(len(neighbours) == 2 for neighbours in boundary_neighbours.values()),
+            "外边界必须是闭环",
+        )
+        start = next(iter(boundary_neighbours))
+        visited_boundary = {start}
+        pending_boundary = [start]
+        while pending_boundary:
+            current = pending_boundary.pop()
+            for neighbour in boundary_neighbours[current] - visited_boundary:
+                visited_boundary.add(neighbour)
+                pending_boundary.append(neighbour)
+        self.assertEqual(
+            visited_boundary,
+            set(boundary_neighbours),
+            "只能有一个外边界闭环，内部不得留下孔洞或断开的托面",
+        )
 
 
 if __name__ == "__main__":
