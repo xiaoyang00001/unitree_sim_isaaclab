@@ -90,8 +90,12 @@ def transfer_complete_mask(
 
     每个箱子必须满足二选一：仍在带面高度窗口内，或根位置的 XY 投影已经偏出过流水线
     通道。于是队首只被竖直抬高时 ``on_belt=False`` 但仍在通道内，整带继续停住；
-    横向搬出通道后立即放行，不再依赖蓝箱位置、速度阈值或驻留时间。完成位按箱锁存，
-    避免抓取轨迹回摆或在边界附近抖动时把已经启动的流水线再次按停。
+    横向搬出通道后立即放行，不再依赖蓝箱位置或速度阈值。
+
+    ⚠️ 这是**瞬时**判据：z 窗边界抖动会让它逐帧翻转。事件层
+    ``drive_belt_boxes_on_conveyor`` 已改用锁存化的 ``update_lift_hold_latch`` +
+    ``lift_hold_gate`` 承担同一职责（悬空未离线压停），本函数保留作瞬时口径的
+    定义参照与直接调用方兼容。
     """
 
     if on_belt.shape != departure_completed.shape:
@@ -118,6 +122,133 @@ def update_departure_completion_latch(
             f"{tuple(completed.shape)} vs {tuple(in_conveyor_corridor.shape)}"
         )
     return completed | ~in_conveyor_corridor
+
+
+def update_arrival_latch(
+    arrived: torch.Tensor,
+    ys: torch.Tensor,
+    *,
+    y_stop: float,
+) -> torch.Tensor:
+    """箱子首次到达工位停止线（``y <= y_stop``）后锁存到位。
+
+    ``lead_y > y_stop`` 的裸比较没有迟滞：机器人抱取时把工位箱往上游推 1-2 cm，
+    队首 y 就重新越回停止线，整带被误判"队首未到位"而瞬间启动，还会把手里的
+    箱子按输送速度往回拖（离线重放实测一次抱取内启停翻转 3 次）。锁存后箱子
+    无论被推到哪，"工位被占用"这件事都保持为真，直到平面偏离完成位
+    （``update_departure_completion_latch``）放行；两个锁存随同一个事件 term 在
+    F12/DDS/env reset 时一起清零。
+    """
+
+    if arrived.shape != ys.shape:
+        raise ValueError(
+            "arrived 与 ys 形状必须一致："
+            f"{tuple(arrived.shape)} vs {tuple(ys.shape)}"
+        )
+    return arrived | (ys <= y_stop)
+
+
+def update_arrival_latch_along_path(
+    arrived: torch.Tensor,
+    ss: torch.Tensor,
+    *,
+    s_stop: float,
+) -> torch.Tensor:
+    """沿路径距离版到位锁存；s 向下游递增，到位判据是 ``s >= s_stop``。
+
+    与 ``queue_drive_mask_along_path`` 同一手法：喂入 ``-s`` 复用 y 版实现。
+    """
+
+    return update_arrival_latch(arrived, -ss, y_stop=-s_stop)
+
+
+def belt_release_gate(
+    arrived: torch.Tensor,
+    completed: torch.Tensor,
+) -> torch.Tensor:
+    """整带放行门：存在"已到位但尚未偏出流水线"的箱子时禁止整带运行。
+
+    输入均为 ``(N, E)``，输出 ``(E,)``。与 ``update_lift_hold_latch`` 生成的悬空
+    压停互补：那边拦的是"被抬离带面但 XY 未偏出"的悬空箱，这里拦的是"仍躺在
+    工位（含被抓取推挤回上游）"的到位箱——两者一起构成"箱子被拿到流水线之外
+    才重新开带"的完整口径。``.any(dim=0)`` 是张量 reduce，不产生 GPU→CPU 同步。
+    """
+
+    if arrived.shape != completed.shape:
+        raise ValueError(
+            "arrived 与 completed 形状必须一致："
+            f"{tuple(arrived.shape)} vs {tuple(completed.shape)}"
+        )
+    return ~((arrived & ~completed).any(dim=0))
+
+
+def update_lift_hold_latch(
+    lifted: torch.Tensor,
+    dwell: torch.Tensor,
+    on_belt: torch.Tensor,
+    in_conveyor_corridor: torch.Tensor,
+    completed: torch.Tensor,
+    *,
+    release_steps: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """悬空压停锁存：未放行箱被抬离带面即锁存，回带稳定驻留后才解除。
+
+    裸瞬时判 ``(on_belt | completed).all`` 会被 z 窗边界抖动打穿：抱抱式携行的
+    自然高度恰好横跨 ``belt_top_z + z_tolerance`` 阈值，手臂每次颠簸重穿越一次，
+    整带就跟着启停一次（上游截抓的箱子既没有 arrived 也没有 completed，全靠这道
+    门）。锁存化后箱子首次抬离带面（``~on_belt & in_corridor``）置位 ``lifted``，
+    z 再怎么抖都保持压停，两条出路：
+
+    * 箱子平面偏出流水线 → ``completed`` 置位 → 本锁存即刻让位（放行）；
+    * 箱子被放回带面并**连续驻留** ``release_steps`` 步（``dwell`` 计数）→ 解除
+      压停，重新当普通队列箱——放弃抓取、脱手掉回都能自愈，短暂回摆（不足
+      驻留步数）不会误解除。
+
+    返回 ``(lifted, dwell, settled)``；``settled``（连续在带 ≥ release_steps）
+    另供 ``release_resettled_boxes`` 做 completed 的场内解除。输入输出均为
+    ``(N, E)``，全程张量运算无 GPU→CPU 同步。
+    """
+
+    if not (lifted.shape == dwell.shape == on_belt.shape == in_conveyor_corridor.shape == completed.shape):
+        raise ValueError(
+            "lifted/dwell/on_belt/in_conveyor_corridor/completed 形状必须一致："
+            f"{tuple(lifted.shape)} / {tuple(dwell.shape)} / {tuple(on_belt.shape)}"
+            f" / {tuple(in_conveyor_corridor.shape)} / {tuple(completed.shape)}"
+        )
+    dwell = torch.where(on_belt, dwell + 1, torch.zeros_like(dwell))
+    settled = dwell >= release_steps
+    lifted = (lifted | (~on_belt & in_conveyor_corridor)) & ~settled & ~completed
+    return lifted, dwell, settled
+
+
+def lift_hold_gate(lifted: torch.Tensor) -> torch.Tensor:
+    """悬空压停门：存在被抬离带面且未放行的箱子时禁止整带运行。输出 ``(E,)``。"""
+
+    return ~lifted.any(dim=0)
+
+
+def release_resettled_boxes(
+    completed: torch.Tensor,
+    arrived: torch.Tensor,
+    settled: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """已放行箱稳定回到带面后清除其锁存，重新入队。
+
+    没有这条场内解除路径，抓取脱手掉回带上的已放行箱会变成永不被驱动的呆滞
+    障碍：它被 ``completed`` 从驱动集合剔除，靠摩擦钉在原地，后车在防撞兜底线
+    外排死，整条队列断供直到整场景复位。``settled``（连续驻留带面 ≥
+    release_steps，见 ``update_lift_hold_latch``）确保只有真正放回带上的箱子才
+    重新入队，抓取回摆的短暂贴带不会误触发。解除后 ``arrived`` 一并清零：箱子
+    落在工位区就重新当工位箱压停整带等抓取，落在上游就正常排队。
+    """
+
+    if not (completed.shape == arrived.shape == settled.shape):
+        raise ValueError(
+            "completed/arrived/settled 形状必须一致："
+            f"{tuple(completed.shape)} / {tuple(arrived.shape)} / {tuple(settled.shape)}"
+        )
+    release = completed & settled
+    return completed & ~release, arrived & ~release
 
 
 def path_progress(
@@ -173,6 +304,7 @@ def queue_drive_mask_along_path(
     s_stop: float | None,
     queue_gap: float,
     transfer_complete: torch.Tensor | None = None,
+    completed: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """沿路径距离 s 的整带节拍判据；语义与 ``queue_drive_mask`` 逐项镜像。
 
@@ -188,6 +320,7 @@ def queue_drive_mask_along_path(
         y_stop=None if s_stop is None else -s_stop,
         queue_gap=queue_gap,
         transfer_complete=transfer_complete,
+        completed=completed,
     )
 
 
@@ -199,6 +332,7 @@ def queue_drive_mask(
     y_stop: float | None,
     queue_gap: float,
     transfer_complete: torch.Tensor | None = None,
+    completed: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """整带节拍启停：算出这一帧哪些箱子该继续被送走。
 
@@ -227,8 +361,16 @@ def queue_drive_mask(
     的空档；按各自半长算，无论怎么交错，兜底的净空隙都恒为 ``queue_gap``。
 
     ``transfer_complete`` 是可选的 ``(E,)`` bool 张量；不传时保持通用队列函数的
-    历史行为。停止式 legacy 事件用“仍在带上或已偏出通道”生成它；镜像端根本不跑
-    驱动事件，箱子位姿仍全部来自权威端的 scene_state 帧。
+    历史行为。停止式 legacy 事件用"仍在带上或已偏出通道"且"工位无到位未放行
+    箱"（``belt_release_gate``）生成它；镜像端根本不跑驱动事件，箱子位姿仍全部
+    来自权威端的 scene_state 帧。
+
+    ``completed`` 是可选的 ``(N, E)`` 平面偏离锁存（同 ``transfer_complete`` 的
+    per-box 来源）。已锁存的箱子在机器人手里，抓取轨迹回摆让它短暂回到带面
+    高度窗/通道内时，绝不能再被当成"在带上的队首"——否则它会把 ``lead_y`` 拉回
+    停止线以内按停整带，甚至自己重新满足 drive 被按输送速度拖走（跟机器人
+    拔河）。传入后该箱从队首判定与驱动输出中彻底剔除；防撞保底仍用物理
+    ``on_belt``（回摆的箱体真实挡在带上时后车照样刹住）。
 
     ``y_stop=None``（``ISAACLAB_CONVEYOR_Y_STOP<=0`` 的循环模式）下没有工位停止线，
     整带长跑不停，只剩防撞保底。
@@ -247,15 +389,28 @@ def queue_drive_mask(
     blocker_tail = torch.where(ahead, tails.unsqueeze(0), no_blocker).amax(dim=1)  # (N, E)
     clear_of_leader = ys > blocker_tail + half_lengths + queue_gap  # (N, E)
 
+    # 已放行的箱子不再属于队列：不参与队首判定，也不再被写输送速度。
+    if completed is not None:
+        if completed.shape != on_belt.shape:
+            raise ValueError(
+                "completed 形状必须与 on_belt 一致："
+                f"{tuple(completed.shape)} vs {tuple(on_belt.shape)}"
+            )
+        active = on_belt & ~completed
+    else:
+        active = on_belt
+
     if y_stop is None:
-        return on_belt & clear_of_leader
+        # active 而非 on_belt：循环模式虽不走锁存（事件层恒传 completed=None），
+        # 但直接调用方传了 completed 时同样必须兑现"已放行箱不再被驱动"的契约。
+        return active & clear_of_leader
 
     # —— 整带节拍 ——
-    # 只看仍在带面的箱子来确定新队首；被抓走的箱子是否已经横向偏出流水线，则由下方
-    # transfer_complete 统一门控。全部离开带面时 lead_y 取到哨兵大值，但 on_belt
-    # 全假，drive 仍是全假，无需额外分支。
+    # 只看仍在队列里的箱子来确定新队首；被抓走的箱子是否已经横向偏出流水线，则由
+    # 下方 transfer_complete 统一门控。全部离开带面时 lead_y 取到哨兵大值，但
+    # active 全假，drive 仍是全假，无需额外分支。
     far_away = ys.new_tensor(1.0e9)
-    lead_y = torch.where(on_belt, ys, far_away).amin(dim=0)  # (E,)
+    lead_y = torch.where(active, ys, far_away).amin(dim=0)  # (E,)
     belt_running = lead_y > y_stop  # (E,)
     if transfer_complete is not None:
         if transfer_complete.shape != belt_running.shape:
@@ -265,4 +420,4 @@ def queue_drive_mask(
             )
         belt_running = belt_running & transfer_complete
     belt_running = belt_running.unsqueeze(0)  # (1, E) → 广播到 (N, E)
-    return on_belt & belt_running & clear_of_leader
+    return active & belt_running & clear_of_leader

@@ -701,5 +701,442 @@ class OnBeltExtraRectsTest(unittest.TestCase):
         self.assertEqual([bool(v) for v in mask.squeeze(-1).tolist()], [False])
 
 
+class ArrivalLatchTest(unittest.TestCase):
+    """到位锁存：首次越过停止线置位，被推回上游也不解除。"""
+
+    def test_latch_sets_once_crossed_and_holds(self) -> None:
+        arrived = torch.zeros((1, 1), dtype=torch.bool)
+        arrived = _MODULE.update_arrival_latch(
+            arrived, _column([_Y_STOP + 0.02]), y_stop=_Y_STOP
+        )
+        self.assertEqual(arrived.tolist(), [[False]])
+        arrived = _MODULE.update_arrival_latch(
+            arrived, _column([_Y_STOP - 0.011]), y_stop=_Y_STOP
+        )
+        self.assertEqual(arrived.tolist(), [[True]])
+        # 抱取把箱子推挤回停止线上游 → 锁存保持。
+        arrived = _MODULE.update_arrival_latch(
+            arrived, _column([_Y_STOP + 0.02]), y_stop=_Y_STOP
+        )
+        self.assertEqual(arrived.tolist(), [[True]])
+
+    def test_along_path_variant_latches_at_s_stop(self) -> None:
+        s_stop = 12.1945
+        arrived = torch.zeros((1, 1), dtype=torch.bool)
+        arrived = _MODULE.update_arrival_latch_along_path(
+            arrived, _column([s_stop - 0.01]), s_stop=s_stop
+        )
+        self.assertEqual(arrived.tolist(), [[False]])
+        arrived = _MODULE.update_arrival_latch_along_path(
+            arrived, _column([s_stop + 0.01]), s_stop=s_stop
+        )
+        self.assertEqual(arrived.tolist(), [[True]])
+        arrived = _MODULE.update_arrival_latch_along_path(
+            arrived, _column([s_stop - 0.05]), s_stop=s_stop
+        )
+        self.assertEqual(arrived.tolist(), [[True]])
+
+    def test_shape_mismatch_fails_fast(self) -> None:
+        with self.assertRaises(ValueError):
+            _MODULE.update_arrival_latch(
+                torch.zeros((2, 1), dtype=torch.bool),
+                _column([14.0]),
+                y_stop=_Y_STOP,
+            )
+
+
+class BeltReleaseGateTest(unittest.TestCase):
+    """整带放行门：存在"到位未偏出"的箱子就禁跑，偏出锁存后重新放行。"""
+
+    def test_gate_blocks_while_an_arrived_box_is_still_on_the_line(self) -> None:
+        arrived = torch.tensor([[True], [False]], dtype=torch.bool)
+        completed = torch.zeros((2, 1), dtype=torch.bool)
+        self.assertEqual(
+            _MODULE.belt_release_gate(arrived, completed).tolist(), [False]
+        )
+
+    def test_completion_reopens_the_gate(self) -> None:
+        arrived = torch.tensor([[True], [False]], dtype=torch.bool)
+        completed = torch.tensor([[True], [False]], dtype=torch.bool)
+        self.assertEqual(
+            _MODULE.belt_release_gate(arrived, completed).tolist(), [True]
+        )
+
+    def test_boxes_never_arrived_do_not_block(self) -> None:
+        # 上游截抓的箱子从未到过工位：门不受它影响（悬空压停由 transfer_complete 管）。
+        arrived = torch.zeros((3, 1), dtype=torch.bool)
+        completed = torch.zeros((3, 1), dtype=torch.bool)
+        self.assertEqual(
+            _MODULE.belt_release_gate(arrived, completed).tolist(), [True]
+        )
+
+    def test_shape_mismatch_fails_fast(self) -> None:
+        with self.assertRaises(ValueError):
+            _MODULE.belt_release_gate(
+                torch.zeros((2, 1), dtype=torch.bool),
+                torch.zeros((3, 1), dtype=torch.bool),
+            )
+
+
+class GrabCycleStabilityTest(unittest.TestCase):
+    """一次抱取的完整启停节拍：拿出流水线之前恒停、拿出之后恒跑。
+
+    帧序列取自离线重放（运行时真参数按 14.148 基准换算）：推挤 → 回位 → 抬起 →
+    横移出通道 → 手臂回摆 → 再移出。修复前该序列整带启停翻转 3 次、工位箱两次被
+    反向写输送速度（与机器人拔河）；锁存化后翻转恰 1 次、全程不拖拽。
+    """
+
+    _BOX2 = (-5.82, 14.887, 0.775)
+    _BOX3 = (-5.62, 15.637, 0.775)
+
+    _RELEASE_STEPS = 25
+
+    def setUp(self) -> None:
+        self._completed = torch.zeros((3, 1), dtype=torch.bool)
+        self._arrived = torch.zeros((3, 1), dtype=torch.bool)
+        self._lifted = torch.zeros((3, 1), dtype=torch.bool)
+        self._dwell = torch.zeros((3, 1), dtype=torch.int32)
+
+    def _step(
+        self,
+        box1: tuple[float, float, float],
+        box2: tuple[float, float, float] | None = None,
+    ) -> list[bool]:
+        """按事件层顺序推进一帧：三锁存更新 → 场内解除 → 双门 → drive mask。"""
+
+        pos = torch.tensor(
+            [list(box1), list(box2 or self._BOX2), list(self._BOX3)],
+            dtype=torch.float32,
+        ).unsqueeze(1)
+        in_corridor = _MODULE.in_conveyor_corridor_mask(
+            pos, x_range=_X_RANGE, y_range=_Y_RANGE
+        )
+        on_belt = _MODULE.on_belt_mask(
+            pos,
+            belt_top_z=_BELT_TOP_Z,
+            z_tolerance=0.15,
+            x_range=_X_RANGE,
+            y_range=_Y_RANGE,
+        )
+        self._completed = _MODULE.update_departure_completion_latch(
+            self._completed, in_corridor
+        )
+        self._arrived = _MODULE.update_arrival_latch(
+            self._arrived, pos[..., 1], y_stop=_Y_STOP
+        )
+        self._lifted, self._dwell, settled = _MODULE.update_lift_hold_latch(
+            self._lifted,
+            self._dwell,
+            on_belt,
+            in_corridor,
+            self._completed,
+            release_steps=self._RELEASE_STEPS,
+        )
+        self._completed, self._arrived = _MODULE.release_resettled_boxes(
+            self._completed, self._arrived, settled
+        )
+        gate = _MODULE.lift_hold_gate(self._lifted) & _MODULE.belt_release_gate(
+            self._arrived, self._completed
+        )
+        drive = _MODULE.queue_drive_mask(
+            pos[..., 1],
+            on_belt,
+            _column([_HALF_D] * 3),
+            y_stop=_Y_STOP,
+            queue_gap=_GAP,
+            transfer_complete=gate,
+            completed=self._completed,
+        )
+        return [bool(v) for v in drive.squeeze(-1).tolist()]
+
+    def test_shoving_the_stopped_lead_upstream_does_not_restart_the_belt(self) -> None:
+        self.assertEqual(self._step((-5.42, _Y_STOP - 0.011, 0.775)), [False] * 3)
+        # 抱取推挤：y 被推回停止线上游 2cm——修复前这里整带误启动且箱1 被拖拽。
+        self.assertEqual(self._step((-5.42, _Y_STOP + 0.02, 0.775)), [False] * 3)
+
+    def test_completed_box_swinging_back_neither_stops_the_belt_nor_gets_dragged(
+        self,
+    ) -> None:
+        self._step((-5.42, _Y_STOP - 0.011, 0.775))  # 到位锁存
+        self._step((-5.42, _Y_STOP - 0.011, 0.955))  # 抬起（z 出窗）
+        # 横移出通道 → 放行，后车启动。
+        self.assertEqual(self._step((-5.05, _Y_STOP - 0.01, 0.955)), [False, True, True])
+        # 手臂回摆：箱1 短暂回到通道内 + 带面高度窗内。修复前它重新参与队首判定
+        # （按停整带）或重新满足 drive（被拖拽）；现在两者都不发生。
+        self.assertEqual(self._step((-5.12, _Y_STOP + 0.02, 0.885)), [False, True, True])
+        self.assertEqual(self._step((-5.00, _Y_STOP + 0.02, 0.900)), [False, True, True])
+
+    def test_full_grab_cycle_toggles_the_belt_exactly_once(self) -> None:
+        frames = [
+            (-5.42, _Y_STOP - 0.011, 0.775),  # 停在工位
+            (-5.42, _Y_STOP + 0.020, 0.775),  # 抱取推挤
+            (-5.42, _Y_STOP - 0.011, 0.775),  # 回位
+            (-5.42, _Y_STOP - 0.011, 0.895),  # 抬起 12cm（z 窗内）
+            (-5.42, _Y_STOP - 0.011, 0.955),  # 抬起 18cm（z 出窗）
+            (-5.05, _Y_STOP - 0.010, 0.955),  # 横移出通道
+            (-5.12, _Y_STOP + 0.020, 0.885),  # 手臂回摆
+            (-5.00, _Y_STOP + 0.020, 0.900),  # 再次移出
+            (-4.60, _Y_STOP + 0.050, 0.900),  # 彻底搬离
+        ]
+        transitions = 0
+        prev_running: bool | None = None
+        for box1 in frames:
+            drive = self._step(box1)
+            self.assertFalse(drive[0], f"工位箱在 {box1} 被反向拖拽")
+            running = drive[1]
+            if prev_running is not None and running != prev_running:
+                transitions += 1
+            prev_running = running
+        self.assertEqual(transitions, 1)
+
+    def test_completed_box_left_on_the_belt_still_blocks_a_follower(self) -> None:
+        """防撞保底仍看物理 on_belt：已放行的箱体真实挡在带上时后车要刹住。"""
+
+        completed = torch.tensor([[True], [False]], dtype=torch.bool)
+        on_belt = torch.tensor([[True], [True]], dtype=torch.bool)
+        # 前车尾 15.0+0.19，后车兜底线 15.19+0.19+0.07=15.45。
+        drive = _MODULE.queue_drive_mask(
+            _column([15.0, 15.35]),
+            on_belt,
+            _column([_HALF_D, _HALF_D]),
+            y_stop=_Y_STOP,
+            queue_gap=_GAP,
+            transfer_complete=torch.tensor([True], dtype=torch.bool),
+            completed=completed,
+        )
+        self.assertEqual([bool(v) for v in drive.squeeze(-1).tolist()], [False, False])
+        # 间距拉开后后车恢复驱动；completed 前车自身仍不被驱动。
+        drive = _MODULE.queue_drive_mask(
+            _column([15.0, 15.55]),
+            on_belt,
+            _column([_HALF_D, _HALF_D]),
+            y_stop=_Y_STOP,
+            queue_gap=_GAP,
+            transfer_complete=torch.tensor([True], dtype=torch.bool),
+            completed=completed,
+        )
+        self.assertEqual([bool(v) for v in drive.squeeze(-1).tolist()], [False, True])
+
+    def test_along_path_variant_is_isomorphic(self) -> None:
+        """s 版关键帧同构：推挤(s 回落)不启动、completed 回摆不按停不拖拽。"""
+
+        s_stop = 12.1945
+        arrived = torch.zeros((2, 1), dtype=torch.bool)
+        completed = torch.zeros((2, 1), dtype=torch.bool)
+        lifted = torch.zeros((2, 1), dtype=torch.bool)
+        dwell = torch.zeros((2, 1), dtype=torch.int32)
+
+        def step(ss, on_belt, in_corridor):
+            nonlocal arrived, completed, lifted, dwell
+            ss_t = _column(ss)
+            on_belt_t = torch.tensor(on_belt, dtype=torch.bool).unsqueeze(-1)
+            corridor_t = torch.tensor(in_corridor, dtype=torch.bool).unsqueeze(-1)
+            completed = _MODULE.update_departure_completion_latch(completed, corridor_t)
+            arrived = _MODULE.update_arrival_latch_along_path(arrived, ss_t, s_stop=s_stop)
+            lifted, dwell, settled = _MODULE.update_lift_hold_latch(
+                lifted, dwell, on_belt_t, corridor_t, completed, release_steps=25
+            )
+            completed, arrived = _MODULE.release_resettled_boxes(
+                completed, arrived, settled
+            )
+            gate = _MODULE.lift_hold_gate(lifted) & _MODULE.belt_release_gate(
+                arrived, completed
+            )
+            drive = _MODULE.queue_drive_mask_along_path(
+                ss_t,
+                on_belt_t,
+                _column([_HALF_D, _HALF_D]),
+                s_stop=s_stop,
+                queue_gap=_GAP,
+                transfer_complete=gate,
+                completed=completed,
+            )
+            return [bool(v) for v in drive.squeeze(-1).tolist()]
+
+        # 队首到位 → 停；推挤让 s 回落到停止线上游 → 仍停。
+        self.assertEqual(step([s_stop + 0.011, 11.4], [True, True], [True, True]), [False, False])
+        self.assertEqual(step([s_stop - 0.020, 11.4], [True, True], [True, True]), [False, False])
+        # 平面偏出（corridor False）→ 放行；回摆回到带上 → 不按停、不拖拽。
+        self.assertEqual(step([s_stop + 0.01, 11.4], [False, True], [False, True]), [False, True])
+        self.assertEqual(step([s_stop + 0.02, 11.5], [True, True], [True, True]), [False, True])
+
+
+class LiftHoldLatchTest(unittest.TestCase):
+    """悬空压停锁存：抬离带面即锁存，z 抖动不翻转，回带驻留满步数才解除。"""
+
+    _K = 5  # 测试用小驻留步数
+
+    def _roll(self, frames: list[tuple[bool, bool, bool]]) -> tuple[list[bool], list[bool]]:
+        """frames 每项 (on_belt, in_corridor, completed)；返回逐帧 (lifted, settled)。"""
+
+        lifted = torch.zeros((1, 1), dtype=torch.bool)
+        dwell = torch.zeros((1, 1), dtype=torch.int32)
+        lifted_seq, settled_seq = [], []
+        for on_belt, in_corridor, completed in frames:
+            lifted, dwell, settled = _MODULE.update_lift_hold_latch(
+                lifted,
+                dwell,
+                torch.tensor([[on_belt]]),
+                torch.tensor([[in_corridor]]),
+                torch.tensor([[completed]]),
+                release_steps=self._K,
+            )
+            lifted_seq.append(bool(lifted[0, 0]))
+            settled_seq.append(bool(settled[0, 0]))
+        return lifted_seq, settled_seq
+
+    def test_lift_latches_and_z_flutter_does_not_unlatch(self) -> None:
+        # 抬起 → 锁存；携行高度颠簸让 z 短暂回窗（on_belt=True 一两帧）→ 仍锁存。
+        lifted, _ = self._roll(
+            [
+                (True, True, False),   # 躺在带上
+                (False, True, False),  # 抬离带面 → 锁存
+                (True, True, False),   # z 颠簸回窗一帧 → 保持
+                (False, True, False),  # 又出窗 → 保持
+                (True, True, False),
+                (True, True, False),
+            ]
+        )
+        self.assertEqual(lifted, [False, True, True, True, True, True])
+
+    def test_settling_back_on_the_belt_releases_after_dwell(self) -> None:
+        frames = [(False, True, False)] + [(True, True, False)] * self._K
+        lifted, settled = self._roll(frames)
+        # 回带的前 K-1 帧仍压停，第 K 帧驻留满 → 解除。
+        self.assertEqual(lifted, [True, True, True, True, True, False])
+        self.assertTrue(settled[-1])
+
+    def test_planar_departure_immediately_clears_the_hold(self) -> None:
+        lifted, _ = self._roll(
+            [
+                (False, True, False),  # 抬起 → 锁存
+                (False, False, True),  # 横移出通道（completed）→ 即刻让位
+            ]
+        )
+        self.assertEqual(lifted, [True, False])
+
+    def test_gate_blocks_only_while_lifted(self) -> None:
+        lifted = torch.tensor([[True], [False]], dtype=torch.bool)
+        self.assertEqual(_MODULE.lift_hold_gate(lifted).tolist(), [False])
+        self.assertEqual(
+            _MODULE.lift_hold_gate(torch.zeros((2, 1), dtype=torch.bool)).tolist(),
+            [True],
+        )
+
+    def test_shape_mismatch_fails_fast(self) -> None:
+        with self.assertRaises(ValueError):
+            _MODULE.update_lift_hold_latch(
+                torch.zeros((2, 1), dtype=torch.bool),
+                torch.zeros((2, 1), dtype=torch.int32),
+                torch.zeros((3, 1), dtype=torch.bool),
+                torch.zeros((2, 1), dtype=torch.bool),
+                torch.zeros((2, 1), dtype=torch.bool),
+                release_steps=5,
+            )
+
+
+class ReleaseResettledBoxesTest(unittest.TestCase):
+    """completed 的场内解除：脱手掉回带面并稳定驻留后重新入队。"""
+
+    def test_settled_completed_box_rejoins_the_queue(self) -> None:
+        completed = torch.tensor([[True], [False]], dtype=torch.bool)
+        arrived = torch.tensor([[True], [False]], dtype=torch.bool)
+        settled = torch.tensor([[True], [True]], dtype=torch.bool)
+        completed, arrived = _MODULE.release_resettled_boxes(completed, arrived, settled)
+        self.assertEqual(completed.tolist(), [[False], [False]])
+        self.assertEqual(arrived.tolist(), [[False], [False]])
+
+    def test_brief_touchdown_does_not_release(self) -> None:
+        completed = torch.tensor([[True]], dtype=torch.bool)
+        arrived = torch.tensor([[True]], dtype=torch.bool)
+        settled = torch.tensor([[False]], dtype=torch.bool)
+        completed, arrived = _MODULE.release_resettled_boxes(completed, arrived, settled)
+        self.assertEqual(completed.tolist(), [[True]])
+        self.assertEqual(arrived.tolist(), [[True]])
+
+    def test_shape_mismatch_fails_fast(self) -> None:
+        with self.assertRaises(ValueError):
+            _MODULE.release_resettled_boxes(
+                torch.zeros((2, 1), dtype=torch.bool),
+                torch.zeros((2, 1), dtype=torch.bool),
+                torch.zeros((3, 1), dtype=torch.bool),
+            )
+
+
+class InterceptGrabStabilityTest(GrabCycleStabilityTest):
+    """双机流程：robot2 上游截抓 belt_box_2（无 arrived/completed 保护的箱子）。
+
+    复用 GrabCycleStabilityTest 的事件层链路 helper。核心断言：box2 被抬起后
+    z 窗颠簸不再翻转整带（悬空锁存），box2 平面偏出后带才恢复。
+    """
+
+    def test_lifted_intercept_box_holds_the_belt_through_z_flutter(self) -> None:
+        box2_lane = self._BOX2[0]
+        # box1 在工位、box2 停排队位：整带停。
+        self.assertEqual(self._step((-5.42, _Y_STOP - 0.011, 0.775)), [False] * 3)
+        # robot1 把 box1 横移出通道 → 放行；box2 成为新队首被驱动（贴带盲区，已知限制）。
+        self.assertEqual(
+            self._step((-5.05, _Y_STOP - 0.01, 0.955)), [False, True, True]
+        )
+        # robot2 把 box2 抬离带面 → 悬空锁存 → 整带停。
+        self.assertEqual(
+            self._step((-4.80, _Y_STOP, 0.955), (box2_lane, 14.85, 0.960)),
+            [False, False, False],
+        )
+        # box2 携行颠簸 z 回窗一帧：修复前整带随之启动一帧，现在保持停。
+        self.assertEqual(
+            self._step((-4.80, _Y_STOP, 0.955), (box2_lane, 14.85, 0.900)),
+            [False, False, False],
+        )
+        self.assertEqual(
+            self._step((-4.80, _Y_STOP, 0.955), (box2_lane, 14.85, 0.960)),
+            [False, False, False],
+        )
+        # box2 横移出通道 → completed → 整带恢复，box3 补位。
+        self.assertEqual(
+            self._step((-4.80, _Y_STOP, 0.955), (-5.00, 14.85, 0.960)),
+            [False, False, True],
+        )
+
+    def test_dropped_completed_box_self_heals_after_dwell(self) -> None:
+        # box1 放行后脱手掉回带面停止线上游，躺满驻留步数 → 重新入队被驱动。
+        self._step((-5.42, _Y_STOP - 0.011, 0.775))
+        self.assertEqual(
+            self._step((-5.05, _Y_STOP + 0.02, 0.955)), [False, True, True]
+        )
+        drive = None
+        for _ in range(self._RELEASE_STEPS):
+            drive = self._step((-5.42, _Y_STOP + 0.30, 0.775))
+        # 驻留满：completed/arrived 清零，box1 重新当队列箱被送向工位；它恰好落在
+        # box2 兜底线内 11mm，防撞保底刹住 box2（间距拉开后自然恢复），box3 照常跑。
+        self.assertEqual(drive, [True, False, True])
+        # 它到位后整带重新停住——恢复正常节拍。
+        self.assertEqual(self._step((-5.42, _Y_STOP - 0.011, 0.775)), [False] * 3)
+
+
+class LoopModeCompletedExclusionTest(unittest.TestCase):
+    """循环模式（y_stop=None）同样兑现 completed 剔除契约。"""
+
+    def test_completed_box_is_not_driven_in_loop_mode(self) -> None:
+        drive = _MODULE.queue_drive_mask(
+            _column([15.0]),
+            torch.tensor([[True]], dtype=torch.bool),
+            _column([_HALF_D]),
+            y_stop=None,
+            queue_gap=_GAP,
+            completed=torch.tensor([[True]], dtype=torch.bool),
+        )
+        self.assertEqual([bool(v) for v in drive.squeeze(-1).tolist()], [False])
+        drive = _MODULE.queue_drive_mask_along_path(
+            _column([11.0]),
+            torch.tensor([[True]], dtype=torch.bool),
+            _column([_HALF_D]),
+            s_stop=None,
+            queue_gap=_GAP,
+            completed=torch.tensor([[True]], dtype=torch.bool),
+        )
+        self.assertEqual([bool(v) for v in drive.squeeze(-1).tolist()], [False])
+
+
 if __name__ == "__main__":
     unittest.main()

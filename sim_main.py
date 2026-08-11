@@ -1784,6 +1784,16 @@ def main():
         """Reset state and controller history as one operation for SONIC tasks."""
         if not sonic_reset_supported:
             env_cfg.event_manager.trigger(event_name, env)
+            # cfg 侧 SimpleEventManager 只瞬移场景、不走 env.reset，Isaac Lab 事件
+            # term 的内部锁存（如 DriveBeltBoxesOnConveyor 的到位/放行/悬空锁存）
+            # 不会被清——箱子瞬移回上游而"工位被占用"残留会把整带永久停死。
+            # 这里显式补一次 EventManager.reset 清掉全部 class-based term 状态。
+            _event_manager = getattr(env, "event_manager", None)
+            if _event_manager is not None:
+                try:
+                    _event_manager.reset()
+                except Exception as exc:
+                    print(f"[reset] warning: event_manager.reset() failed: {exc}")
             broadcast_sync_reset()
             return False
 
