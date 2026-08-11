@@ -251,6 +251,7 @@ def drive_belt_boxes_on_conveyor(
     extra_rects: tuple[tuple[float, float, float, float], ...] = (),
     # —— 工位箱平面偏离门控（仅停止式 legacy 后端使用） ——
     departure_completed: torch.Tensor | None = None,
+    arrived: torch.Tensor | None = None,
 ):
     """把纸箱队列沿带面送到工位，工位箱偏出流水线通道后放行下一格。
 
@@ -267,6 +268,13 @@ def drive_belt_boxes_on_conveyor(
     按箱锁存，避免抓取轨迹回摆或边界抖动让已经启动的流水线中途反悔。
     ``DriveBeltBoxesOnConveyor.reset`` 在整场景/F12/DDS 复位时按 env 清零锁存；状态
     只存在物体权威端，不需要增加双机同步字段。
+
+    ``arrived`` 是与 ``departure_completed`` 同形的到位锁存：箱子首次越过工位停止
+    线即置位。抱取时机器人把工位箱推挤回停止线上游 1-2 cm 是常态，裸
+    ``lead > stop`` 比较会当场误开整带并把手里的箱子往回拖；锁存后"工位被占用"
+    直到该箱平面偏出流水线（completed）才解除——启停节拍在一次抱取内只翻转一次。
+    已放行（completed）的箱子同时从队首判定与驱动输出中剔除，手臂回摆把它带回
+    带面上方时不会再按停整带或被重新拖走。
 
     弯道形态下箱子**不旋转**（保持世界朝向）：速度矢量沿路径航向逐步更新，
     姿态不动——双机同步/镜像端零改动，观感是箱子"平移着拐弯"。
@@ -318,23 +326,6 @@ def drive_belt_boxes_on_conveyor(
         y_range=y_range,
         extra_rects=corridor_rects,
     )  # (N, E)
-    transfer_complete = None
-    if y_stop is not None:
-        if departure_completed is None:
-            raise ValueError("停止式纸箱队列必须由有状态事件 term 提供平面偏离锁存")
-        completed = conveyor_queue.update_departure_completion_latch(
-            departure_completed[:, env_ids],
-            in_conveyor_corridor,
-        )
-        departure_completed[:, env_ids] = completed
-        transfer_complete = conveyor_queue.transfer_complete_mask(
-            on_belt,
-            completed,
-        )  # (E,)
-    # (N, 1)：广播到 (N, E)。箱型通常只有十余个，每周期重建此小张量成本可忽略。
-    half_len = pos_local.new_tensor(half_lengths).unsqueeze(-1)
-    speed = -velocity_y  # velocity_y 约定为负（-Y 方向）；沿路径恒速取其模。
-
     if path_enabled:
         ss, hx, hy = conveyor_queue.path_progress(
             pos_local,
@@ -349,6 +340,39 @@ def drive_belt_boxes_on_conveyor(
         else:
             s_arc_end = (path_corner_center[0] - path_s_origin_x) + path_radius * 1.5707963267948966
             s_stop = s_arc_end + (path_corner_center[1] - y_stop)
+    else:
+        ss = hx = hy = None
+        s_stop = None
+
+    transfer_complete = None
+    completed = None
+    if y_stop is not None:
+        if departure_completed is None or arrived is None:
+            raise ValueError("停止式纸箱队列必须由有状态事件 term 提供平面偏离与到位锁存")
+        completed = conveyor_queue.update_departure_completion_latch(
+            departure_completed[:, env_ids],
+            in_conveyor_corridor,
+        )
+        departure_completed[:, env_ids] = completed
+        if path_enabled:
+            arrived_now = conveyor_queue.update_arrival_latch_along_path(
+                arrived[:, env_ids], ss, s_stop=s_stop
+            )
+        else:
+            arrived_now = conveyor_queue.update_arrival_latch(
+                arrived[:, env_ids], pos_local[..., 1], y_stop=y_stop
+            )
+        arrived[:, env_ids] = arrived_now
+        # 两道门相与：既没有"悬空未离线"的箱子，也没有"到位未离线"的箱子。
+        transfer_complete = conveyor_queue.transfer_complete_mask(
+            on_belt,
+            completed,
+        ) & conveyor_queue.belt_release_gate(arrived_now, completed)  # (E,)
+    # (N, 1)：广播到 (N, E)。箱型通常只有十余个，每周期重建此小张量成本可忽略。
+    half_len = pos_local.new_tensor(half_lengths).unsqueeze(-1)
+    speed = -velocity_y  # velocity_y 约定为负（-Y 方向）；沿路径恒速取其模。
+
+    if path_enabled:
         drive = conveyor_queue.queue_drive_mask_along_path(
             ss,
             on_belt,
@@ -356,9 +380,9 @@ def drive_belt_boxes_on_conveyor(
             s_stop=s_stop,
             queue_gap=queue_gap,
             transfer_complete=transfer_complete,
+            completed=completed,
         )  # (N, E)
     else:
-        hx = hy = None
         drive = conveyor_queue.queue_drive_mask(
             pos_local[..., 1],
             on_belt,
@@ -366,6 +390,7 @@ def drive_belt_boxes_on_conveyor(
             y_stop=y_stop,
             queue_gap=queue_gap,
             transfer_complete=transfer_complete,
+            completed=completed,
         )  # (N, E)
 
     for index, obj in enumerate(objects):
@@ -383,7 +408,7 @@ def drive_belt_boxes_on_conveyor(
 
 
 class DriveBeltBoxesOnConveyor(ManagerTermBase):
-    """带 per-box 平面偏离锁存的纸箱驱动事件 term。"""
+    """带 per-box 平面偏离/到位双锁存的纸箱驱动事件 term。"""
 
     def __init__(self, cfg, env: ManagerBasedEnv):
         super().__init__(cfg, env)
@@ -393,10 +418,12 @@ class DriveBeltBoxesOnConveyor(ManagerTermBase):
             device=env.device,
             dtype=torch.bool,
         )
+        self._arrived = torch.zeros_like(self._departure_completed)
 
     def reset(self, env_ids=None) -> None:
         ids = slice(None) if env_ids is None else env_ids
         self._departure_completed[:, ids] = False
+        self._arrived[:, ids] = False
 
     def __call__(
         self,
@@ -437,6 +464,7 @@ class DriveBeltBoxesOnConveyor(ManagerTermBase):
             path_s_origin_x=path_s_origin_x,
             extra_rects=extra_rects,
             departure_completed=self._departure_completed,
+            arrived=self._arrived,
         )
 
 

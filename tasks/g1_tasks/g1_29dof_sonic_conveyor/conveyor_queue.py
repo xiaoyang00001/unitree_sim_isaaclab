@@ -120,6 +120,64 @@ def update_departure_completion_latch(
     return completed | ~in_conveyor_corridor
 
 
+def update_arrival_latch(
+    arrived: torch.Tensor,
+    ys: torch.Tensor,
+    *,
+    y_stop: float,
+) -> torch.Tensor:
+    """箱子首次到达工位停止线（``y <= y_stop``）后锁存到位。
+
+    ``lead_y > y_stop`` 的裸比较没有迟滞：机器人抱取时把工位箱往上游推 1-2 cm，
+    队首 y 就重新越回停止线，整带被误判"队首未到位"而瞬间启动，还会把手里的
+    箱子按输送速度往回拖（离线重放实测一次抱取内启停翻转 3 次）。锁存后箱子
+    无论被推到哪，"工位被占用"这件事都保持为真，直到平面偏离完成位
+    （``update_departure_completion_latch``）放行；两个锁存随同一个事件 term 在
+    F12/DDS/env reset 时一起清零。
+    """
+
+    if arrived.shape != ys.shape:
+        raise ValueError(
+            "arrived 与 ys 形状必须一致："
+            f"{tuple(arrived.shape)} vs {tuple(ys.shape)}"
+        )
+    return arrived | (ys <= y_stop)
+
+
+def update_arrival_latch_along_path(
+    arrived: torch.Tensor,
+    ss: torch.Tensor,
+    *,
+    s_stop: float,
+) -> torch.Tensor:
+    """沿路径距离版到位锁存；s 向下游递增，到位判据是 ``s >= s_stop``。
+
+    与 ``queue_drive_mask_along_path`` 同一手法：喂入 ``-s`` 复用 y 版实现。
+    """
+
+    return update_arrival_latch(arrived, -ss, y_stop=-s_stop)
+
+
+def belt_release_gate(
+    arrived: torch.Tensor,
+    completed: torch.Tensor,
+) -> torch.Tensor:
+    """整带放行门：存在"已到位但尚未偏出流水线"的箱子时禁止整带运行。
+
+    输入均为 ``(N, E)``，输出 ``(E,)``。与 ``transfer_complete_mask`` 互补：
+    那张 mask 拦的是"被抬离带面但 XY 未偏出"的悬空箱，这里拦的是"仍躺在工位
+    （含被抓取推挤回上游）"的到位箱——两者一起构成"箱子被拿到流水线之外才
+    重新开带"的完整口径。``.any(dim=0)`` 是张量 reduce，不产生 GPU→CPU 同步。
+    """
+
+    if arrived.shape != completed.shape:
+        raise ValueError(
+            "arrived 与 completed 形状必须一致："
+            f"{tuple(arrived.shape)} vs {tuple(completed.shape)}"
+        )
+    return ~((arrived & ~completed).any(dim=0))
+
+
 def path_progress(
     pos_local: torch.Tensor,
     *,
@@ -173,6 +231,7 @@ def queue_drive_mask_along_path(
     s_stop: float | None,
     queue_gap: float,
     transfer_complete: torch.Tensor | None = None,
+    completed: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """沿路径距离 s 的整带节拍判据；语义与 ``queue_drive_mask`` 逐项镜像。
 
@@ -188,6 +247,7 @@ def queue_drive_mask_along_path(
         y_stop=None if s_stop is None else -s_stop,
         queue_gap=queue_gap,
         transfer_complete=transfer_complete,
+        completed=completed,
     )
 
 
@@ -199,6 +259,7 @@ def queue_drive_mask(
     y_stop: float | None,
     queue_gap: float,
     transfer_complete: torch.Tensor | None = None,
+    completed: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """整带节拍启停：算出这一帧哪些箱子该继续被送走。
 
@@ -227,8 +288,16 @@ def queue_drive_mask(
     的空档；按各自半长算，无论怎么交错，兜底的净空隙都恒为 ``queue_gap``。
 
     ``transfer_complete`` 是可选的 ``(E,)`` bool 张量；不传时保持通用队列函数的
-    历史行为。停止式 legacy 事件用“仍在带上或已偏出通道”生成它；镜像端根本不跑
-    驱动事件，箱子位姿仍全部来自权威端的 scene_state 帧。
+    历史行为。停止式 legacy 事件用"仍在带上或已偏出通道"且"工位无到位未放行
+    箱"（``belt_release_gate``）生成它；镜像端根本不跑驱动事件，箱子位姿仍全部
+    来自权威端的 scene_state 帧。
+
+    ``completed`` 是可选的 ``(N, E)`` 平面偏离锁存（同 ``transfer_complete`` 的
+    per-box 来源）。已锁存的箱子在机器人手里，抓取轨迹回摆让它短暂回到带面
+    高度窗/通道内时，绝不能再被当成"在带上的队首"——否则它会把 ``lead_y`` 拉回
+    停止线以内按停整带，甚至自己重新满足 drive 被按输送速度拖走（跟机器人
+    拔河）。传入后该箱从队首判定与驱动输出中彻底剔除；防撞保底仍用物理
+    ``on_belt``（回摆的箱体真实挡在带上时后车照样刹住）。
 
     ``y_stop=None``（``ISAACLAB_CONVEYOR_Y_STOP<=0`` 的循环模式）下没有工位停止线，
     整带长跑不停，只剩防撞保底。
@@ -247,15 +316,26 @@ def queue_drive_mask(
     blocker_tail = torch.where(ahead, tails.unsqueeze(0), no_blocker).amax(dim=1)  # (N, E)
     clear_of_leader = ys > blocker_tail + half_lengths + queue_gap  # (N, E)
 
+    # 已放行的箱子不再属于队列：不参与队首判定，也不再被写输送速度。
+    if completed is not None:
+        if completed.shape != on_belt.shape:
+            raise ValueError(
+                "completed 形状必须与 on_belt 一致："
+                f"{tuple(completed.shape)} vs {tuple(on_belt.shape)}"
+            )
+        active = on_belt & ~completed
+    else:
+        active = on_belt
+
     if y_stop is None:
         return on_belt & clear_of_leader
 
     # —— 整带节拍 ——
-    # 只看仍在带面的箱子来确定新队首；被抓走的箱子是否已经横向偏出流水线，则由下方
-    # transfer_complete 统一门控。全部离开带面时 lead_y 取到哨兵大值，但 on_belt
-    # 全假，drive 仍是全假，无需额外分支。
+    # 只看仍在队列里的箱子来确定新队首；被抓走的箱子是否已经横向偏出流水线，则由
+    # 下方 transfer_complete 统一门控。全部离开带面时 lead_y 取到哨兵大值，但
+    # active 全假，drive 仍是全假，无需额外分支。
     far_away = ys.new_tensor(1.0e9)
-    lead_y = torch.where(on_belt, ys, far_away).amin(dim=0)  # (E,)
+    lead_y = torch.where(active, ys, far_away).amin(dim=0)  # (E,)
     belt_running = lead_y > y_stop  # (E,)
     if transfer_complete is not None:
         if transfer_complete.shape != belt_running.shape:
@@ -265,4 +345,4 @@ def queue_drive_mask(
             )
         belt_running = belt_running & transfer_complete
     belt_running = belt_running.unsqueeze(0)  # (1, E) → 广播到 (N, E)
-    return on_belt & belt_running & clear_of_leader
+    return active & belt_running & clear_of_leader
