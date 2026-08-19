@@ -108,6 +108,7 @@ class PipelinePicoSceneResetTest(unittest.TestCase):
         self.assertIn("--profile_interval 25", self.source)
         self.assertIn("--sim-state-export-hz 0", self.source)
         self.assertIn("--lowstate-pub-hz 55", self.source)
+        self.assertIn("--handstate-pub-hz 10", self.source)
 
     def test_physics_steps_parser_returns_last_complete_counter(self) -> None:
         start = self.source.index("latest_physics_steps() {")
