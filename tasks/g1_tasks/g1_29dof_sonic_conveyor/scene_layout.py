@@ -667,7 +667,9 @@ def resolve_scene_layout(environ: Mapping[str, str]) -> ConveyorSceneLayout:
                 rot=(0.40455358, 0.0, 0.0, 0.91451430),  # 朝西北正对队尾物体
             ),
             StandbyRobotPose(
-                pos=(robot_2_x, _shifted(16.95), STANDBY_ROBOT_ROOT_Z),
+                # 西侧桌箱随第二机器人北移 0.75 m 后，此待机位也等量后移，
+                # 保持它与工位家具之间的既有净距。
+                pos=(robot_2_x, _shifted(17.70), STANDBY_ROBOT_ROOT_Z),
                 rot=(1.0, 0.0, 0.0, 0.0),  # yaw 0°，朝 +X
             ),
             StandbyRobotPose(

@@ -101,6 +101,35 @@ class ConveyorBackgroundAssetTest(unittest.TestCase):
         )
 
     @unittest.skipUnless(_HAS_PXR, "需要 pxr（usd-core）做离线组合审计")
+    def test_west_workcell_table_and_bin_move_together_for_robot_2(self) -> None:
+        """西侧桌箱沿挂载局部 +X 同移 0.75 m，东侧工位保持原位。"""
+
+        stage = Usd.Stage.Open(
+            str(_ASSETS_DIR / "warehouse-simple6_v61_visual_only.usda"),
+            Usd.Stage.LoadNone,
+        )
+        self.assertIsNotNone(stage)
+        stage.Load("/Root/ConveyorBelt")
+        cache = UsdGeom.BBoxCache(
+            Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render]
+        )
+
+        def center(name: str) -> Gf.Vec3d:
+            prim = stage.GetPrimAtPath(f"/Root/ConveyorBelt/{name}")
+            self.assertTrue(prim, name)
+            return cache.ComputeWorldBound(prim).ComputeAlignedRange().GetMidpoint()
+
+        east_table = center("SM_HeavyDutyPackingTable_C02_01")
+        east_bin = center("blue_sorting_bin_02")
+        west_table = center("SM_HeavyDutyPackingTable_C02_03")
+        west_bin = center("blue_sorting_bin_01")
+
+        self.assertAlmostEqual(east_table[0], east_bin[0], places=6)
+        self.assertAlmostEqual(west_table[0], west_bin[0], places=6)
+        self.assertAlmostEqual(west_table[0] - east_table[0], 0.75, places=6)
+        self.assertAlmostEqual(west_bin[0] - east_bin[0], 0.75, places=6)
+
+    @unittest.skipUnless(_HAS_PXR, "需要 pxr（usd-core）做离线组合审计")
     def test_blue_sorting_bins_open_toward_the_same_robot_side(self) -> None:
         """组合后两只料箱的可见中心不漂移，局部 -Y 缺口方向保持一致。"""
 

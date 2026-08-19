@@ -69,6 +69,7 @@ class ConveyorSceneLayoutTest(unittest.TestCase):
         )
         self.assertEqual(layout.robot_2_x, -6.7)
         self.assertEqual(layout.robot_workstation_y, 14.398)
+        self.assertEqual(layout.robot_2_workstation_y, 15.148)
         self.assertEqual(layout.conveyor_y_stop, 14.398)
 
     def test_zero_selects_stacked_full_size_totes_on_pushcart(self) -> None:
@@ -118,7 +119,7 @@ class StandbyRobotLayoutTest(unittest.TestCase):
                     (-12.7, 18.9534, 0.76),
                     (0.40455358, 0.0, 0.0, 0.91451430),
                 ),
-                ((-6.7, 17.2, 0.76), (1.0, 0.0, 0.0, 0.0)),
+                ((-6.7, 17.95, 0.76), (1.0, 0.0, 0.0, 0.0)),
                 (
                     (-9.5, 21.15, 0.76),
                     (0.70710678, 0.0, 0.0, -0.70710678),
@@ -134,17 +135,27 @@ class StandbyRobotLayoutTest(unittest.TestCase):
 
         self.assertEqual(layout.standby_robot_poses, ())
 
-    def test_existing_two_robot_workstations_are_unchanged(self) -> None:
+    def test_second_robot_workstation_is_offset_only_in_conveyor_layout(self) -> None:
         conveyor = resolve_scene_layout({})
         pushcart = resolve_scene_layout({"ISAACLAB_TOTES_ON_CONVEYOR": "0"})
 
         self.assertEqual(
-            (conveyor.robot_1_x, conveyor.robot_2_x, conveyor.robot_workstation_y),
-            (-4.54, -6.7, 14.398),
+            (
+                conveyor.robot_1_x,
+                conveyor.robot_2_x,
+                conveyor.robot_workstation_y,
+                conveyor.robot_2_workstation_y,
+            ),
+            (-4.54, -6.7, 14.398, 15.148),
         )
         self.assertEqual(
-            (pushcart.robot_1_x, pushcart.robot_2_x, pushcart.robot_workstation_y),
-            (-4.82, -6.42, 19.0),
+            (
+                pushcart.robot_1_x,
+                pushcart.robot_2_x,
+                pushcart.robot_workstation_y,
+                pushcart.robot_2_workstation_y,
+            ),
+            (-4.82, -6.42, 19.0, 19.0),
         )
 
 
@@ -230,22 +241,22 @@ class BeltBoxLayoutTest(unittest.TestCase):
         self.assertEqual(len(_SLOTS_DEFAULT), 17)
         for index, s in enumerate(_SLOTS_DEFAULT):
             self.assertAlmostEqual(s, 11.06 - 0.75 * index, places=9)
-        # 出生点 = 显式槽位序列的路径点；队首两箱保留西/东各 0.20 m 偏移。
+        # 出生点 = 显式槽位序列的路径点；队首两箱按机器人侧东/西各偏 0.20 m。
         for index, (x, y, z) in enumerate(layout.belt_box_positions):
             expected = _EI_MODULE.path_point(_SLOTS_DEFAULT[index])
             expected_x = expected[0]
             if index == 0:
-                expected_x -= _LAYOUT_MODULE.BELT_BOX_FRONT_X_OFFSET
-            elif index == 1:
                 expected_x += _LAYOUT_MODULE.BELT_BOX_FRONT_X_OFFSET
+            elif index == 1:
+                expected_x -= _LAYOUT_MODULE.BELT_BOX_FRONT_X_OFFSET
             with self.subTest(index=index):
                 self.assertAlmostEqual(x, expected_x, places=9)
                 self.assertAlmostEqual(y, expected[1], places=9)
                 self.assertEqual(z, 0.775)
         # 主线 5 箱、弧上 3 箱、X 支线 9 箱；最前两箱的既有横向错位不变。
-        self.assertAlmostEqual(layout.belt_box_positions[0][0], -5.82, places=9)
+        self.assertAlmostEqual(layout.belt_box_positions[0][0], -5.42, places=9)
         self.assertAlmostEqual(layout.belt_box_positions[0][1], 15.5325, places=3)
-        self.assertAlmostEqual(layout.belt_box_positions[1][0], -5.42, places=9)
+        self.assertAlmostEqual(layout.belt_box_positions[1][0], -5.82, places=9)
         self.assertAlmostEqual(layout.belt_box_positions[1][1], 16.2825, places=3)
         self.assertAlmostEqual(layout.belt_box_positions[16][0], -13.70, places=6)
         self.assertAlmostEqual(

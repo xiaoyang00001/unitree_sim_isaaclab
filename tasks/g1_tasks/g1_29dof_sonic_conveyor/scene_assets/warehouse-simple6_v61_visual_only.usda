@@ -882,7 +882,8 @@ over "Root"
 
         over "SM_HeavyDutyPackingTable_C02_03"
         {
-            double3 xformOp:translate = (0.9039417853480621, 2.086707303107458, -0.577029550733144)
+            # 第二机器人沿世界 +Y 错开 0.75 m；ConveyorBelt 挂载旋转后对应局部 +X。
+            double3 xformOp:translate = (1.6539417853480621, 2.086707303107458, -0.577029550733144)
             float3 xformOp:rotateXYZ = (0.0, 0.0, 0.0)
             float3 xformOp:scale = (0.005324971862137318, 0.013651206158101559, 0.004308692179620266)
             uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
@@ -890,7 +891,7 @@ over "Root"
 
         over "blue_sorting_bin_01"
         {
-            matrix4d xformOp:transform = ( (-1.8514065467398217e-16, -0.833799383400876, 0.0, 0.0), (1.3622057263085308, -3.02470432324793e-16, 0.0, 0.0), (0.0, 0.0, 0.9988792899023712, 0.0), (7.56997747620902, -8.62928249104018, -0.6416343162044926, 1.0) )
+            matrix4d xformOp:transform = ( (-1.8514065467398217e-16, -0.833799383400876, 0.0, 0.0), (1.3622057263085308, -3.02470432324793e-16, 0.0, 0.0), (0.0, 0.0, 0.9988792899023712, 0.0), (8.31997747620902, -8.62928249104018, -0.6416343162044926, 1.0) )
             uniform token[] xformOpOrder = ["xformOp:transform"]
         }
 
