@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -67,6 +68,26 @@ class _FakeDex3StateWriter:
 
     def write_hand_states(self, *values):
         self.last_write = values
+
+
+class _FakeCommandSharedMemory:
+    def __init__(self, payload=None):
+        self.payload = payload
+        self.read_count = 0
+        self.write_count = 0
+        self.fail_writes = 0
+
+    def read_data(self):
+        self.read_count += 1
+        return self.payload
+
+    def write_data(self, payload):
+        self.write_count += 1
+        if self.fail_writes > 0:
+            self.fail_writes -= 1
+            return False
+        self.payload = payload
+        return True
 
 
 class _FakeActuator:
@@ -575,8 +596,20 @@ class SonicDDSFullLowCmdTest(unittest.TestCase):
     f"SONIC DDS dependencies unavailable: {IMPORT_ERROR}",
 )
 class Dex3DDSAndStateTest(unittest.TestCase):
-    def test_dex3_dds_preserves_complete_handcmd_and_receive_time(self) -> None:
+    @staticmethod
+    def _make_dex3_dds(output_shm=None) -> Dex3DDS:
+        with mock.patch.object(Dex3DDS, "setup_shared_memory"):
+            dds = Dex3DDS(node_name="test_dex3")
+        dds.input_shm = _FakeCommandSharedMemory()
+        dds.output_shm = (
+            _FakeCommandSharedMemory() if output_shm is None else output_shm
+        )
+        return dds
+
+    @staticmethod
+    def _make_hand_command() -> object:
         message = unitree_hg_msg_dds__HandCmd_()
+        message.reserve[:] = [11, 12, 13, 14]
         for motor_index, motor in enumerate(message.motor_cmd):
             motor.mode = 0x10 | motor_index
             motor.q = 0.1 * motor_index
@@ -584,6 +617,11 @@ class Dex3DDSAndStateTest(unittest.TestCase):
             motor.tau = 0.3 * motor_index
             motor.kp = 1.5 + motor_index
             motor.kd = 0.1 + 0.01 * motor_index
+            motor.reserve = 100 + motor_index
+        return message
+
+    def test_dex3_dds_preserves_complete_handcmd_and_receive_time(self) -> None:
+        message = self._make_hand_command()
 
         before = time.monotonic()
         command = Dex3DDS.process_hand_command(
@@ -599,6 +637,149 @@ class Dex3DDSAndStateTest(unittest.TestCase):
         self.assertEqual(len(command["kd"]), 7)
         self.assertGreaterEqual(command["receive_time_monotonic"], before)
         self.assertLessEqual(command["receive_time_monotonic"], after)
+
+    def test_dex3_duplicate_fastpath_refreshes_liveness_without_shm_write(self) -> None:
+        output_shm = _FakeCommandSharedMemory()
+        dds = self._make_dex3_dds(output_shm)
+        message = self._make_hand_command()
+
+        with mock.patch(
+            "dds.dex3_dds.time.monotonic", side_effect=[100.0, 100.001]
+        ):
+            dds.dds_subscriber(message, "left")
+            first_commands = dds.get_hand_commands()
+            first_receive_time = first_commands["left_hand_cmd"][
+                "receive_time_monotonic"
+            ]
+            self.assertEqual(output_shm.write_count, 1)
+            self.assertEqual(output_shm.read_count, 0)
+
+            dds.dds_subscriber(message, "left")
+        second_commands = dds.get_hand_commands()
+
+        self.assertGreater(
+            second_commands["left_hand_cmd"]["receive_time_monotonic"],
+            first_receive_time,
+        )
+        self.assertEqual(output_shm.write_count, 1)
+        self.assertEqual(output_shm.read_count, 0)
+        self.assertEqual(dds._handcmd_packet_counts["left"], 2)
+        self.assertEqual(dds._handcmd_change_counts["left"], 1)
+        self.assertEqual(dds._handcmd_duplicate_counts["left"], 1)
+
+    def test_dex3_fastpath_keeps_left_and_right_liveness_independent(self) -> None:
+        dds = self._make_dex3_dds()
+        message = self._make_hand_command()
+
+        dds.dds_subscriber(message, "left")
+        dds.dds_subscriber(message, "right")
+        before = dds.get_hand_commands()
+        time.sleep(0.001)
+        dds.dds_subscriber(message, "left")
+        after = dds.get_hand_commands()
+
+        self.assertGreater(
+            after["left_hand_cmd"]["receive_time_monotonic"],
+            before["left_hand_cmd"]["receive_time_monotonic"],
+        )
+        self.assertEqual(
+            after["right_hand_cmd"]["receive_time_monotonic"],
+            before["right_hand_cmd"]["receive_time_monotonic"],
+        )
+        self.assertEqual(dds._handcmd_change_counts, {"left": 1, "right": 1})
+        self.assertEqual(dds._handcmd_duplicate_counts, {"left": 1, "right": 0})
+
+    def test_dex3_fingerprint_covers_all_control_and_reserve_fields(self) -> None:
+        dds = self._make_dex3_dds()
+        message = self._make_hand_command()
+        dds.dds_subscriber(message, "left")
+
+        mutations = (
+            lambda: setattr(message.motor_cmd[0], "mode", 0x21),
+            lambda: setattr(message.motor_cmd[0], "q", 0.25),
+            lambda: setattr(message.motor_cmd[0], "dq", 0.35),
+            lambda: setattr(message.motor_cmd[0], "tau", 0.45),
+            lambda: setattr(message.motor_cmd[0], "kp", 2.5),
+            lambda: setattr(message.motor_cmd[0], "kd", 0.5),
+            lambda: setattr(message.motor_cmd[0], "reserve", 999),
+            lambda: message.reserve.__setitem__(0, 777),
+        )
+        for expected_change_count, mutate in enumerate(mutations, start=2):
+            with self.subTest(change=expected_change_count):
+                mutate()
+                dds.dds_subscriber(message, "left")
+                self.assertEqual(
+                    dds._handcmd_change_counts["left"], expected_change_count
+                )
+        self.assertEqual(dds.output_shm.write_count, 1 + len(mutations))
+
+    def test_dex3_shm_heartbeat_and_failed_write_retry(self) -> None:
+        output_shm = _FakeCommandSharedMemory()
+        output_shm.fail_writes = 1
+        dds = self._make_dex3_dds(output_shm)
+        message = self._make_hand_command()
+
+        dds.dds_subscriber(message, "left")
+        self.assertTrue(dds._handcmd_shm_dirty)
+        self.assertEqual(output_shm.write_count, 1)
+
+        dds.dds_subscriber(message, "left")
+
+        self.assertFalse(dds._handcmd_shm_dirty)
+        self.assertEqual(output_shm.write_count, 2)
+        self.assertEqual(dds._handcmd_shm_write_count, 1)
+        self.assertIn("left_hand_cmd", output_shm.payload)
+
+    def test_dex3_cache_works_without_shm_and_falls_back_before_first_packet(self) -> None:
+        fallback = _FakeCommandSharedMemory({"from_shm": True})
+        dds = self._make_dex3_dds(fallback)
+
+        self.assertEqual(dds.get_hand_commands(), {"from_shm": True})
+        self.assertEqual(fallback.read_count, 1)
+
+        dds.output_shm = None
+        dds.dds_subscriber(self._make_hand_command(), "right")
+        commands = dds.get_hand_commands()
+        self.assertEqual(len(commands["right_hand_cmd"]["positions"]), 7)
+        self.assertEqual(commands["left_hand_cmd"], {})
+
+    def test_dex3_concurrent_sides_publish_complete_snapshot(self) -> None:
+        dds = self._make_dex3_dds()
+        barrier = threading.Barrier(3)
+
+        def publish(side):
+            barrier.wait()
+            dds.dds_subscriber(self._make_hand_command(), side)
+
+        threads = [
+            threading.Thread(target=publish, args=(side,))
+            for side in ("left", "right")
+        ]
+        for thread in threads:
+            thread.start()
+        barrier.wait()
+        for thread in threads:
+            thread.join(timeout=1.0)
+
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        commands = dds.get_hand_commands()
+        self.assertEqual(len(commands["left_hand_cmd"]["positions"]), 7)
+        self.assertEqual(len(commands["right_hand_cmd"]["positions"]), 7)
+
+    def test_dex3_out_of_order_callback_does_not_roll_back_command(self) -> None:
+        dds = self._make_dex3_dds()
+        newer = self._make_hand_command()
+        older = self._make_hand_command()
+        older.motor_cmd[0].q = -0.75
+
+        with mock.patch("dds.dex3_dds.time.monotonic", side_effect=[2.0, 1.0]):
+            dds.dds_subscriber(newer, "left")
+            dds.dds_subscriber(older, "left")
+
+        command = dds.get_hand_commands()["left_hand_cmd"]
+        self.assertAlmostEqual(command["positions"][0], newer.motor_cmd[0].q)
+        self.assertEqual(command["receive_time_monotonic"], 2.0)
+        self.assertEqual(dds._handcmd_out_of_order_counts["left"], 1)
 
     def test_dex3_state_uses_name_mapping_and_dds_order(self) -> None:
         joint_names = list(reversed(G1_29DOF_DDS_JOINT_ORDER)) + list(

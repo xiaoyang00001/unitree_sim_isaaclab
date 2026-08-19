@@ -14,6 +14,12 @@ from unitree_sdk2py.idl.default import unitree_hg_msg_dds__HandState_
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import HandCmd_, HandState_
 
 
+HAND_COMMAND_SIDES = ("left", "right")
+HAND_COMMAND_FIELDS = ("modes", "positions", "velocities", "torques", "kp", "kd")
+HAND_COMMAND_SHM_HEARTBEAT_S = 0.05
+HAND_COMMAND_STATS_INTERVAL_S = 5.0
+
+
 class Dex3DDS(DDSObject):
     """Bridge both seven-motor Dex3 hands between DDS and Isaac Lab."""
 
@@ -38,6 +44,29 @@ class Dex3DDS(DDSObject):
 
         self.existing_data = {"left_hand_cmd": {}, "right_hand_cmd": {}}
         self._command_lock = threading.Lock()
+        # SONIC sends each HandCmd topic at 500 Hz, although the command
+        # normally changes only when a new policy result is available.  Keep
+        # the fully decoded payload and receive time separately: duplicate
+        # packets can refresh liveness without rebuilding two JSON hand
+        # payloads or contending on shared memory.
+        self._latest_hand_commands = {side: None for side in HAND_COMMAND_SIDES}
+        self._last_hand_command_fingerprints = {
+            side: None for side in HAND_COMMAND_SIDES
+        }
+        self._last_hand_command_receive_times = {
+            side: None for side in HAND_COMMAND_SIDES
+        }
+        self._handcmd_stats_window_start = time.monotonic()
+        self._handcmd_packet_counts = {side: 0 for side in HAND_COMMAND_SIDES}
+        self._handcmd_change_counts = {side: 0 for side in HAND_COMMAND_SIDES}
+        self._handcmd_duplicate_counts = {side: 0 for side in HAND_COMMAND_SIDES}
+        self._handcmd_out_of_order_counts = {
+            side: 0 for side in HAND_COMMAND_SIDES
+        }
+        self._handcmd_shm_write_count = 0
+        self._handcmd_shm_last_attempt_time = 0.0
+        self._handcmd_shm_timestamp = None
+        self._handcmd_shm_dirty = False
         self.setup_shared_memory(
             input_shm_name=f"isaac_dex3_state{self.shm_suffix}",
             input_size=4096,
@@ -92,20 +121,142 @@ class Dex3DDS(DDSObject):
             )
             return False
 
+    @staticmethod
+    def _hand_command_fingerprint(msg: HandCmd_) -> tuple:
+        """Return an exact value fingerprint for the complete wire command."""
+
+        return (
+            tuple(msg.reserve),
+            tuple(
+                (
+                    motor.mode,
+                    motor.q,
+                    motor.dq,
+                    motor.tau,
+                    motor.kp,
+                    motor.kd,
+                    motor.reserve,
+                )
+                for motor in msg.motor_cmd
+            ),
+        )
+
+    def _snapshot_hand_commands_locked(self) -> Dict[str, Any]:
+        """Materialize a caller-owned snapshot while ``_command_lock`` is held."""
+
+        snapshot: Dict[str, Any] = {}
+        for side in HAND_COMMAND_SIDES:
+            command = self._latest_hand_commands[side]
+            if command is None:
+                snapshot[f"{side}_hand_cmd"] = {}
+                continue
+            side_snapshot = {
+                field_name: list(command[field_name])
+                for field_name in HAND_COMMAND_FIELDS
+            }
+            side_snapshot["receive_time_monotonic"] = (
+                self._last_hand_command_receive_times[side]
+            )
+            snapshot[f"{side}_hand_cmd"] = side_snapshot
+        return snapshot
+
+    def _collect_hand_command_stats_locked(self, now: float) -> Optional[str]:
+        elapsed = now - self._handcmd_stats_window_start
+        if elapsed < HAND_COMMAND_STATS_INTERVAL_S:
+            return None
+
+        side_stats = []
+        for side in HAND_COMMAND_SIDES:
+            side_stats.append(
+                f"{side}={self._handcmd_packet_counts[side] / elapsed:.1f}Hz "
+                f"(changes={self._handcmd_change_counts[side] / elapsed:.1f}, "
+                f"duplicates={self._handcmd_duplicate_counts[side] / elapsed:.1f}, "
+                f"out_of_order={self._handcmd_out_of_order_counts[side]})"
+            )
+        result = (
+            f"[{self.node_name}] HandCmd receive: {', '.join(side_stats)}, "
+            f"shm_writes={self._handcmd_shm_write_count / elapsed:.1f}Hz"
+        )
+        self._handcmd_stats_window_start = now
+        for side in HAND_COMMAND_SIDES:
+            self._handcmd_packet_counts[side] = 0
+            self._handcmd_change_counts[side] = 0
+            self._handcmd_duplicate_counts[side] = 0
+            self._handcmd_out_of_order_counts[side] = 0
+        self._handcmd_shm_write_count = 0
+        return result
+
     def dds_subscriber(self, msg: HandCmd_, datatype: str = None) -> None:
         """Store one complete hand command with a precise receive timestamp."""
 
         try:
-            if datatype not in ("left", "right"):
+            if datatype not in HAND_COMMAND_SIDES:
                 raise ValueError(f"invalid hand side: {datatype!r}")
-            command = self.process_hand_command(msg, datatype)
-            if command and self.output_shm:
-                # DDS callbacks can execute concurrently. Publish both side
-                # snapshots atomically so the action provider never observes
-                # a half-updated payload.
-                with self._command_lock:
-                    self.existing_data[f"{datatype}_hand_cmd"] = command
-                    self.output_shm.write_data(self.existing_data)
+            receive_time = time.monotonic()
+            fingerprint = self._hand_command_fingerprint(msg)
+            report_line = None
+            with self._command_lock:
+                self._handcmd_packet_counts[datatype] += 1
+                previous_receive_time = self._last_hand_command_receive_times[datatype]
+                if (
+                    previous_receive_time is not None
+                    and receive_time < previous_receive_time
+                ):
+                    # A delayed callback must not roll a newer same-side
+                    # command or its liveness timestamp backwards.
+                    self._handcmd_out_of_order_counts[datatype] += 1
+                    report_line = self._collect_hand_command_stats_locked(receive_time)
+                else:
+                    is_duplicate = (
+                        self._latest_hand_commands[datatype] is not None
+                        and fingerprint
+                        == self._last_hand_command_fingerprints[datatype]
+                    )
+                    if is_duplicate:
+                        self._handcmd_duplicate_counts[datatype] += 1
+                    else:
+                        command = self.process_hand_command(
+                            msg,
+                            datatype,
+                            receive_time_monotonic=receive_time,
+                        )
+                        if not command:
+                            return
+                        self._latest_hand_commands[datatype] = command
+                        self._last_hand_command_fingerprints[datatype] = fingerprint
+                        self._handcmd_change_counts[datatype] += 1
+
+                    # A repeated packet is still a live command.  Store the
+                    # timestamp separately so published snapshots remain
+                    # immutable and concurrent readers cannot see half an
+                    # update.
+                    self._last_hand_command_receive_times[datatype] = receive_time
+
+                    output_shm = getattr(self, "output_shm", None)
+                    heartbeat_due = (
+                        receive_time - self._handcmd_shm_last_attempt_time
+                        >= HAND_COMMAND_SHM_HEARTBEAT_S
+                    )
+                    if output_shm is not None and (
+                        not is_duplicate
+                        or self._handcmd_shm_dirty
+                        or heartbeat_due
+                    ):
+                        snapshot = self._snapshot_hand_commands_locked()
+                        self.existing_data = snapshot
+                        self._handcmd_shm_last_attempt_time = receive_time
+                        write_succeeded = output_shm.write_data(snapshot) is not False
+                        self._handcmd_shm_dirty = not write_succeeded
+                        if write_succeeded:
+                            self._handcmd_shm_write_count += 1
+                            # Preserve SharedMemoryManager.read_data()'s public
+                            # top-level metadata for in-process cache readers.
+                            self._handcmd_shm_timestamp = int(time.time()) & 0xFFFFFFFF
+
+                    report_line = self._collect_hand_command_stats_locked(receive_time)
+
+            if report_line:
+                print(report_line)
         except Exception as exc:
             print(
                 f"dex3_dds [{self.node_name}] "
@@ -113,7 +264,11 @@ class Dex3DDS(DDSObject):
             )
 
     def process_hand_command(
-        self, msg: HandCmd_, datatype: str = None
+        self,
+        msg: HandCmd_,
+        datatype: str = None,
+        *,
+        receive_time_monotonic: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Convert HandCmd into a JSON/shared-memory-safe dictionary."""
 
@@ -128,7 +283,11 @@ class Dex3DDS(DDSObject):
                 "kd": [float(motor.kd) for motor in motors],
                 # SharedMemoryManager's metadata timestamp has one-second
                 # resolution; control safety needs a monotonic subsecond age.
-                "receive_time_monotonic": time.monotonic(),
+                "receive_time_monotonic": (
+                    time.monotonic()
+                    if receive_time_monotonic is None
+                    else float(receive_time_monotonic)
+                ),
             }
         except Exception as exc:
             print(
@@ -179,8 +338,21 @@ class Dex3DDS(DDSObject):
             )
 
     def get_hand_commands(self) -> Optional[Dict[str, Any]]:
-        if self.output_shm:
-            return self.output_shm.read_data()
+        # Action providers run in this process, so use the decoded cache and
+        # avoid JSON-decoding shared memory on every simulation step.  Return
+        # caller-owned lists to preserve the old read_data() ownership model.
+        with self._command_lock:
+            if any(
+                self._latest_hand_commands[side] is not None
+                for side in HAND_COMMAND_SIDES
+            ):
+                snapshot = self._snapshot_hand_commands_locked()
+                if self._handcmd_shm_timestamp is not None:
+                    snapshot["_timestamp"] = self._handcmd_shm_timestamp
+                return snapshot
+        output_shm = getattr(self, "output_shm", None)
+        if output_shm:
+            return output_shm.read_data()
         return None
 
     def get_left_hand_command(self) -> Optional[Dict[str, Any]]:
