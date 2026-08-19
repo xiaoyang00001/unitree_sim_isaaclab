@@ -261,6 +261,7 @@ def drive_belt_boxes_on_conveyor(
     lifted: torch.Tensor | None = None,
     belt_dwell: torch.Tensor | None = None,
     release_settle_steps: int = 25,
+    front_arrival_group_size: int = 1,
 ):
     """把纸箱队列沿带面送到工位，工位箱偏出流水线通道后放行下一格。
 
@@ -381,6 +382,10 @@ def drive_belt_boxes_on_conveyor(
             arrived_now = conveyor_queue.update_arrival_latch(
                 arrived[:, env_ids], pos_local[..., 1], y_stop=y_stop
             )
+        arrived_now = conveyor_queue.latch_front_arrival_group(
+            arrived_now,
+            group_size=front_arrival_group_size,
+        )
         lifted_now, dwell_now, settled = conveyor_queue.update_lift_hold_latch(
             lifted[:, env_ids],
             belt_dwell[:, env_ids],
@@ -485,6 +490,7 @@ class DriveBeltBoxesOnConveyor(ManagerTermBase):
         path_s_origin_x: float = 0.0,
         extra_rects: tuple[tuple[float, float, float, float], ...] = (),
         release_settle_steps: int = 25,
+        front_arrival_group_size: int = 1,
     ) -> None:
         drive_belt_boxes_on_conveyor(
             env,
@@ -509,6 +515,7 @@ class DriveBeltBoxesOnConveyor(ManagerTermBase):
             lifted=self._lifted,
             belt_dwell=self._belt_dwell,
             release_settle_steps=release_settle_steps,
+            front_arrival_group_size=front_arrival_group_size,
         )
 
 

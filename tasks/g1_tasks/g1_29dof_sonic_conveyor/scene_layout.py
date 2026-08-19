@@ -235,8 +235,8 @@ BELT_BOX_SPAWN_Z = 0.775
 BELT_BOX_BELT_Y_MAX = _shifted(18.22)
 BELT_BOX_BELT_WIDTH = 0.90
 
-# 队首两箱（belt_box_1/2）不摆在带面正中线：并排都在中线上，机器人得伸手越过
-# 中线去够对面那只；分别偏西/偏东后各自贴近同侧机器人，一台一箱都能从近侧直接
+# 队首两箱（belt_box_1/2）不摆在带面正中线：两台机器人沿 Y 错开后，第一箱偏东
+# 贴近 robot_1，第二箱偏西贴近上游的 robot_2，一台一箱都能从近侧直接
 # 抱（2026-08-10 用户反馈）。偏移量 0.20 m：默认队首固定 d01/d02，带半宽
 # 0.45 − 箱半宽 0.19 − 偏移 0.20 = 0.06 m，仍留 60 mm 到带边；显式 PATTERN
 # 若把更宽的 C 型箱放到队首，下面仍会按真实半宽校验（0.50 m C 型恰好贴边，
@@ -347,6 +347,7 @@ class ConveyorSceneLayout:
     cart_group_y: float
     robot_side_offset: float
     robot_workstation_y: float
+    robot_2_workstation_y: float
     robot_1_x: float
     robot_2_x: float
     standby_robot_poses: tuple[StandbyRobotPose, ...]
@@ -404,7 +405,7 @@ def _apply_front_two_x_offset(
     offset: float,
     guard: tuple[bool, ...],
 ) -> tuple[tuple[float, float, float], ...]:
-    """队首两箱（下标 0/1）分别向西/东偏移 ``offset``，其余箱子不动。
+    """队首两箱（下标 0/1）分别向东/西偏移 ``offset``，其余箱子不动。
 
     ``guard`` 逐箱开关：弯道形态下箱子若落在弧段/支线（那里 x 是路径方向，不是
     横向偏移），调用方传 False 跳过，避免破坏路径几何。
@@ -413,7 +414,7 @@ def _apply_front_two_x_offset(
     if offset <= 0.0 or not positions:
         return positions
     out = list(positions)
-    for index, sign in enumerate((-1.0, 1.0)):
+    for index, sign in enumerate((1.0, -1.0)):
         if index >= len(out) or not guard[index]:
             continue
         x, y, z = out[index]
@@ -634,6 +635,13 @@ def resolve_scene_layout(environ: Mapping[str, str]) -> ConveyorSceneLayout:
         "ISAACLAB_ROBOT_WORKSTATION_Y",
         _shifted(14.148) if totes_on_conveyor else cart_group_y,
     )
+    # 流水线模式采用前后错位双工位：robot_1 对准队首停止线，robot_2 沿 +Y
+    # 上游移动一个默认队列节距，对准第二件物体。推车回退布局仍保持两机同 Y。
+    robot_2_workstation_y = _env_float(
+        environ,
+        "ISAACLAB_ROBOT_2_WORKSTATION_Y",
+        robot_workstation_y + 0.75 if totes_on_conveyor else robot_workstation_y,
+    )
     # 两台机器人对称分站带两侧：带中线 x=-5.62，各距中线 1.08 m（距带边 0.63 m）。
     # 历史值 robot_1_x=-4.75 距中线只有 0.87，比对面近 0.21——视觉上一台贴着流水线
     # 一台离得远（2026-08-09 用户反馈），对称化取 -5.62+1.08=-4.54。
@@ -711,6 +719,7 @@ def resolve_scene_layout(environ: Mapping[str, str]) -> ConveyorSceneLayout:
         cart_group_y=cart_group_y,
         robot_side_offset=robot_side_offset,
         robot_workstation_y=robot_workstation_y,
+        robot_2_workstation_y=robot_2_workstation_y,
         robot_1_x=robot_1_x,
         robot_2_x=robot_2_x,
         standby_robot_poses=standby_robot_poses,

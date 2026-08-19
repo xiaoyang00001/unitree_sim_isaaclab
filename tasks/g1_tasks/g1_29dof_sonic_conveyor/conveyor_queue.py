@@ -162,6 +162,30 @@ def update_arrival_latch_along_path(
     return update_arrival_latch(arrived, -ss, y_stop=-s_stop)
 
 
+def latch_front_arrival_group(
+    arrived: torch.Tensor,
+    *,
+    group_size: int,
+) -> torch.Tensor:
+    """把队首若干箱作为同一取件批次锁存到位。
+
+    错位双工位中，第一箱到达主停止线时第二箱已经同步停在上游第二工位，但它尚未
+    越过统一的 ``y_stop``。将前两项的任一到位扩展到整组后，即使第一箱先横向离线，
+    第二箱仍会通过 ``belt_release_gate`` 保持整带停止，直到两箱都完成偏离。
+    """
+
+    if arrived.ndim != 2:
+        raise ValueError(f"arrived 必须为 (N, E)，当前形状 {tuple(arrived.shape)}")
+    if group_size < 1:
+        raise ValueError(f"group_size 必须至少为 1，当前 {group_size}")
+    size = min(group_size, arrived.shape[0])
+    if size <= 1:
+        return arrived
+    group_arrived = arrived[:size]
+    latched_group = group_arrived | group_arrived.any(dim=0, keepdim=True)
+    return torch.cat((latched_group, arrived[size:]), dim=0)
+
+
 def belt_release_gate(
     arrived: torch.Tensor,
     completed: torch.Tensor,

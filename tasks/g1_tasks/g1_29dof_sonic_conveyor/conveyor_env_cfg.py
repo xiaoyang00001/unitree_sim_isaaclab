@@ -341,6 +341,7 @@ CART_GROUP_Y = SCENE_LAYOUT.cart_group_y
 ROBOT_SIDE_OFFSET = SCENE_LAYOUT.robot_side_offset
 
 ROBOT_WORKSTATION_Y = SCENE_LAYOUT.robot_workstation_y
+ROBOT_2_WORKSTATION_Y = SCENE_LAYOUT.robot_2_workstation_y
 ROBOT_1_X = SCENE_LAYOUT.robot_1_x
 ROBOT_2_X = SCENE_LAYOUT.robot_2_x
 STANDBY_ROBOT_POSES = SCENE_LAYOUT.standby_robot_poses
@@ -394,7 +395,9 @@ _ROBOT_1_ROT = (1.0, 0.0, 0.0, 0.0) if _ROBOT_YAW_IDENTITY else (0.0, 0.0, 0.0, 
 _ROBOT_2_ROT = (1.0, 0.0, 0.0, 0.0)
 
 LOCAL_ROBOT_POS = (
-    (ROBOT_1_X, ROBOT_WORKSTATION_Y, 0.76) if LOCAL_ROBOT_ID == 1 else (ROBOT_2_X, ROBOT_WORKSTATION_Y, 0.76)
+    (ROBOT_1_X, ROBOT_WORKSTATION_Y, 0.76)
+    if LOCAL_ROBOT_ID == 1
+    else (ROBOT_2_X, ROBOT_2_WORKSTATION_Y, 0.76)
 )
 LOCAL_ROBOT_ROT = _ROBOT_1_ROT if LOCAL_ROBOT_ID == 1 else _ROBOT_2_ROT
 if VIEWER_MODE:
@@ -403,11 +406,13 @@ if VIEWER_MODE:
     LOCAL_ROBOT_POS = (0.0, -30.0, 0.76)
     LOCAL_ROBOT_ROT = (1.0, 0.0, 0.0, 0.0)
 PEER_ROBOT_POS = (
-    (ROBOT_1_X, ROBOT_WORKSTATION_Y, 0.76) if PEER_ROBOT_ID == 1 else (ROBOT_2_X, ROBOT_WORKSTATION_Y, 0.76)
+    (ROBOT_1_X, ROBOT_WORKSTATION_Y, 0.76)
+    if PEER_ROBOT_ID == 1
+    else (ROBOT_2_X, ROBOT_2_WORKSTATION_Y, 0.76)
 )
 PEER_ROBOT_ROT = _ROBOT_1_ROT if PEER_ROBOT_ID == 1 else _ROBOT_2_ROT
 # viewer 的第二镜像体：robot_2 的工位。对等模式不用（保持 None，场景里不生成）。
-PEER2_ROBOT_POS = (ROBOT_2_X, ROBOT_WORKSTATION_Y, 0.76)
+PEER2_ROBOT_POS = (ROBOT_2_X, ROBOT_2_WORKSTATION_Y, 0.76)
 PEER2_ROBOT_ROT = _ROBOT_2_ROT
 
 # ==================================================================
@@ -720,7 +725,8 @@ def _log_scene_layout() -> None:
     )
     print(
         f"{tag}   拖车/筐 x={PUSHCART_2_POS[0]:.3f} y={PUSHCART_2_POS[1]:.3f}"
-        f" | robot_1 x={ROBOT_1_X:.3f} robot_2 x={ROBOT_2_X:.3f} y={ROBOT_WORKSTATION_Y:.3f}"
+        f" | robot_1=({ROBOT_1_X:.3f},{ROBOT_WORKSTATION_Y:.3f})"
+        f" robot_2=({ROBOT_2_X:.3f},{ROBOT_2_WORKSTATION_Y:.3f})"
         f" | 流水线中线 x={BELT_X_CENTER:.3f} 入料端 y={BELT_Y_MAX:.3f}"
         f" | 整体北移 Δ={CONVEYOR_NORTH_SHIFT_Y:.2f}"
         "（支线越过货架排 B 所需；wrapper 组变换/装饰/地贴同 Δ）"
@@ -1051,7 +1057,7 @@ def _make_second_local_robot_cfg() -> ArticulationCfg:
     """
     cfg = make_sonic_robot_cfg()
     cfg.prim_path = "{ENV_REGEX_NS}/Robot2"
-    cfg.init_state.pos = (ROBOT_2_X, ROBOT_WORKSTATION_Y, 0.76)
+    cfg.init_state.pos = (ROBOT_2_X, ROBOT_2_WORKSTATION_Y, 0.76)
     cfg.init_state.rot = _ROBOT_2_ROT
     configure_robot_contact_reports(cfg.spawn, CONTACT_REPORT_MODE)
     return cfg
@@ -1758,6 +1764,9 @@ class ConveyorEventsCfg:
             "path_radius": endless_intake.CORNER_RADIUS,
             "path_s_origin_x": endless_intake.S_ORIGIN_X,
             "extra_rects": endless_intake.ON_BELT_EXTRA_RECTS,
+            # 前两箱分别停在 robot_1/robot_2 的错位工位；任一到位即锁存整批，
+            # 两箱都横向离线后才允许第三箱补位。
+            "front_arrival_group_size": 2,
         },
     )
 
