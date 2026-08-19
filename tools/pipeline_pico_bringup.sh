@@ -236,7 +236,7 @@ env DISPLAY="$DISPLAY_TARGET" GR00T_WBC_ROOT="$GR00T_ROOT" PYTHONUNBUFFERED=1 \
     UNITREE_SKIP_LOWSTATE_CRC=1 UNITREE_LOWCMD_CRC_SAMPLE_INTERVAL=50 \
     "$PY" sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor --robot_type g129 \
     --action_source sonic_dds --device cpu $RENDER_ARG --stats_interval 10 \
-    --profile_interval 25 --sim-state-export-hz 0 \
+    --profile_interval 25 --sim-state-export-hz 0 --lowstate-pub-hz 55 \
     > "$LOG_DIR/host_dual.log" 2>&1 &
 SIM_PID=$!
 

@@ -71,7 +71,7 @@ ISAACLAB_TOTES_ON_CONVEYOR=1 \
 python sim_main.py \
   --task Isaac-G1-29DoF-Sonic-Conveyor \
   --robot_type g129 --action_source sonic_dds --device cpu --no_render \
-  --stats_interval 10 --sim-state-export-hz 0
+  --stats_interval 10 --sim-state-export-hz 0 --lowstate-pub-hz 55
 ```
 
 Pico bringup 和上面的性能命令关闭 `rt/sim_state` 导出：五机完整状态超过当前该通道的
@@ -159,3 +159,9 @@ SONIC 每路约 500 Hz 发布 LowCmd，而四机仿真实际只产生约 7 Hz �
 不是 N 路 ACK 等待；五机的非线性断点还需独立做无 DDS 的 2..5 台对照。配置目标仍为
 50 Hz，不能把配置值当作实测。若业务硬性要求稳定实时 50 Hz，需要进一步做物理/观测
 降载、多进程拆分或硬件预算评估。
+
+同一版代码重新启动后做 LowState 发布频率 A/B：100 Hz 时四机总体 8.18 Hz、最近
+8.01 Hz、平均循环 122.2 ms；55 Hz 时总体 9.24 Hz、最近 9.29 Hz、平均循环 108.2 ms，
+约提升 13%，且四路均保持 `timeouts=0`。55 Hz 仍高于 SONIC 的 50 Hz 控制节拍，因此
+一键脚本采用 55 Hz 作为多机 keepalive；通用 CLI 默认值不变，需要排查兼容性时可显式
+回到 `--lowstate-pub-hz 100`。
