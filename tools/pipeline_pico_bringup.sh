@@ -44,12 +44,19 @@ MGR_PY="$GR00T_ROOT/.venv_teleop/bin/python"
 PEER_IP="${ISAACLAB_SCENE_SYNC_PEER_IP:-192.168.50.127}"
 DUAL_PICO="${PIPELINE_DUAL_PICO:-0}"
 SONIC_ROBOT_COUNT="${PIPELINE_SONIC_ROBOT_COUNT:-5}"
+ISAAC_HANDCMD_HZ="${PIPELINE_ISAAC_HANDCMD_HZ:-500}"
 PICO_R1_UDP_PORT=63901
 PICO_R2_UDP_PORT=63902
 PICO_R1_ZMQ_PORT=5556
 PICO_R2_ZMQ_PORT=5566
 declare -a DEPLOY_PIDS=()
 declare -a MANAGER_PIDS=()
+
+validate_isaac_handcmd_hz() {
+  local value="$1"
+  [[ "$value" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]] &&
+    awk -v hz="$value" 'BEGIN { exit !(hz >= 20 && hz <= 500) }'
+}
 
 case "$DUAL_PICO" in
   0|1) ;;
@@ -65,6 +72,10 @@ case "$SONIC_ROBOT_COUNT" in
     exit 2
     ;;
 esac
+if ! validate_isaac_handcmd_hz "$ISAAC_HANDCMD_HZ"; then
+  echo "ERROR: PIPELINE_ISAAC_HANDCMD_HZ 只接受 [20, 500] 内的有限数值（当前值: $ISAAC_HANDCMD_HZ）。"
+  exit 2
+fi
 
 if [ ! -d "$SIM_DIR" ]; then
   echo "ERROR: 仿真仓库不存在: $SIM_DIR（可用 PIPELINE_SIM_DIR 覆盖）。"
@@ -80,6 +91,11 @@ if [ ! -x "$PY" ]; then
 fi
 if [ ! -x "$MGR_PY" ]; then
   echo "ERROR: Pico manager Python 不可执行: $MGR_PY。"
+  exit 2
+fi
+if ! (cd "$DEPLOY_DIR" && bash deploy.sh --help 2>&1) | grep -q -- "--isaac-handcmd-hz"; then
+  echo "ERROR: GR00T deploy.sh 不支持 --isaac-handcmd-hz。"
+  echo "      请更新外部仓库，至少包含提交 0f4e0b4，再启动流水线。"
   exit 2
 fi
 
@@ -264,6 +280,7 @@ echo "" > "$LOG_DIR/dk_r1"
   cd "$DEPLOY_DIR" || exit 1
   exec bash deploy.sh --disable-crc-check \
     --input-type zmq_manager --zmq-port "$PICO_R1_ZMQ_PORT" \
+    --isaac-handcmd-hz "$ISAAC_HANDCMD_HZ" \
     isaac < <(tail -f "$LOG_DIR/dk_r1")
 ) > "$LOG_DIR/deploy_r1.log" 2>&1 &
 DEPLOY_PIDS[1]=$!
@@ -279,6 +296,7 @@ if [ "$DUAL_PICO" = "1" ]; then
     cd "$DEPLOY_DIR" || exit 1
     exec env G1_LOCAL_ROBOT_ID=2 bash deploy.sh \
       --disable-crc-check --input-type zmq_manager --zmq-port "$PICO_R2_ZMQ_PORT" \
+      --isaac-handcmd-hz "$ISAAC_HANDCMD_HZ" \
       isaac <<< ""
   ) > "$LOG_DIR/deploy_r2.log" 2>&1 &
 else
@@ -287,7 +305,9 @@ else
   (
     cd "$DEPLOY_DIR" || exit 1
     exec env G1_LOCAL_ROBOT_ID=2 bash deploy.sh \
-      --disable-crc-check --input-type keyboard isaac < <(tail -f "$LOG_DIR/dk_r2")
+      --disable-crc-check --input-type keyboard \
+      --isaac-handcmd-hz "$ISAAC_HANDCMD_HZ" \
+      isaac < <(tail -f "$LOG_DIR/dk_r2")
   ) > "$LOG_DIR/deploy_r2.log" 2>&1 &
 fi
 DEPLOY_PIDS[2]=$!
@@ -307,6 +327,7 @@ for ROBOT_ID in $(seq 3 "$SONIC_ROBOT_COUNT"); do
       --zmq-port "$ROBOT_ZMQ_IN_PORT" \
       --zmq-out-port "$ROBOT_DEBUG_PORT" --zmq-out-topic "g1_${ROBOT_ID}_debug" \
       --udp-out-port "$ROBOT_DEBUG_PORT" --udp-out-topic "g1_${ROBOT_ID}_debug" \
+      --isaac-handcmd-hz "$ISAAC_HANDCMD_HZ" \
       isaac < <(tail -f "$LOG_DIR/dk_r$ROBOT_ID")
   ) > "$LOG_DIR/deploy_r$ROBOT_ID.log" 2>&1 &
   DEPLOY_PIDS[$ROBOT_ID]=$!

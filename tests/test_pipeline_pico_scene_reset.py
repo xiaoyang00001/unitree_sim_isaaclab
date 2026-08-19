@@ -39,6 +39,52 @@ class PipelinePicoSceneResetTest(unittest.TestCase):
         self.assertIn('ISAACLAB_SONIC_ROBOT_COUNT="$SONIC_ROBOT_COUNT"', self.source)
         self.assertIn("2|3|4|5", self.source)
 
+    def test_handcmd_rate_is_validated_and_forwarded_to_every_deploy(self) -> None:
+        self.assertIn(
+            'ISAAC_HANDCMD_HZ="${PIPELINE_ISAAC_HANDCMD_HZ:-500}"', self.source
+        )
+        self.assertEqual(
+            self.source.count('--isaac-handcmd-hz "$ISAAC_HANDCMD_HZ"'), 4
+        )
+        destructive_start = self.source.index('echo "== stop old processes (hard) =="')
+        self.assertLess(
+            self.source.index('validate_isaac_handcmd_hz "$ISAAC_HANDCMD_HZ"'),
+            destructive_start,
+        )
+        self.assertLess(
+            self.source.index('bash deploy.sh --help 2>&1'), destructive_start
+        )
+        self.assertIn("至少包含提交 0f4e0b4", self.source)
+
+    def test_handcmd_rate_validator_accepts_only_finite_supported_values(self) -> None:
+        start = self.source.index("validate_isaac_handcmd_hz() {")
+        end = self.source.index('\n}\n\ncase "$DUAL_PICO"', start) + 3
+        helper = self.source[start:end]
+        for value in ("20", "20.", "100", "100.5", "500"):
+            completed = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    f'{helper}\nvalidate_isaac_handcmd_hz "$1"',
+                    "_",
+                    value,
+                ],
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, value)
+        for value in ("", "19.9", "500.1", "nan", "inf", "100junk"):
+            completed = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    f'{helper}\nvalidate_isaac_handcmd_hz "$1"',
+                    "_",
+                    value,
+                ],
+                check=False,
+            )
+            self.assertNotEqual(completed.returncode, 0, value)
+
     def test_default_paths_follow_checkout_and_current_user(self) -> None:
         self.assertIn('DEFAULT_SIM_DIR=$(cd -- "$SCRIPT_DIR/.." && pwd)', self.source)
         self.assertIn('SIM_DIR="${PIPELINE_SIM_DIR:-$DEFAULT_SIM_DIR}"', self.source)
