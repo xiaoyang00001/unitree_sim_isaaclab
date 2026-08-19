@@ -250,6 +250,17 @@ parser.add_argument(
     ),
 )
 parser.add_argument(
+    "--handstate_pub_hz",
+    "--handstate-pub-hz",
+    dest="handstate_pub_hz",
+    type=float,
+    default=None,
+    help=(
+        "manual Dex3 HandState idle-heartbeat rate override (default: keep "
+        "100 Hz); fresh PhysX hand samples are still published immediately"
+    ),
+)
+parser.add_argument(
     "--sim_state_export_hz",
     "--sim-state-export-hz",
     dest="sim_state_export_hz",
@@ -601,6 +612,18 @@ if args_cli.sonic_sync_wait_timeout <= 0.0:
     parser.error("--sonic_sync_wait_timeout must be positive")
 if args_cli.sonic_sync_poll_interval <= 0.0:
     parser.error("--sonic_sync_poll_interval must be positive")
+if args_cli.handstate_pub_hz is not None and (
+    not math.isfinite(args_cli.handstate_pub_hz)
+    or args_cli.handstate_pub_hz <= 0.0
+):
+    parser.error("--handstate_pub_hz must be a finite positive value")
+if (
+    args_cli.handstate_pub_hz is not None
+    and args_cli.task not in sonic_dex3_task_names
+):
+    parser.error("--handstate_pub_hz is supported only for SONIC Dex3 tasks")
+if args_cli.handstate_pub_hz is not None and args_cli.replay_data:
+    parser.error("--handstate_pub_hz is unavailable with replay_data")
 if not math.isfinite(args_cli.sonic_handcmd_timeout) or args_cli.sonic_handcmd_timeout <= 0.0:
     parser.error("--sonic_handcmd_timeout must be a finite positive value")
 if (
@@ -1686,6 +1709,7 @@ def main():
         # "新样本即发"(事件唤醒发布线程),保活重发节奏保持 100Hz 不变——
         # 单纯拉高发布频率会让序列化抢 GIL,省下的等待又亏在 env.step 里。
         robot_dds_names = [spec.robot_dds_name for spec in sonic_host_channel_specs]
+        dex3_dds_names = [spec.dex3_dds_name for spec in sonic_host_channel_specs]
         if args_cli.lowstate_pub_hz:
             for _dds_name in robot_dds_names:
                 try:
@@ -1703,6 +1727,33 @@ def main():
                     dds_manager.enable_immediate_publish(_dds_name)
                 except Exception as e:
                     print(f"[sim] failed to enable immediate lowstate publish ({_dds_name}): {e}")
+        if args_cli.handstate_pub_hz is not None:
+            for _dds_name in dex3_dds_names:
+                try:
+                    dds_manager.set_publish_rate(
+                        _dds_name, float(args_cli.handstate_pub_hz)
+                    )
+                    print(
+                        f"[sim] handstate idle heartbeat set to "
+                        f"{args_cli.handstate_pub_hz:.0f} Hz ({_dds_name})"
+                    )
+                except Exception as e:
+                    print(
+                        f"[sim] failed to set handstate publish rate "
+                        f"({_dds_name}): {e}"
+                    )
+        if args_cli.task in sonic_dex3_task_names:
+            # A fresh hand sample is tied to the same completed PhysX step as
+            # LowState.  Wake the publisher immediately; the configured rate
+            # above is only an idle liveness heartbeat.
+            for _dds_name in dex3_dds_names:
+                try:
+                    dds_manager.enable_immediate_publish(_dds_name)
+                except Exception as e:
+                    print(
+                        f"[sim] failed to enable immediate handstate publish "
+                        f"({_dds_name}): {e}"
+                    )
         if is_sonic_task and not is_scene_sync_viewer:
             # The first env.reset happens before the DDS object is registered,
             # so its observation cannot seed rt/lowstate. Lock-step control

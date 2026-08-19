@@ -603,6 +603,30 @@ class FiveRobotWiringSourceTest(unittest.TestCase):
             "reset_dds_names = [spec.robot_dds_name for spec in sonic_host_channel_specs]",
             self.sim_source,
         )
+        self.assertIn(
+            "dex3_dds_names = [spec.dex3_dds_name for spec in sonic_host_channel_specs]",
+            self.sim_source,
+        )
+        self.assertIn("args_cli.handstate_pub_hz", self.sim_source)
+        self.assertIn(
+            'parser.error("--handstate_pub_hz must be a finite positive value")',
+            self.sim_source,
+        )
+        self.assertIn(
+            'parser.error("--handstate_pub_hz is supported only for SONIC Dex3 tasks")',
+            self.sim_source,
+        )
+        self.assertIn(
+            'parser.error("--handstate_pub_hz is unavailable with replay_data")',
+            self.sim_source,
+        )
+        self.assertIn("for _dds_name in dex3_dds_names", self.sim_source)
+        self.assertIn(
+            "if args_cli.task in sonic_dex3_task_names:\n"
+            "            # A fresh hand sample is tied to the same completed PhysX step as\n"
+            "            # LowState.  Wake the publisher immediately",
+            self.sim_source,
+        )
 
     def test_shared_scene_config_enables_five_robot_topology(self) -> None:
         source = SCENE_SYNC_ENV_PATH.read_text(encoding="utf-8")

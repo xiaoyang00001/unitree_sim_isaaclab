@@ -18,6 +18,8 @@ HAND_COMMAND_SIDES = ("left", "right")
 HAND_COMMAND_FIELDS = ("modes", "positions", "velocities", "torques", "kp", "kd")
 HAND_COMMAND_SHM_HEARTBEAT_S = 0.05
 HAND_COMMAND_STATS_INTERVAL_S = 5.0
+HAND_STATE_FIELDS = ("positions", "velocities", "torques")
+HAND_STATE_STATS_INTERVAL_S = 5.0
 
 
 class Dex3DDS(DDSObject):
@@ -41,6 +43,16 @@ class Dex3DDS(DDSObject):
         self.right_state_publisher = None
         self.left_cmd_subscriber = None
         self.right_cmd_subscriber = None
+
+        self._state_lock = threading.RLock()
+        self._latest_hand_states = None
+        self._hand_state_generation = 0
+        self._applied_hand_state_generation = -1
+        self._handstate_stats_window_start = time.monotonic()
+        self._handstate_source_write_count = 0
+        self._handstate_publish_cycle_count = 0
+        self._handstate_message_update_count = 0
+        self._handstate_shm_read_count = 0
 
         self.existing_data = {"left_hand_cmd": {}, "right_hand_cmd": {}}
         self._command_lock = threading.Lock()
@@ -300,22 +312,78 @@ class Dex3DDS(DDSObject):
         """Publish the latest simulated states for both hands."""
 
         try:
-            data = self.input_shm.read_data() or {}
-            if "left_hand" in data:
-                self._update_hand_state(self.left_hand_state, data["left_hand"])
-                if self.left_state_publisher:
-                    self.left_state_publisher.Write(self.left_hand_state)
-            if "right_hand" in data:
-                self._update_hand_state(self.right_hand_state, data["right_hand"])
-                if self.right_state_publisher:
-                    self.right_state_publisher.Write(self.right_hand_state)
+            with self._state_lock:
+                data = self._latest_hand_states
+                generation = self._hand_state_generation if data is not None else None
+
+            if data is None:
+                input_shm = getattr(self, "input_shm", None)
+                data = input_shm.read_data() if input_shm else None
+                data = data or {}
+                with self._state_lock:
+                    self._handstate_shm_read_count += 1
+
+            needs_message_update = (
+                generation is None
+                or generation != self._applied_hand_state_generation
+            )
+            if needs_message_update:
+                update_succeeded = True
+                updated_any = False
+                if "left_hand" in data:
+                    updated_any = True
+                    update_succeeded = (
+                        self._update_hand_state(
+                            self.left_hand_state, data["left_hand"]
+                        )
+                        and update_succeeded
+                    )
+                if "right_hand" in data:
+                    updated_any = True
+                    update_succeeded = (
+                        self._update_hand_state(
+                            self.right_hand_state, data["right_hand"]
+                        )
+                        and update_succeeded
+                    )
+                if updated_any and update_succeeded and generation is not None:
+                    self._applied_hand_state_generation = generation
+
+            if "left_hand" in data and self.left_state_publisher:
+                self.left_state_publisher.Write(self.left_hand_state)
+            if "right_hand" in data and self.right_state_publisher:
+                self.right_state_publisher.Write(self.right_hand_state)
+
+            report_line = None
+            now = time.monotonic()
+            with self._state_lock:
+                self._handstate_publish_cycle_count += 1
+                if needs_message_update:
+                    self._handstate_message_update_count += 1
+                elapsed = now - self._handstate_stats_window_start
+                if elapsed >= HAND_STATE_STATS_INTERVAL_S:
+                    report_line = (
+                        f"[{self.node_name}] HandState publish: "
+                        f"source={self._handstate_source_write_count / elapsed:.1f}Hz, "
+                        f"cycles={self._handstate_publish_cycle_count / elapsed:.1f}Hz, "
+                        f"message_updates="
+                        f"{self._handstate_message_update_count / elapsed:.1f}Hz, "
+                        f"shm_reads={self._handstate_shm_read_count / elapsed:.1f}Hz"
+                    )
+                    self._handstate_stats_window_start = now
+                    self._handstate_source_write_count = 0
+                    self._handstate_publish_cycle_count = 0
+                    self._handstate_message_update_count = 0
+                    self._handstate_shm_read_count = 0
+            if report_line:
+                print(report_line)
         except Exception as exc:
             print(
                 f"dex3_dds [{self.node_name}] Error processing publish data: {exc}"
             )
         return None
 
-    def _update_hand_state(self, hand_state, hand_data: Dict[str, Any]) -> None:
+    def _update_hand_state(self, hand_state, hand_data: Dict[str, Any]) -> bool:
         try:
             positions = hand_data["positions"]
             velocities = hand_data["velocities"]
@@ -332,10 +400,12 @@ class Dex3DDS(DDSObject):
                 motor_state.q = float(positions[motor_index])
                 motor_state.dq = float(velocities[motor_index])
                 motor_state.tau_est = float(torques[motor_index])
+            return motor_count > 0
         except (KeyError, TypeError, ValueError, IndexError) as exc:
             print(
                 f"dex3_dds [{self.node_name}] Error updating hand state: {exc}"
             )
+            return False
 
     def get_hand_commands(self) -> Optional[Dict[str, Any]]:
         # Action providers run in this process, so use the decoded cache and
@@ -373,13 +443,33 @@ class Dex3DDS(DDSObject):
         right_hand_data: Dict[str, Any],
     ) -> None:
         try:
-            if self.input_shm:
-                self.input_shm.write_data(
-                    {
-                        "left_hand": left_hand_data,
-                        "right_hand": right_hand_data,
-                    }
-                )
+            state_data = {
+                "left_hand": {
+                    field_name: list(left_hand_data[field_name])
+                    for field_name in HAND_STATE_FIELDS
+                },
+                "right_hand": {
+                    field_name: list(right_hand_data[field_name])
+                    for field_name in HAND_STATE_FIELDS
+                },
+            }
+            with self._state_lock:
+                self._latest_hand_states = state_data
+                self._hand_state_generation += 1
+                self._handstate_source_write_count += 1
+
+            input_shm = getattr(self, "input_shm", None)
+            if input_shm:
+                input_shm.write_data(state_data)
+
+            # Fresh PhysX hand feedback should leave immediately.  The DDS
+            # manager ignores this notification unless sim_main explicitly
+            # enables immediate publishing for this registered Dex3 object.
+            registered_name = getattr(self, "_dds_registered_name", None)
+            if registered_name is not None:
+                from dds.dds_master import dds_manager
+
+                dds_manager.notify_fresh_sample(registered_name)
         except Exception as exc:
             print(
                 f"dex3_dds [{self.node_name}] Error publishing hand states: {exc}"
@@ -430,20 +520,27 @@ class Dex3DDS(DDSObject):
             "velocities": self._to_list(velocities),
             "torques": self._to_list(torques),
         }
-        existing = self.input_shm.read_data() if self.input_shm else {}
-        existing = existing or {}
         zero_state = {
             "positions": [0.0] * 7,
             "velocities": [0.0] * 7,
             "torques": [0.0] * 7,
         }
-        if hand_side == "left":
-            self.publish_hand_states(
-                hand_data,
-                existing.get("right_hand", zero_state),
-            )
-        else:
-            self.publish_hand_states(
-                existing.get("left_hand", zero_state),
-                hand_data,
-            )
+        # Keep the read-modify-write pair atomic with concurrent left/right
+        # helpers.  RLock lets publish_hand_states commit the combined pair
+        # without exposing an intermediate single-hand generation.
+        with self._state_lock:
+            existing = self._latest_hand_states
+            if existing is None:
+                input_shm = getattr(self, "input_shm", None)
+                existing = input_shm.read_data() if input_shm else {}
+                existing = existing or {}
+            if hand_side == "left":
+                self.publish_hand_states(
+                    hand_data,
+                    existing.get("right_hand", zero_state),
+                )
+            else:
+                self.publish_hand_states(
+                    existing.get("left_hand", zero_state),
+                    hand_data,
+                )
