@@ -97,6 +97,15 @@ Pico bringup 和上面的性能命令关闭 `rt/sim_state` 导出：五机完整
 10 Hz；每个新 PhysX 手部样本仍通过事件唤醒立即发布，因此它不是 10 Hz 硬限流。
 未显式传入该参数时，通用 CLI 仍保持 100 Hz 默认值。
 
+`--lowstate-pub-hz 55` 同样只设置 LowState 的周期空闲保活，不是 topic 的
+55 Hz 硬上限。每个新 PhysX 身体样本仍会立即唤醒发布线程；因此四机现场的
+单 topic 总发布量约为 64 Hz，由新样本和重复保活共同组成。LowState generation
+cache 只在 PhysX 状态 generation 或 reset grace 状态变化时重建字段、IDL，
+并按当前 CRC 配置处理消息；
+同代保活仍按配置节拍依次发布 secondary IMU 和 LowState，但复用已构造消息
+并保持原 tick。共享内存继续作为兼容镜像和首次快照前的回退路径；
+`sample_seq=None` 的旧任务仍按历史语义每轮重建并递增 tick。
+
 ## 4. robot_3..5 deploy 的必要参数
 
 当前 `<GR00T 仓库>/gear_sonic_deploy/deploy.sh` 只对
@@ -173,7 +182,7 @@ Active Action Terms (shape: 645)
 | 四机、LowCmd 重复包快路后 | 总体约 6.9–7.1 Hz；最近约 6.3–7.6 Hz | 约 142–145 ms | 四路 CONTROL，timeout=0、sync_waits=0 |
 | 五机、优化前 | 总体 0.85 Hz；最近 0.86–0.87 Hz | 约 1170 ms | 五路已通，但出现明显非线性性能断点 |
 
-SONIC 每路约 500 Hz 发布 LowCmd，而四机仿真实际只产生约 7 Hz 新状态。重复包快路仍
+SONIC 每路约 500 Hz 发布 LowCmd，而在该阶段四机仿真只产生约 7 Hz 新状态。重复包快路仍
 逐包刷新存活时间和 ACK，但只对实际变化的约 7 Hz 命令做完整字段展开、JSON 和共享内存
 写入；四机现场每路约 492–493 Hz 命中快路。该优化没有降低真实控制指令频率，也没有关闭
 足底传感器。五机尚未用这版快路重新测量，因此不能把四机增益直接外推到五机。
@@ -185,9 +194,10 @@ SONIC 每路约 500 Hz 发布 LowCmd，而四机仿真实际只产生约 7 Hz �
 
 同一版代码重新启动后做 LowState 发布频率 A/B：100 Hz 时四机总体 8.18 Hz、最近
 8.01 Hz、平均循环 122.2 ms；55 Hz 时总体 9.24 Hz、最近 9.29 Hz、平均循环 108.2 ms，
-约提升 13%，且四路均保持 `timeouts=0`。55 Hz 仍高于 SONIC 的 50 Hz 控制节拍，因此
-一键脚本采用 55 Hz 作为多机 keepalive；通用 CLI 默认值不变，需要排查兼容性时可显式
-回到 `--lowstate-pub-hz 100`。
+约提升 13%，且四路均保持 `timeouts=0`。这组历史 A/B 将一键脚本的多机空闲
+保活设为 55 Hz；后续延长窗口已否决 10 Hz 和 20 Hz 候选，所以当前仍保持
+55 Hz。通用 CLI 默认值不变，需要排查兼容性时可显式回到
+`--lowstate-pub-hz 100`。
 
 ### HandState 发布组合优化 A/B
 
@@ -236,3 +246,40 @@ NaN。
 的保守证据；但这不是同条件 A/B，**不得**据此写成正式“提升 33.5%”。若要给出正式
 提升百分比，必须在 `domain=99` 额外进程退出并冷却后重新取得同口径 120 秒窗口。
 这些数据也只验证四机，不能外推为五机闭环频率。
+
+### LowState generation cache 同负载 A/B
+
+保持 HandCmd 100 Hz、LowState 空闲保活 55 Hz，并让同一个 `domain=99` 额外仿真进程
+全窗口存活，对 LowState generation cache 做同负载四机比较：
+
+| LowState 路径 | 性能窗口与闭环频率 | 单 LowState topic | 消息更新 / SHM | 窗口条件 |
+|---|---:|---:|---:|---|
+| 旧路径：每个保活包重读、重建 | 2275 步 / 120.291653 s = 18.912368 Hz | 约 62.97–63.43 Hz | 每轮读 SHM、重建字段/IDL 并按配置处理 CRC | `domain=99` 额外进程全窗存活 |
+| generation cache | 2425 步 / 120.823 s = 20.071 Hz | 64.18 / 64.08 / 64.17 / 64.27 Hz | `message_updates≈fresh_physx≈20.02Hz`；`shm_reads=0.0Hz` | 同一额外负载形态 |
+
+表中 LowState topic 和内部更新频率取候选进程的六个相邻稳态统计窗；
+闭环频率取独立的 120 秒 exact stepped 窗口，两者不是同一次包计数。
+四机同负载闭环频率提升 6.12%。cache 对同一 PhysX generation 的重复保活包
+复用已构造的 LowState（包含按配置填充的 CRC 字段），但不减少
+LowState/secondary IMU 的对外发布节拍。
+四路 CONTROL 和物理步全窗推进，timeout、stale、`sync_waits`、HOLD、FALL 和 NaN 均为 0，
+机器人倾角、base_z 和扭矩饱和门禁通过。reset grace 进入/退出会强制应用新缓存键，
+并串行化 grace 切换与 secondary IMU→LowState 发布事务，不放宽复位安全语义。
+
+上表的 18.912368 Hz 基线复用上一节 HandCmd 100 Hz 的逆风窗口，只能与同样
+保持 `domain=99` 额外负载的 cache 窗口比较。不能把这个 6.12% 与非同负载的
+HandCmd 500→100 Hz 数据相加或连乘，也不能外推为五机性能。
+
+### LowState 空闲保活下探门禁
+
+generation cache 生效后又分别将空闲保活从 55 Hz 下探到 10 Hz 和 20 Hz。
+两个候选的 CONTROL 后短窗都能推进，但延长窗口均出现一次 stale variant：
+
+| 候选空闲保活 | 延长窗口结果 | 锁步证据 | 决策 |
+|---:|---|---|---|
+| 10 Hz | 7 个稳态窗和额外 60 s 暖机通过；正式 120 s 窗口中段 robot_4 出现 `stale_variants=1` | `timeouts=0`，锁步等待最大 24.75 ms | 拒绝，立即中止窗口 |
+| 20 Hz | 排除首窗后 6 个稳态窗通过；额外 60 s 暖机约 13 s 时 robot_2 出现 `stale_variants=1` | `timeouts=0`，锁步等待平均/最大 0.09/19.34 ms | 拒绝，未进入 120 s 正式窗口 |
+
+`stale_variants=1` 虽未升级为 timeout，仍违反多机锁步的零 stale 硬门禁，不能因为
+短窗通过就宣称候选可用。因此一键脚本继续使用 55 Hz 空闲保活；10/20 Hz 只保留为
+失败记录，不设为默认。

@@ -317,7 +317,8 @@ python tools/smoke_conveyor_scene.py --steps 1600 --sync 0 --device cpu --pick-l
 | 整环境复位 | ID=1 | 广播 reset_id，ID=2 跟随；ID=2 本地复位不回传 |
 
 端口：ID=1 绑 `15555`、ID=2 绑 `15556`（base+id-1），双方互连对方端口。
-发布节流默认每 4 个物理步一帧（50 Hz）。
+发布节流默认每 4 个物理步一帧（按 200 Hz 物理时钟计算的名义 50 Hz）；
+wall-clock 发布频率仍受实际物理步速度限制。
 
 ## 多机器人 host 形态
 
@@ -326,6 +327,11 @@ python tools/smoke_conveyor_scene.py --steps 1600 --sync 0 --device cpu --pick-l
 `rt[/rN]/*` 身体与 Dex3 命令/状态、观测缓存和足底传感器。动作按机器人顺序拼成
 `N × 129` 维，所有已配置通道的 LowCmd ack 都匹配后才推进环境。完整启动与端口表见
 [五机器人 SONIC 手册](../../../doc/pipeline_five_robot_sonic_zh.md)。
+
+LowState 对新 PhysX 样本使用事件唤醒立即发布，无新样本时按多机默认 55 Hz
+做周期保活；该数字不是 topic 硬上限。同一状态 generation 的重复保活会复用
+已构造的 IDL/CRC，不会重读共享内存和重建全部状态字段。10 Hz 和 20 Hz
+下探候选均在延长窗口出现 stale variant，所以未采用；完整 A/B 口径仍见上述手册。
 
 ## Dex3 夹爪控制数据流
 
@@ -384,18 +390,20 @@ manager 读取左右控制器的 `trigger` 和 `grip`，但当前 `generate_fing
 
 manager 把左右手目标编码为 ZMQ `pose`/`planner` 消息中的
 `left_hand_joints: f32[7]` 和 `right_hand_joints: f32[7]`。deploy 解码后绕过身体策略，
-直接写入 `Dex3Hands` 命令缓存；500 Hz command writer 随 `LowCmd` 同频重发两手
-`HandCmd`。每个 HandCmd 的 7 个 motor slot 都包含 `mode/q/dq/tau/kp/kd`，当前目标
+直接写入 `Dex3Hands` 命令缓存。LowCmd writer 仍保持 500 Hz；外仓 standalone Isaac
+的 HandCmd 默认也是 500 Hz，但流水线一键启动会显式将 HandCmd 设为 100 Hz，
+两者不再同频。每个 HandCmd 的 7 个 motor slot 都包含 `mode/q/dq/tau/kp/kd`，当前目标
 主要使用 `q`，默认 `dq=0`、`tau=0`、`kp=1.5`、`kd=0.1`。
 
 `Dex3Hands` 根据 Isaac 回传的实际手指位置，把每次发布的目标差限制到 `±0.25 rad`，
 并应用最大闭合比例。Isaac 的 [`Dex3DDS`](../../../dds/dex3_dds.py) 订阅左右手命令，
 [`SonicDDSActionProvider`](../../../action_provider/action_provider_sonic_dds.py) 在每个
-50 Hz 环境步读取最新快照，按关节名映射到 43 关节 articulation：
+名义 50 Hz 环境步读取最新快照，按关节名映射到 43 关节 articulation：
 
 - `q/dq/tau` 进入 position、velocity、effort 三个 ActionTerm；
 - `kp/kd` 由 provider 直接写入 PhysX stiffness/damping；
-- 新目标在一个 20 ms 环境步内保持 4 个 5 ms PhysX 子步，驱动求解仍为 200 Hz；
+- 新目标在一个名义 20 ms 仿真步内保持 4 个 5 ms PhysX 子步，仿真时间的驱动求解仍为
+  200 Hz；wall-clock 闭环频率必须以 `[Performance]` 实测值为准；
 - 每步结束后，[`dex3_state.py`](../../common_observations/dex3_state.py) 按相同顺序采集
   实际 `q/dq/applied_torque`，经 `HandState` DDS 回传 deploy，形成闭环。
 
@@ -428,8 +436,8 @@ HandCmd 默认超时为 `0.20 s`；超时后保持最后安全的 `q/kp/kd`、�
   0.3 m/s，且会缓慢自转（源分支已知）。
 - **17 箱铺满的物理成本**（2026-08-10 改版）：动态刚体从 5 → 17。按既有实测口径
   （每箱边际 ~0.22ms/步，碰撞形状主导而非箱数线性外推的观测），预估 env.step 的
-  E 增量 ~2.6ms；headless smoke 实测 env_hz 见提交信息，**GUI 50Hz 帧率账本待用户
-  实测复核**（conveyor 本就贴着 20ms 预算跑，S 余量可能被吃掉）。
+  E 增量 ~2.6ms。该早期单箱边际估算不能外推为当前多机 SONIC 闭环帧率；
+  多机 GUI 成本仍需在同负载条件下独立实测。
 - 停位有 0.06~10 mm 的散布（越线后驱动关闭、靠摩擦停住，各箱摩擦略有差异），smoke 容差
   取 50 mm；整带节拍下这个误差不累计，队列间距长期维持在出生值附近（实测 0.748~0.760，
   出生 0.75），但**不要指望它精确恒定**。
@@ -443,8 +451,10 @@ HandCmd 默认超时为 `0.20 s`；超时后保持最后安全的 `q/kp/kd`、�
   与各自目标物的 IK、碰撞和实抓闭环仍需逐台验证。
 - 五台场景已通过 645 维动作的 headless 10 步创建/状态有限性/根节点漂移门；该检查不带
   真实 provider 的启动 Root pin，不能外推为闭环站立。五套真实 deploy 已同时进入 CONTROL
-  且五路锁步能够持续推进，但优化前现场仅约 0.85 Hz；五路倒地复位、动作矩阵和 LowCmd
-  快路后的五机性能仍需复验。不能把配置步频当成五机实测值。
+  且五路锁步能够持续推进，但优化前现场仅约 0.85 Hz；五路倒地复位、动作矩阵，以及
+  LowCmd 重复包快路、HandState 组合优化、HandCmd 100 Hz 和 LowState generation cache 全部
+  生效后的五机性能仍需同口径复验。四机优化收益不能外推到五机，也不能把配置步频
+  当成五机实测值。
 - 原布局（`ISAACLAB_TOTES_ON_CONVEYOR=0`）的作业闭环在源分支就未实跑过。
 - `surface_velocity` 后端下纸箱队列靠"后车撞前车"物理涌现，没有走
   `queue_drive_mask`，也不支持本节的 XY 偏离放行门；该组合尚未实测，上游带面会持续挤压
