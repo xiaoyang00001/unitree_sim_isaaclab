@@ -12,6 +12,10 @@
 - Pico#2：当前还未出现在 ADB 中，需要先连接并配置为 `63902`
 - 当前旧链仍在运行，不能直接重复启动
 
+GR00T deploy 必须至少包含 HandCmd 参数提交 `0f4e0b4`，并包含定时校准修复
+`122c947`。后者修复 100 Hz 在 2 ms writer 周期上实际掉到约 84–85 Hz 的问题；
+非 Isaac/实机、LowCmd、锁步 ACK、Control 和 Planner 路径仍保持 500 Hz。
+
 端口关系必须保持：
 
 | 控制链 | Pico UDP | manager ZMQ PUB | deploy 输入 | DDS |
@@ -130,6 +134,7 @@ G1_LOCAL_ROBOT_ID=1 bash deploy.sh \
   --disable-crc-check \
   --input-type zmq_manager \
   --zmq-port 5556 \
+  --isaac-handcmd-hz 100 \
   isaac
 ```
 
@@ -152,6 +157,7 @@ G1_LOCAL_ROBOT_ID=2 bash deploy.sh \
   --disable-crc-check \
   --input-type zmq_manager \
   --zmq-port 5566 \
+  --isaac-handcmd-hz 100 \
   isaac
 ```
 
@@ -161,11 +167,23 @@ G1_LOCAL_ROBOT_ID=2 bash deploy.sh \
 
 ```text
 --zmq-port 5566
+Dex3 HandCmd Rate: 100 Hz
+Isaac Dex3 HandCmd publish rate: 100 Hz
 ```
 
 并且后续 DDS 日志属于 `rt/r2/*`。
 
 两个 deploy 终端确认以后，不要再输入 `]`、回车、`2` 或 WASD；双 Pico 发车全部由头显完成。
+
+如需回滚旧 HandCmd 流量，把两个终端的参数都改成 `--isaac-handcmd-hz 500` 后重启两套
+deploy；省略参数时外仓 Isaac 默认也是 500 Hz。若改用一键脚本，则必须重启完整 bringup：
+
+```bash
+PIPELINE_DUAL_PICO=1 PIPELINE_ISAAC_HANDCMD_HZ=500 \
+bash tools/pipeline_pico_bringup.sh
+```
+
+`PIPELINE_ISAAC_HANDCMD_HZ` 不能热更新，不能只在已经运行的 shell 中重新赋值。
 
 ### 终端 4：manager#1
 

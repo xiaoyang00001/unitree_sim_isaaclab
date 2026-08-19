@@ -1,6 +1,6 @@
-# 流水线双机场景——新机器部署速查（交接用）
+# 流水线多机场景——新机器部署速查（交接用）
 
-> 目标：在一台新 Ubuntu 机器上跑起 **host 全链**（Isaac 双机器人仿真 + 两套 GR00T
+> 目标：在一台新 Ubuntu 机器上跑起 **host 全链**（默认 Isaac 五机器人仿真 + 五套 GR00T
 > deploy + 可选 Pico VR 控制），并可选配 Windows AR viewer。本文只写施工顺序与
 > 必改配置；原理、判读、坑的展开见文末指路。
 
@@ -8,7 +8,7 @@
 
 | 角色 | 机器 | 跑什么 | 必需？ |
 |---|---|---|---|
-| host | Ubuntu + NVIDIA GPU | sim（robot_1+robot_2 双动力学）+ deploy#1/#2 + pico_manager | ✅ |
+| host | Ubuntu + NVIDIA GPU | sim（默认 robot_1..5 五台动力学）+ deploy#1..5 + pico_manager | ✅ |
 | viewer | Windows + NVIDIA GPU | IsaacLab 纯镜像（只收不发）+ SteamVR AR | 可选 |
 | 操作端 | Pico 4 Ultra | GameLink app（全身追踪+手柄 → host） | 可选（keyboard 可替代调试） |
 
@@ -18,8 +18,8 @@
 
 | 仓库 | URL | 分支 |
 |---|---|---|
-| 仿真工程 | `github.com/xiaoyang00001/unitree_sim_isaaclab` | `feat/pipeline-pico-vr-control` |
-| GR00T（deploy） | `github.com/muojie/GR00T-WholeBodyControl` | `feat/isaac-state-sync` |
+| 仿真工程 | `github.com/xiaoyang00001/unitree_sim_isaaclab` | `feat/conveyor-v61-all-robots-sonic` |
+| GR00T（deploy） | `github.com/muojie/GR00T-WholeBodyControl` | `fix/pico-invalid-body-frame`，至少包含 `122c947` |
 | IsaacLab fork | `github.com/xiaoyang00001/IsaacLab` | `07241`（Linux）/ `0703`（Windows） |
 
 ⚠️ **不在 git 里、必须从现有机器拷**：GR00T 的模型文件
@@ -32,7 +32,7 @@
 ```bash
 # ① 系统前置：NVIDIA 驱动 + CUDA、git、git-lfs、miniconda、just、cmake
 # ② 仿真工程 + conda 环境（脚本自动装 isaacsim 5.1 / pytorch / cyclonedds 0.10.x / 子模块）
-git clone -b feat/pipeline-pico-vr-control https://github.com/xiaoyang00001/unitree_sim_isaaclab
+git clone -b feat/conveyor-v61-all-robots-sonic https://github.com/xiaoyang00001/unitree_sim_isaaclab
 cd unitree_sim_isaaclab
 bash auto_setup_env.sh 5.1 env_isaaclab
 #   ⚠️ 必做：脚本克隆的是官方 IsaacLab，必须切到 fork 的 07241 分支——官方版未在本
@@ -48,7 +48,9 @@ git fetch xiaoyang 07241 && git checkout -b 07241 xiaoyang/07241
 bash fetch_assets.sh          # HuggingFace 资产（assets/ 可放外部盘做符号链接）
 
 # ③ GR00T deploy
-git clone -b feat/isaac-state-sync https://github.com/muojie/GR00T-WholeBodyControl
+git clone -b fix/pico-invalid-body-frame https://github.com/muojie/GR00T-WholeBodyControl
+#   Pico 多机一键 HandCmd 100 Hz 要求至少包含参数提交 0f4e0b4，且必须包含
+#   定时校准修复 122c947；仅有前者会把配置的 100 Hz 实际量化到约 84–85 Hz。
 #   拷入 §1 说的 .onnx 模型 → 按仓库 README 构建 deploy（CMake/just，需 CUDA+TensorRT）
 #   首次务必【单实例】跑一遍 deploy.sh 预热 .trt 缓存（双实例并发冷启会争写缓存）
 #   仅 Pico 控制需要：bash install_scripts/install_pico.sh   # 创建 .venv_teleop
@@ -86,22 +88,34 @@ PIPELINE_SIM_PY=$(conda run -n env_isaaclab which python) \
 bash tools/pipeline_pico_bringup.sh
 ```
 
-默认拉起 sim + deploy#1(zmq_manager) + deploy#2(keyboard) + pico_manager 全套；
+默认拉起 sim + deploy#1(zmq_manager) + deploy#2..5(keyboard) + pico_manager 全套，并对
+每个 Isaac deploy 显式传 `--isaac-handcmd-hz 100`；LowCmd、锁步 ACK、Control 和 Planner
+仍保持 500 Hz。外仓 standalone Isaac 默认及非 Isaac/实机路径也仍为 500 Hz。
 `PIPELINE_DUAL_PICO=1` 把 deploy#2 换成 zmq_manager 并追加 manager#2，端口矩阵与实机
 gate 见 `doc/pipeline_pico_vr_deployment_zh.md` §5。
 **无头显也能跑**（channel#1 停在等发车属正常，不影响物理与锁步）。
 
+遇到兼容性问题时，用下面命令重启完整 bringup 回滚 HandCmd 流量；
+`PIPELINE_ISAAC_HANDCMD_HZ` 不是运行期热更新：
+
+```bash
+PIPELINE_ISAAC_HANDCMD_HZ=500 PIPELINE_SIM_DIR=$PWD GR00T_WBC_ROOT=<GR00T路径> \
+PIPELINE_SIM_PY=$(conda run -n env_isaaclab which python) \
+bash tools/pipeline_pico_bringup.sh
+```
+
 ⚠️ 三个易错点（新机首跑都踩过）：
 
 1. **三个变量必须与命令同一行**（如上，行尾 `\` 续行）或先 `export`——分行裸赋值
-   不会传给子进程，脚本会静默拿默认值（`/home/nolo/...` 的老机器路径）跑偏；
+   不会传给子进程，脚本会改用当前 checkout、`$HOME/GR00T-WholeBodyControl` 和
+   `$HOME/miniconda3/envs/env_isaaclab/bin/python`；自定义安装路径会因此跑偏；
 2. **变量别指串**：`PIPELINE_SIM_DIR`=仿真工程目录，`GR00T_WBC_ROOT`=GR00T 目录，
    `PIPELINE_SIM_PY`=conda 环境的 python；
 3. **GUI 形态需要活动的 X 桌面会话**（脚本默认 `--hide_ui`+DISPLAY）。纯 ssh /
    无显示器的机器加 `PIPELINE_HEADLESS=1` 前缀（切 `--no_render`，host 本地无画面，
    物理/锁步/viewer 不受影响）。脚本已内置 X 预检，拿不到会直接报错并给修法。
 
-### 4.2 手动分步（排查用，四个终端；等价于一键脚本）
+### 4.2 手动分步（两机排查用，四个终端；deploy 频率等价于一键脚本）
 
 ```bash
 # 终端① host sim
@@ -115,9 +129,11 @@ python sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor --robot_type g129 \
 
 # 终端②③ 两套 deploy —— ⚠️ 必须并行起（错峰 ~20s），串行等 Init Done 会自锁
 cd <GR00T路径>/gear_sonic_deploy
-bash deploy.sh --disable-crc-check --input-type zmq_manager isaac     # 终端② deploy#1（Pico）
+bash deploy.sh --disable-crc-check --input-type zmq_manager \
+  --isaac-handcmd-hz 100 isaac                                      # 终端② deploy#1（Pico）
 # keyboard 验证形态把上行的 zmq_manager 换成 keyboard
-G1_LOCAL_ROBOT_ID=2 bash deploy.sh --disable-crc-check --input-type keyboard isaac  # 终端③ deploy#2
+G1_LOCAL_ROBOT_ID=2 bash deploy.sh --disable-crc-check --input-type keyboard \
+  --isaac-handcmd-hz 100 isaac                                      # 终端③ deploy#2
 
 # 终端④ pico_manager（仅 Pico 控制需要；两个参数一个都不能丢）
 cd <GR00T路径>
@@ -136,7 +152,8 @@ printf 'w' >> /tmp/pipeline_pico/dk_r2     # 一键版给 robot_2 发"前进"
 ```
 
 验收判据（按序核对）：
-1. 两 deploy 日志出现 `Init Done`；
+1. 两 deploy 日志出现 `Init Done`、`Dex3 HandCmd Rate: 100 Hz` 和
+   `Isaac Dex3 HandCmd publish rate: 100 Hz`；
 2. sim 日志 `physics_steps` 持续涨、`sync_waits` 基本不涨（涨=锁步卡了）；
 3. keyboard：`w` 后 robot_2 行走（起步有 ~10s 慢加速斜坡，别当没响应）；
 4. Pico：`pico_manager.log` 停止刷 `waiting for body data` → 头显发车后 sim 出现

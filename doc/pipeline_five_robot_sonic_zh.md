@@ -35,6 +35,10 @@
 ## 3. 推荐启动
 
 一键脚本默认启动五台：robot_1 走 Pico，robot_2..5 走互相隔离的 keyboard 调试通道。
+脚本会对每个 Isaac deploy 显式传入 `--isaac-handcmd-hz 100`；这只把每台左右手的
+Dex3 HandCmd 从 500 Hz 降到 100 Hz，LowCmd、锁步 ACK、Control 和 Planner 链路仍保持
+500 Hz。外部 GR00T 仓库必须至少包含参数支持提交 `0f4e0b4`，并包含定时校准修复
+`122c947`；只含前者时 100 Hz 会因 writer 周期量化实际落到约 84–85 Hz。
 
 ```bash
 cd <仿真工程>
@@ -50,6 +54,16 @@ bash tools/pipeline_pico_bringup.sh
 PIPELINE_SONIC_ROBOT_COUNT=5 PIPELINE_DUAL_PICO=1 \
 bash tools/pipeline_pico_bringup.sh
 ```
+
+若要排查兼容性，可把全部 HandCmd 恢复到旧的 500 Hz 流量：
+
+```bash
+PIPELINE_SONIC_ROBOT_COUNT=5 PIPELINE_ISAAC_HANDCMD_HZ=500 \
+bash tools/pipeline_pico_bringup.sh
+```
+
+该变量不是热更新；回滚必须重启完整 bringup，不能只修改运行中 shell 的环境变量。
+外仓 `deploy.sh` 自身的 Isaac 默认仍为 500 Hz，非 Isaac/实机路径也始终保持 500 Hz。
 
 脚本的键管道为 `/tmp/pipeline_pico/dk_rN`。例如：
 
@@ -97,11 +111,15 @@ bash deploy.sh --disable-crc-check --input-type keyboard \
   --zmq-port 5576 \
   --zmq-out-port 5577 --zmq-out-topic g1_3_debug \
   --udp-out-port 5577 --udp-out-topic g1_3_debug \
+  --isaac-handcmd-hz 100 \
   isaac
 ```
 
 robot_4/5 分别替换成 `rt/r4`、`rt/r5` 和表中的端口。只设置
-`G1_LOCAL_ROBOT_ID=3/4/5` 不足以隔离 DDS。
+`G1_LOCAL_ROBOT_ID=3/4/5` 不足以隔离 DDS。手工复刻当前一键性能配置时，robot_1..5
+五个 deploy 都必须显式传入 `--isaac-handcmd-hz 100`；只给部分机器人传参会形成混合
+发布频率，不能作为同口径性能数据。启动日志应同时出现
+`Dex3 HandCmd Rate: 100 Hz` 和 `Isaac Dex3 HandCmd publish rate: 100 Hz`。
 
 ## 5. Viewer
 
@@ -188,3 +206,33 @@ generation cache 同时避免保活周期反复读取共享内存 JSON、重复�
 现场日志中 `shm_reads=0.0Hz`。最终 60 个性能采样的循环耗时中位数为 64.5 ms、
 p90 为 82.9 ms，全部 `stepped=1` 且 `sync_waits=0`。本次 A/B 验证的是上述组合方案，
 不能把收益单独归因于 10 Hz 参数，也不能外推为五机性能结果。
+
+### HandCmd 独立限频现场数据
+
+在上述 HandState 组合优化之后，对四机的八路 Dex3 HandCmd 做 500 Hz 基线和 100 Hz
+候选测量。两段性能窗口的机器负载不同，必须分开判读：
+
+| 四机配置 | 性能窗口与闭环频率 | 单 HandCmd topic | 单 LowCmd topic | 窗口条件 |
+|---|---:|---:|---:|---|
+| HandCmd 500 Hz | 1700 步 / 120.011025 s = 14.165365 Hz | 6000 包 / 12.000055 s = 499.997689 Hz | 6000 包 / 12.000055 s = 499.997689 Hz | 干净基线；无额外 sim/compiler |
+| HandCmd 100 Hz | 2275 步 / 120.291653 s = 18.912368 Hz | 1200 包 / 12.000101 s = 99.999157 Hz | 499.995787 / 499.912455 / 499.995787 / 499.995787 Hz | `domain=99` 额外进程全窗存活，CPU 均值 60.83% |
+
+表中的 topic 频率来自各性能窗口邻近的独立 12 秒采样；HandCmd 列是八路单 topic 均相同，
+LowCmd 候选列按 robot_1..4 顺序列出四路精确值。
+
+500 Hz 干净窗口最后 60 个采样的 A/E/R/T 耗时（均值/中位数/p95）分别为
+12.080/10.550/23.8 ms、47.610/45.050/72.4 ms、10.1567/10.000/12.7 ms 和
+69.870/68.000/104.0 ms。100 Hz 逆风窗口对应为 6.768/6.450/10.0 ms、
+31.290/29.750/41.2 ms、9.4767/9.300/12.1 ms 和 47.5617/45.500/57.2 ms。
+
+两段窗口的四路 CONTROL 和物理步均持续推进。500 Hz 基线的 timeout、stale、
+`sync_waits` 均为 0，锁步等待最大 0.11 ms，四机最大倾角 1.17–1.27 度、base_z
+均约 0.787 m、扭矩饱和率 0%。100 Hz 窗口没有新增 timeout、stale、ACK mismatch
+或 `sync_waits`，锁步等待最大不超过 0.02 ms；最大倾角不超过 1.08 度、base_z 最低
+0.786 m、最大绝对关节速度不超过 0.58 rad/s、扭矩饱和率 0%，且无 ERROR、HOLD、
+NaN。
+
+100 Hz 候选在额外 CPU 负载下仍高于干净的 500 Hz 基线，可作为逆风补充和采用该默认值
+的保守证据；但这不是同条件 A/B，**不得**据此写成正式“提升 33.5%”。若要给出正式
+提升百分比，必须在 `domain=99` 额外进程退出并冷却后重新取得同口径 120 秒窗口。
+这些数据也只验证四机，不能外推为五机闭环频率。

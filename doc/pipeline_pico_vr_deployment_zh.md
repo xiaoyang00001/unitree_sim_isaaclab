@@ -41,7 +41,7 @@ PC Service**（.deb 留在 GR00T 仓库根，sdk 模式才用）。
 | 项 | 要求 | 本机现状 |
 |---|---|---|
 | GR00T 仓库 | `<GR00T仓库>`，deploy isaac profile 可用 | ✅ |
-| GR00T 版本 | `feat/isaac-state-sync` **≥ `6783bb8`**（14f8bf1 误删的 666 个 gear_sonic 文件已全量恢复；旧检出 manager 收数据/进 POSE 必崩） | ✅ |
+| GR00T 版本 | 至少含恢复提交 `6783bb8`、HandCmd 参数提交 `0f4e0b4` 和定时校准修复 `122c947`；只含 `0f4e0b4` 时配置 100 Hz 实际约 84–85 Hz | ✅ |
 | `.venv_teleop` | Python 3.10，由 `install_scripts/install_pico.sh` 创建（uv）；`import xrobotoolkit_sdk, zmq, msgpack` 通过 | ✅ 实测通过 |
 | 防火墙 | 入站 UDP 63901 放行；双 Pico 还要放行 63902（头显→本机） | ✅ ufw 不活动 |
 | Pico 侧 app | GameLink（`com.Nolo.CloudVR`）；使用内置配置强刷包时，#1/#2 必须安装各自的机器人专用 APK | #1 ✅；#2 ⏳待设备 |
@@ -121,10 +121,29 @@ PIPELINE_DUAL_PICO=1 bash tools/pipeline_pico_bringup.sh
 # 回退历史双机：
 PIPELINE_SONIC_ROBOT_COUNT=2 bash tools/pipeline_pico_bringup.sh
 
+# HandCmd 兼容性回滚：必须重启完整 bringup，不是热更新
+PIPELINE_ISAAC_HANDCMD_HZ=500 bash tools/pipeline_pico_bringup.sh
+
+# 双 Pico 回滚时保留原来的双 Pico 变量
+PIPELINE_DUAL_PICO=1 PIPELINE_ISAAC_HANDCMD_HZ=500 \
+bash tools/pipeline_pico_bringup.sh
+
 # 换机器时路径变量与命令同一行传入（分行裸赋值传不进去）：
 #   PIPELINE_SIM_DIR=<仿真工程> GR00T_WBC_ROOT=<GR00T> PIPELINE_SIM_PY=<python> bash tools/...
 # 纯 ssh/无桌面会话加 PIPELINE_HEADLESS=1（否则 kit 拿不到 X 会在 RTX 插件初始化段错误，
 # 脚本有预检直接报错）；GUI 形态 DISPLAY 透传，PIPELINE_DISPLAY 可强制。
+```
+
+一键脚本默认对所有 Isaac deploy 显式传 `--isaac-handcmd-hz 100`。该参数只降低左右手
+Dex3 HandCmd；LowCmd、锁步 ACK、Control 和 Planner 仍保持 500 Hz，外仓 standalone
+Isaac 默认及非 Isaac/实机路径也仍为 500 Hz。`PIPELINE_ISAAC_HANDCMD_HZ` 只在启动时
+读取；回滚到 500 Hz 必须重启完整 bringup。
+
+启动后可核对全部 deploy 日志，确认没有某一路静默落回 500 Hz：
+
+```bash
+rg -n "Dex3 HandCmd Rate: 100 Hz|Isaac Dex3 HandCmd publish rate: 100 Hz" \
+  /tmp/pipeline_pico/deploy_r*.log
 ```
 
 脚本做的事（手动分步照此复刻）：硬清残余 → host sim（HOST_MODE，CRC 两刀）→
@@ -284,7 +303,8 @@ XROBO_TRANSPORT=udp XROBO_UDP_PORT=63902 PYTHONUNBUFFERED=1 .venv_teleop/bin/pyt
 ```bash
 cd <GR00T路径>/gear_sonic_deploy
 G1_LOCAL_ROBOT_ID=2 bash deploy.sh --disable-crc-check \
-  --input-type zmq_manager --zmq-port 5566 isaac
+  --input-type zmq_manager --zmq-port 5566 \
+  --isaac-handcmd-hz 100 isaac
 ```
 
 **D. bringup 脚本改造**（`tools/pipeline_pico_bringup.sh` 加 `PIPELINE_DUAL_PICO=1`）：
