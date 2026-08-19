@@ -44,6 +44,8 @@ from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import NVIDIA_NUCLEUS_DIR
 
+from robots.g1_joint_order import G1_29DOF_DDS_JOINT_ORDER
+from robots.g1_sonic_urdf import DEX3_HAND_JOINT_NAMES
 from robots.sonic_multi_robot import sonic_robot_channel_spec, sonic_robot_channel_specs
 from tasks.common_observations.dex3_state import get_robot_dex3_joint_states
 from tasks.common_observations.g1_29dof_state import get_robot_boy_joint_states
@@ -64,6 +66,11 @@ from tasks.g1_tasks.g1_29dof_dex3_sonic.g1_29dof_dex3_sonic_env_cfg import (
 )
 
 from . import conveyor_events
+from .actuator_merge import (
+    maybe_merge_implicit_actuator_groups,
+    merge_implicit_actuator_groups,
+    validate_sonic_runtime_actuators,
+)
 from .asset_variants import (
     VISUAL_ONLY_BACKGROUND_USD,
     WORKCELL_LITE_VISUAL_ONLY_BACKGROUND_USD,
@@ -209,6 +216,14 @@ ACTIVE_SONIC_ROBOT_COUNT = (
     else 2
 )
 ACTIVE_SONIC_CHANNEL_SPECS = sonic_robot_channel_specs(ACTIVE_SONIC_ROBOT_COUNT)
+# 主动力学执行器合并只作为显式 A/B 候选；默认仍保留已验过的原始六组。
+SONIC_MERGE_ACTUATORS = _env_bool("ISAACLAB_SONIC_MERGE_ACTUATORS", False)
+# 真实 actuator tensor 校验会触发 GPU→CPU 同步，只允许显式 A/B 启用。
+SONIC_VALIDATE_ACTUATORS = _env_bool("ISAACLAB_SONIC_VALIDATE_ACTUATORS", False)
+_HOST_SONIC_ASSET_NAMES = (
+    "robot",
+    *(f"robot_{robot_id}" for robot_id in range(2, ACTIVE_SONIC_ROBOT_COUNT + 1)),
+)
 # viewer 的上游固定是权威端 ID=1（连它的 PUB 端口）；对等模式保持 3-ID 互指。
 PEER_ROBOT_ID = 1 if VIEWER_MODE else 3 - LOCAL_ROBOT_ID
 LOCAL_ROBOT_GLOBAL_NAME = "viewer" if VIEWER_MODE else f"robot_{LOCAL_ROBOT_ID}"
@@ -737,6 +752,12 @@ def _log_scene_layout() -> None:
     print(f"{tag} 背景资产: {BACKGROUND_MODE} ({BACKGROUND_USD_PATH.name})")
     print(f"{tag} 料筐碰撞: {TOTE_COLLIDER_MODE} ({TOTE_USD_PATH.name})")
     print(f"{tag} ContactReport: {CONTACT_REPORT_MODE}")
+    if not VIEWER_MODE:
+        print(
+            f"{tag} SONIC 真身执行器: "
+            f"{'43 关节单组' if SONIC_MERGE_ACTUATORS else '原始 6 组'} "
+            f"[ISAACLAB_SONIC_MERGE_ACTUATORS={int(SONIC_MERGE_ACTUATORS)}]"
+        )
     if TOTES_ON_CONVEYOR:
         print(
             f"{tag} 场景布局: 流水线（{len(BELT_BOX_NAMES)} 个纸箱排在工位上游、挡停放行）"
@@ -1058,6 +1079,42 @@ def _make_belt_box_cfg(index: int) -> RigidObjectCfg | None:
 # ==================================================================
 
 
+_SONIC_JOINT_NAMES = (*G1_29DOF_DDS_JOINT_ORDER, *DEX3_HAND_JOINT_NAMES)
+# SONIC 合成 URDF 没有 joint dynamics 标签，转换后的 PhysxJointAPI 也没有覆写这三项；
+# 因而原六组中 hands 以外各组的 USD 回退值均为 PhysX 默认 0。单组合并时必须显式
+# 补齐这些关节，不能依赖 Isaac Lab 的 partial-dict 行为（未命中的关节会直接写 0）。
+_SONIC_PARTIAL_USD_DEFAULTS = {
+    "friction": 0.0,
+    "dynamic_friction": 0.0,
+    "viscous_friction": 0.0,
+}
+
+
+def _merge_sonic_actuator_groups(actuators: dict, *, merged_name: str) -> dict:
+    """Collapse SONIC's six implicit groups after strict 43-joint resolution."""
+
+    return merge_implicit_actuator_groups(
+        actuators,
+        _SONIC_JOINT_NAMES,
+        merged_name=merged_name,
+        actuator_cfg_type=ImplicitActuatorCfg,
+        partial_usd_defaults=_SONIC_PARTIAL_USD_DEFAULTS,
+    )
+
+
+def _maybe_merge_local_sonic_actuator_groups(actuators: dict) -> dict:
+    """Keep the legacy mapping unless the conveyor-only A/B flag is enabled."""
+
+    return maybe_merge_implicit_actuator_groups(
+        actuators,
+        _SONIC_JOINT_NAMES,
+        enabled=SONIC_MERGE_ACTUATORS,
+        merged_name="sonic_all",
+        actuator_cfg_type=ImplicitActuatorCfg,
+        partial_usd_defaults=_SONIC_PARTIAL_USD_DEFAULTS,
+    )
+
+
 def _make_local_robot_cfg() -> ArticulationCfg:
     if VIEWER_MODE:
         # viewer 的 ghost：复用无碰撞镜像体（无重力/合并执行器/solver 1/1），
@@ -1074,6 +1131,7 @@ def _make_local_robot_cfg() -> ArticulationCfg:
         cfg.spawn.visible = False
         return cfg
     cfg = make_sonic_robot_cfg()
+    cfg.actuators = _maybe_merge_local_sonic_actuator_groups(cfg.actuators)
     cfg.init_state.pos = LOCAL_ROBOT_POS
     cfg.init_state.rot = LOCAL_ROBOT_ROT
     configure_robot_contact_reports(cfg.spawn, CONTACT_REPORT_MODE)
@@ -1083,15 +1141,15 @@ def _make_local_robot_cfg() -> ArticulationCfg:
 def _make_additional_local_robot_cfg(robot_id: int) -> ArticulationCfg:
     """Create host robot_2..5 with the same full SONIC dynamics as robot_1.
 
-    ⚠️ 不得套用 _merge_peer_actuator_groups——执行器合并只允许用于镜像体；
-    主动力学机器人的执行器组划分是 SONIC 动力学对齐红线（预算吃紧也不能动这刀，
-    除非先过 SONIC 跟踪回归）。
+    主动力学默认仍保持原六组；显式 A/B 开关开启时与 robot_1 一起走严格的 43 关节
+    单组合并，机器人数量门控与 DDS 通道拓扑不变。
     """
     if robot_id < 2:
         raise ValueError("additional local robot id must be >= 2")
     spec = sonic_robot_channel_spec(robot_id)
     pos, rot = _scene_robot_pose(robot_id)
     cfg = make_sonic_robot_cfg()
+    cfg.actuators = _maybe_merge_local_sonic_actuator_groups(cfg.actuators)
     cfg.prim_path = f"{{ENV_REGEX_NS}}/{spec.prim_name}"
     cfg.init_state.pos = pos
     cfg.init_state.rot = rot
@@ -1122,33 +1180,11 @@ def _merge_peer_actuator_groups(actuators: dict) -> dict:
     Isaac Lab 对每组执行器在**每个物理子步**都有一轮 Python 张量记账
     （articulation._apply_actuator_model），组数直接乘在 CPU 开销上——py-spy 实测
     该记账占主线程 39%（两台机器人合计 ~7.6ms/圈，win2 headless，2026-07-31）。
-    镜像体关节每帧被 scene_state 直写，PD 只在两帧间兜底；合并时逐关节参数原样
-    并入 dict，每个关节的驱动参数不变，纯减组数 6→1。
-    ⚠️ 只用于镜像体；主机器人的组划分随 SONIC 动力学对齐验证走，不动。
+    镜像体关节每帧被 scene_state 直写，PD 只在两帧间兜底；与真身 A/B 候选共用
+    严格解析器，把 43 个关节逐名展开且要求恰好覆盖一次，纯减组数 6→1。
     """
 
-    fields = (
-        "effort_limit", "velocity_limit", "effort_limit_sim", "velocity_limit_sim",
-        "stiffness", "damping", "armature", "friction", "dynamic_friction",
-        "viscous_friction",
-    )
-    exprs: list[str] = []
-    merged: dict[str, dict] = {f: {} for f in fields}
-    for group in actuators.values():
-        exprs.extend(group.joint_names_expr)
-        for f in fields:
-            value = getattr(group, f, None)
-            if value is None:
-                continue
-            if isinstance(value, dict):
-                merged[f].update(value)
-            else:
-                for expr in group.joint_names_expr:
-                    merged[f][expr] = value
-    # 只设真正出现过的字段；某字段只有部分组设置时（如 hands 的摩擦三项），
-    # 未匹配的关节由 Isaac Lab 参数解析回落到 USD 默认值——与原多组行为一致。
-    kwargs = {f: v for f, v in merged.items() if v}
-    return {"peer_all": ImplicitActuatorCfg(joint_names_expr=exprs, **kwargs)}
+    return _merge_sonic_actuator_groups(actuators, merged_name="peer_all")
 
 
 def _make_peer_robot_cfg() -> ArticulationCfg:
@@ -1951,6 +1987,20 @@ class HostObservationsCfg:
 @configclass
 class ConveyorEventsCfg:
     """背景锁定 + 互斥的 legacy / Surface Velocity 流水线事件。"""
+
+    validate_sonic_actuators = (
+        EventTerm(
+            func=validate_sonic_runtime_actuators,
+            mode="startup",
+            params={
+                "asset_names": _HOST_SONIC_ASSET_NAMES,
+                "require_merged": SONIC_MERGE_ACTUATORS,
+                "expected_merged_joint_names": _SONIC_JOINT_NAMES,
+            },
+        )
+        if SONIC_VALIDATE_ACTUATORS and HOST_MODE
+        else None
+    )
 
     lock_sorting_bins = EventTerm(
         func=conveyor_events.lock_background_rigid_bodies,
