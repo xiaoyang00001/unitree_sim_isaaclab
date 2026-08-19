@@ -41,8 +41,9 @@ class PipelinePicoSceneResetTest(unittest.TestCase):
 
     def test_handcmd_rate_is_validated_and_forwarded_to_every_deploy(self) -> None:
         self.assertIn(
-            'ISAAC_HANDCMD_HZ="${PIPELINE_ISAAC_HANDCMD_HZ:-500}"', self.source
+            'ISAAC_HANDCMD_HZ="${PIPELINE_ISAAC_HANDCMD_HZ:-100}"', self.source
         )
+        self.assertIn("PIPELINE_ISAAC_HANDCMD_HZ=500 恢复旧流量", self.source)
         self.assertEqual(
             self.source.count('--isaac-handcmd-hz "$ISAAC_HANDCMD_HZ"'), 4
         )
