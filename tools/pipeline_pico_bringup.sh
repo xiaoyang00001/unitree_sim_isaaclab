@@ -44,6 +44,11 @@ MGR_PY="$GR00T_ROOT/.venv_teleop/bin/python"
 PEER_IP="${ISAACLAB_SCENE_SYNC_PEER_IP:-192.168.50.127}"
 DUAL_PICO="${PIPELINE_DUAL_PICO:-0}"
 SONIC_ROBOT_COUNT="${PIPELINE_SONIC_ROBOT_COUNT:-5}"
+# 生产默认启用真身执行器 6→1 合并；遇到回归可在启动前显式设 0 原路回滚。
+# runtime tensor 校验只用于 A/B/诊断，默认关闭，避免正常启动发生 GPU→CPU 同步。
+# 使用 ${VAR-default} 而不是 ${VAR:-default}：显式空串也必须被下面的严格校验拒绝。
+SONIC_MERGE_ACTUATORS="${PIPELINE_SONIC_MERGE_ACTUATORS-1}"
+SONIC_VALIDATE_ACTUATORS="${PIPELINE_SONIC_VALIDATE_ACTUATORS-0}"
 # 只降低 Isaac Dex3 HandCmd；LowCmd、ACK 和控制/规划轮询仍保持 500 Hz。
 # 遇到兼容性问题可用 PIPELINE_ISAAC_HANDCMD_HZ=500 恢复旧流量。
 ISAAC_HANDCMD_HZ="${PIPELINE_ISAAC_HANDCMD_HZ:-100}"
@@ -53,6 +58,18 @@ PICO_R1_ZMQ_PORT=5556
 PICO_R2_ZMQ_PORT=5566
 declare -a DEPLOY_PIDS=()
 declare -a MANAGER_PIDS=()
+
+validate_binary_toggle() {
+  local name="$1"
+  local value="$2"
+  case "$value" in
+    0|1) return 0 ;;
+    *)
+      echo "ERROR: $name 只接受字面 0 或 1（当前值: $value）。" >&2
+      return 1
+      ;;
+  esac
+}
 
 validate_isaac_handcmd_hz() {
   local value="$1"
@@ -74,6 +91,14 @@ case "$SONIC_ROBOT_COUNT" in
     exit 2
     ;;
 esac
+if ! validate_binary_toggle \
+    "PIPELINE_SONIC_MERGE_ACTUATORS" "$SONIC_MERGE_ACTUATORS"; then
+  exit 2
+fi
+if ! validate_binary_toggle \
+    "PIPELINE_SONIC_VALIDATE_ACTUATORS" "$SONIC_VALIDATE_ACTUATORS"; then
+  exit 2
+fi
 if ! validate_isaac_handcmd_hz "$ISAAC_HANDCMD_HZ"; then
   echo "ERROR: PIPELINE_ISAAC_HANDCMD_HZ 只接受 [20, 500] 内的有限数值（当前值: $ISAAC_HANDCMD_HZ）。"
   exit 2
@@ -102,6 +127,10 @@ if ! (cd "$DEPLOY_DIR" && bash deploy.sh --help 2>&1) | grep -q -- "--isaac-hand
 fi
 
 mkdir -p "$LOG_DIR"
+
+echo "== SONIC actuator production settings =="
+echo "PIPELINE_SONIC_MERGE_ACTUATORS=$SONIC_MERGE_ACTUATORS (0=回滚原始 6 组, 1=43 关节单组)"
+echo "PIPELINE_SONIC_VALIDATE_ACTUATORS=$SONIC_VALIDATE_ACTUATORS (0=正常运行, 1=startup tensor 门禁)"
 
 # 渲染形态：默认 GUI（--hide_ui）——需要一个能用的 X 会话，DISPLAY 优先取调用方
 # 环境、否则 :0（PIPELINE_DISPLAY 可强制指定）。无桌面/纯 ssh 的机器用
@@ -250,6 +279,8 @@ env DISPLAY="$DISPLAY_TARGET" GR00T_WBC_ROOT="$GR00T_ROOT" PYTHONUNBUFFERED=1 \
     UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo \
     ISAACLAB_LOCAL_ROBOT_ID=1 ISAACLAB_HOST_BOTH_ROBOTS=1 \
     ISAACLAB_SONIC_ROBOT_COUNT="$SONIC_ROBOT_COUNT" \
+    ISAACLAB_SONIC_MERGE_ACTUATORS="$SONIC_MERGE_ACTUATORS" \
+    ISAACLAB_SONIC_VALIDATE_ACTUATORS="$SONIC_VALIDATE_ACTUATORS" \
     ISAACLAB_SCENE_SYNC_PEER_IP="$PEER_IP" \
     UNITREE_SKIP_LOWSTATE_CRC=1 UNITREE_LOWCMD_CRC_SAMPLE_INTERVAL=50 \
     "$PY" sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor --robot_type g129 \

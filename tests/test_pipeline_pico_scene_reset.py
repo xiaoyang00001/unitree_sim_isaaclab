@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -13,6 +14,97 @@ class PipelinePicoSceneResetTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.source = BRINGUP.read_text(encoding="utf-8")
+
+    def _run_preflight(self, **overrides: str) -> subprocess.CompletedProcess[str]:
+        """Run only the non-destructive prefix ending before filesystem checks."""
+
+        prefix = self.source[: self.source.index('if [ ! -d "$SIM_DIR" ]')]
+        env = os.environ.copy()
+        for name in (
+            "PIPELINE_SONIC_MERGE_ACTUATORS",
+            "PIPELINE_SONIC_VALIDATE_ACTUATORS",
+        ):
+            env.pop(name, None)
+        env.update(overrides)
+        return subprocess.run(
+            [
+                "bash",
+                "-c",
+                prefix
+                + '\nprintf "%s|%s\\n" "$SONIC_MERGE_ACTUATORS" '
+                + '"$SONIC_VALIDATE_ACTUATORS"',
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+    def test_actuator_production_flags_default_and_rollback_values(self) -> None:
+        self.assertIn(
+            'SONIC_MERGE_ACTUATORS="${PIPELINE_SONIC_MERGE_ACTUATORS-1}"',
+            self.source,
+        )
+        self.assertIn(
+            'SONIC_VALIDATE_ACTUATORS="${PIPELINE_SONIC_VALIDATE_ACTUATORS-0}"',
+            self.source,
+        )
+
+        defaults = self._run_preflight()
+        self.assertEqual(defaults.returncode, 0, defaults.stderr)
+        self.assertEqual(defaults.stdout.strip(), "1|0")
+
+        rollback = self._run_preflight(
+            PIPELINE_SONIC_MERGE_ACTUATORS="0",
+            PIPELINE_SONIC_VALIDATE_ACTUATORS="1",
+        )
+        self.assertEqual(rollback.returncode, 0, rollback.stderr)
+        self.assertEqual(rollback.stdout.strip(), "0|1")
+
+    def test_actuator_production_flags_reject_every_non_literal_value(self) -> None:
+        for variable in (
+            "PIPELINE_SONIC_MERGE_ACTUATORS",
+            "PIPELINE_SONIC_VALIDATE_ACTUATORS",
+        ):
+            for value in ("", "00", "2", "true", "yes", " 1", "1 "):
+                with self.subTest(variable=variable, value=value):
+                    completed = self._run_preflight(**{variable: value})
+                    self.assertEqual(completed.returncode, 2)
+                    self.assertIn(f"ERROR: {variable} 只接受字面 0 或 1", completed.stderr)
+
+    def test_actuator_flags_validate_before_any_destructive_stop(self) -> None:
+        destructive_marker = self.source.index('echo "== stop old processes (hard) =="')
+        first_kill = self.source.index("pkill", destructive_marker)
+        for variable in (
+            "PIPELINE_SONIC_MERGE_ACTUATORS",
+            "PIPELINE_SONIC_VALIDATE_ACTUATORS",
+        ):
+            validation = self.source.index(f'"{variable}" "$SONIC_')
+            self.assertLess(validation, destructive_marker)
+            self.assertLess(validation, first_kill)
+
+    def test_actuator_flags_are_forwarded_only_to_host_and_shown_in_banner(self) -> None:
+        host_block = self.source.split(
+            'echo "== start host sim', maxsplit=1
+        )[1].split("SIM_PID=$!", maxsplit=1)[0]
+        non_host_block = self.source.split("SIM_PID=$!", maxsplit=1)[1]
+
+        for pipeline_name, isaac_name, value_name in (
+            (
+                "PIPELINE_SONIC_MERGE_ACTUATORS",
+                "ISAACLAB_SONIC_MERGE_ACTUATORS",
+                "SONIC_MERGE_ACTUATORS",
+            ),
+            (
+                "PIPELINE_SONIC_VALIDATE_ACTUATORS",
+                "ISAACLAB_SONIC_VALIDATE_ACTUATORS",
+                "SONIC_VALIDATE_ACTUATORS",
+            ),
+        ):
+            self.assertIn(f'{isaac_name}="${value_name}"', host_block)
+            self.assertNotIn(isaac_name, non_host_block)
+            self.assertEqual(self.source.count(f'{isaac_name}="'), 1)
+            self.assertIn(f'echo "{pipeline_name}=${value_name}', self.source)
 
     def test_only_manager_one_has_global_scene_reset_authority(self) -> None:
         manager_one = self.source.split(
