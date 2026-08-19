@@ -6,6 +6,7 @@ import importlib.util
 import os
 from pathlib import Path
 import sys
+import threading
 from types import ModuleType, SimpleNamespace
 import unittest
 from unittest import mock
@@ -369,6 +370,109 @@ class DDSManagerStartupTest(unittest.TestCase):
             self.assertTrue(first.publishing and second.publishing)
             self.assertTrue(first.subscribing and second.subscribing)
         finally:
+            manager.cleanup()
+
+
+class DDSManagerImmediatePublishTest(unittest.TestCase):
+    @staticmethod
+    def _prepare_publish_loop(runtime_module, publisher):
+        manager = runtime_module.dds_manager
+        manager.register_object("channel", publisher)
+        publisher.publishing = True
+        manager._pub_list = ["channel"]
+        manager._pub_interval["channel"] = 1.0
+        manager._pub_next_ts["channel"] = 0.0
+        return manager
+
+    def test_regular_next_due_is_arranged_before_publisher_runs(self) -> None:
+        runtime_module = _load_fake_runtime_dds_master()
+
+        class InspectingPublisher(_FakeDDSObject):
+            def __init__(self):
+                super().__init__()
+                self.observed_due = None
+
+            def dds_publisher(self) -> None:
+                self.observed_due = manager._pub_next_ts["channel"]
+                manager.publishing_running = False
+
+        publisher = InspectingPublisher()
+        manager = self._prepare_publish_loop(runtime_module, publisher)
+        manager.publishing_running = True
+        manager._wake_event = mock.Mock()
+        manager._wake_event.wait.return_value = False
+
+        try:
+            with mock.patch.object(
+                runtime_module.time, "perf_counter", return_value=100.0
+            ):
+                manager._publish_loop()
+
+            self.assertEqual(publisher.observed_due, 101.0)
+            self.assertEqual(manager._pub_next_ts["channel"], 101.0)
+        finally:
+            manager.cleanup()
+
+    def test_notification_during_publish_remains_due_after_return(self) -> None:
+        runtime_module = _load_fake_runtime_dds_master()
+        publisher_entered = threading.Event()
+        release_publisher = threading.Event()
+
+        class BlockingPublisher(_FakeDDSObject):
+            def __init__(self):
+                super().__init__()
+                self.publish_calls = 0
+
+            def dds_publisher(self) -> None:
+                self.publish_calls += 1
+                if self.publish_calls == 1:
+                    publisher_entered.set()
+                    release_publisher.wait()
+
+        class StopWhenIdleEvent:
+            """Consume one explicit wake, then stop instead of wall-clock sleeping."""
+
+            def __init__(self, manager):
+                self._event = threading.Event()
+                self._manager = manager
+
+            def set(self) -> None:
+                self._event.set()
+
+            def clear(self) -> None:
+                self._event.clear()
+
+            def wait(self, timeout=None) -> bool:
+                if self._event.is_set():
+                    return True
+                self._manager.publishing_running = False
+                return False
+
+        publisher = BlockingPublisher()
+        manager = self._prepare_publish_loop(runtime_module, publisher)
+        manager.enable_immediate_publish("channel")
+        manager._wake_event = StopWhenIdleEvent(manager)
+        manager.publishing_running = True
+        publish_thread = threading.Thread(target=manager._publish_loop)
+
+        try:
+            with mock.patch.object(
+                runtime_module.time, "perf_counter", return_value=100.0
+            ):
+                publish_thread.start()
+                self.assertTrue(publisher_entered.wait(timeout=1.0))
+                manager.notify_fresh_sample("channel")
+                release_publisher.set()
+                publish_thread.join(timeout=1.0)
+
+            self.assertFalse(publish_thread.is_alive())
+            self.assertEqual(publisher.publish_calls, 2)
+            self.assertEqual(manager._pub_next_ts["channel"], 101.0)
+        finally:
+            release_publisher.set()
+            manager.publishing_running = False
+            manager._wake_event.set()
+            publish_thread.join(timeout=1.0)
             manager.cleanup()
 
 

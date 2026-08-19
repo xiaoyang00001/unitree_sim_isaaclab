@@ -189,12 +189,15 @@ class DDSManager:
                     interval = self._pub_interval.get(name, self._default_pub_interval)
                     due = self._pub_next_ts.get(name, 0.0)
                     if now >= due:
+                        # Arrange the regular heartbeat before entering user
+                        # code.  A fresh-sample notification that arrives while
+                        # dds_publisher() is running can then set this back to
+                        # zero without being overwritten on return.
+                        self._pub_next_ts[name] = now + interval
                         try:
                             obj.dds_publisher()
                         except Exception as e:
                             print(f"[DDSManager] object '{name}' publish failed: {e}")
-                        # schedule next
-                        self._pub_next_ts[name] = now + interval
                     # track earliest due
                     nd = self._pub_next_ts.get(name, now + interval)
                     if next_due is None or nd < next_due:
