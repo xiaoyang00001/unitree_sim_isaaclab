@@ -40,6 +40,12 @@ Dex3 HandCmd 从 500 Hz 降到 100 Hz，LowCmd、锁步 ACK、Control 和 Planne
 500 Hz。外部 GR00T 仓库必须至少包含参数支持提交 `0f4e0b4`，并包含定时校准修复
 `122c947`；只含前者时 100 Hz 会因 writer 周期量化实际落到约 84–85 Hz。
 
+真身执行器合并在核心 EnvCfg 中保持安全默认关闭：直接启动且不传
+`ISAACLAB_SONIC_MERGE_ACTUATORS` 时仍使用原始 6 组。一键生产路径则显式采用
+`PIPELINE_SONIC_MERGE_ACTUATORS=1`，把每台 43 关节真身合成严格校验过的单组；
+`PIPELINE_SONIC_VALIDATE_ACTUATORS` 默认 `0`，避免正常启动做一次 GPU→CPU tensor
+同步。两个一键变量都只接受字面 `0` 或 `1`，并会在停止旧进程前完成校验。
+
 ```bash
 cd <仿真工程>
 
@@ -52,6 +58,23 @@ bash tools/pipeline_pico_bringup.sh
 
 ```bash
 PIPELINE_SONIC_ROBOT_COUNT=5 PIPELINE_DUAL_PICO=1 \
+bash tools/pipeline_pico_bringup.sh
+```
+
+新 checkout、GPU/Isaac Lab 升级或执行器参数变化后，首次验收可只在该次启动打开运行时
+tensor 契约门禁；确认每台 hash 一致后，下一次完整启动恢复常态 `validate=0`：
+
+```bash
+PIPELINE_SONIC_ROBOT_COUNT=5 PIPELINE_SONIC_VALIDATE_ACTUATORS=1 \
+bash tools/pipeline_pico_bringup.sh
+```
+
+若单组执行器出现兼容性回归，必须以 `merge=0` **完整重启 bringup**，恢复原始 6 组；
+这不是热更新，不能只在运行中的 shell 重新赋值：
+
+```bash
+PIPELINE_SONIC_ROBOT_COUNT=5 \
+PIPELINE_SONIC_MERGE_ACTUATORS=0 PIPELINE_SONIC_VALIDATE_ACTUATORS=0 \
 bash tools/pipeline_pico_bringup.sh
 ```
 
@@ -81,6 +104,7 @@ UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo \
 ISAACLAB_LOCAL_ROBOT_ID=1 \
 ISAACLAB_HOST_BOTH_ROBOTS=1 \
 ISAACLAB_SONIC_ROBOT_COUNT=5 \
+ISAACLAB_SONIC_MERGE_ACTUATORS=1 \
 ISAACLAB_TOTES_ON_CONVEYOR=1 \
 python sim_main.py \
   --task Isaac-G1-29DoF-Sonic-Conveyor \
@@ -105,6 +129,11 @@ cache 只在 PhysX 状态 generation 或 reset grace 状态变化时重建字段
 同代保活仍按配置节拍依次发布 secondary IMU 和 LowState，但复用已构造消息
 并保持原 tick。共享内存继续作为兼容镜像和首次快照前的回退路径；
 `sample_seq=None` 的旧任务仍按历史语义每轮重建并递增 tick。
+
+手动 host 命令中的 `ISAACLAB_SONIC_MERGE_ACTUATORS=1` 是刻意显式设置，因为核心默认
+仍为 `0`。首次/升级验收可在同一命令再加 `ISAACLAB_SONIC_VALIDATE_ACTUATORS=1`；通过后
+完整重启并恢复 `0`。手动回滚同样必须先完整停止 host，再以
+`ISAACLAB_SONIC_MERGE_ACTUATORS=0 ISAACLAB_SONIC_VALIDATE_ACTUATORS=0` 重新创建场景。
 
 ## 4. robot_3..5 deploy 的必要参数
 
@@ -283,3 +312,41 @@ generation cache 生效后又分别将空闲保活从 55 Hz 下探到 10 Hz 和 
 `stale_variants=1` 虽未升级为 timeout，仍违反多机锁步的零 stale 硬门禁，不能因为
 短窗通过就宣称候选可用。因此一键脚本继续使用 55 Hz 空闲保活；10/20 Hz 只保留为
 失败记录，不设为默认。
+
+### SONIC 真身执行器 6→1 clean-load A/B
+
+在同一台机器、同一四机场景与同一组生产参数下，仅切换真身执行器从原始 6 组到严格
+展开的 `sonic_all` 单组；两段都使用 HandCmd 100 Hz、LowState 空闲保活 55 Hz，且没有
+`domain=99` 仿真或编译等额外负载。exact stepped 正式窗口结果为：
+
+| 四机执行器路径 | exact stepped 正式窗口 | 闭环频率 | 相对基线 |
+|---|---:|---:|---:|
+| 原始 6 组 | 2532 步 / 120.29 s | 21.049131 Hz | 基线 |
+| `sonic_all` 单组 | 2922 步 / 120.25 s | 24.299376 Hz | **+15.44%** |
+
+基线 exact 采样为 internal `7380@350.90 s → 9912@471.19 s`，候选为
+`2909@120.18 s → 5831@240.43 s`。对应 `[Performance]` 正式窗分别为
+`7400..9900`（101 条，末 60 为 `8425..9900`）和 `2925..5825`（117 条，末 60 为
+`4350..5825`），避免把正式窗外持续运行的数据混入统计。
+
+正式窗内 `[Performance]` 取末 60 条，以下均为“均值 / 中位数 / p95”，单位 ms：
+
+| 四机执行器路径 | A | E | R | T |
+|---|---:|---:|---:|---:|
+| 原始 6 组 | 6.372 / 5.800 / 11.295 | 29.152 / 28.200 / 36.700 | 9.132 / 8.900 / 11.305 | 44.677 / 43.650 / 55.070 |
+| `sonic_all` 单组 | 6.450 / 5.650 / 12.700 | 24.393 / 23.150 / 32.370 | 9.205 / 9.200 / 10.515 | 40.058 / 39.300 / 48.835 |
+
+单组相对基线的末 60 条均值变化为 A +1.23%、E -16.32%、R +0.80%、T -10.34%；
+E/T p95 分别下降 11.80%/11.32%。启动期 tensor 契约校验中，基线四台各为 6 组、
+候选四台各为 1 组，但 43 关节十项运行时属性的 SHA256 全部一致：
+`9d931309eab79ab34ab82d8463db90a2790870a6f91ef984ba535cb112c8831e`。
+
+候选正式窗四路均保持 `expected=ack`，`timeouts=0`、`stale_variants=0`、
+`sync_waits=0`；最大倾角不超过 1.28°、`base_z≈0.787 m`、双脚支撑 100%、关节步进
+钳制和扭矩饱和均为 0，且无 ERROR、HOLD、FALL、NaN。基线正式窗同样
+`timeouts=0`、`sync_waits=0`，但 robot_4 有 2 次已过滤的 stale variant，本文保留该原始
+事实，不把基线写成“零 stale”。
+
+这组 **clean-load 同负载 A/B 只验证四机**。它不得与前面的非同负载 HandCmd 数据或
+带 `domain=99` 的 LowState 数据相加、连乘，也不得外推为五机闭环频率；五机采用生产
+默认单组后仍须另做同口径长窗复验。

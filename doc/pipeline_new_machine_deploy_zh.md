@@ -91,9 +91,29 @@ bash tools/pipeline_pico_bringup.sh
 默认拉起 sim + deploy#1(zmq_manager) + deploy#2..5(keyboard) + pico_manager 全套，并对
 每个 Isaac deploy 显式传 `--isaac-handcmd-hz 100`；LowCmd、锁步 ACK、Control 和 Planner
 仍保持 500 Hz。外仓 standalone Isaac 默认及非 Isaac/实机路径也仍为 500 Hz。
+一键脚本的生产默认同时为 `PIPELINE_SONIC_MERGE_ACTUATORS=1`、
+`PIPELINE_SONIC_VALIDATE_ACTUATORS=0`：host 使用 43 关节单组执行器，正常启动不做
+GPU→CPU tensor 校验；核心 `ISAACLAB_*` 两个开关本身仍默认关闭。
 `PIPELINE_DUAL_PICO=1` 把 deploy#2 换成 zmq_manager 并追加 manager#2，端口矩阵与实机
 gate 见 `doc/pipeline_pico_vr_deployment_zh.md` §5。
 **无头显也能跑**（channel#1 停在等发车属正常，不影响物理与锁步）。
+
+新机首次或升级 GPU/Isaac Lab 后，做一次带 tensor 契约门禁的完整启动；验收通过后下一次
+完整启动恢复默认 `validate=0`。若单组有兼容性回归，以 `merge=0` 完整重启即可恢复原始
+6 组，不能在运行中热切换：
+
+```bash
+# 一次性验收
+PIPELINE_SONIC_VALIDATE_ACTUATORS=1 PIPELINE_SIM_DIR=$PWD GR00T_WBC_ROOT=<GR00T路径> \
+PIPELINE_SIM_PY=$(conda run -n env_isaaclab which python) \
+bash tools/pipeline_pico_bringup.sh
+
+# 完整回滚原始 6 组
+PIPELINE_SONIC_MERGE_ACTUATORS=0 PIPELINE_SONIC_VALIDATE_ACTUATORS=0 \
+PIPELINE_SIM_DIR=$PWD GR00T_WBC_ROOT=<GR00T路径> \
+PIPELINE_SIM_PY=$(conda run -n env_isaaclab which python) \
+bash tools/pipeline_pico_bringup.sh
+```
 
 遇到兼容性问题时，用下面命令重启完整 bringup 回滚 HandCmd 流量；
 `PIPELINE_ISAAC_HANDCMD_HZ` 不是运行期热更新：
@@ -123,6 +143,7 @@ conda activate env_isaaclab && cd <仿真工程>
 GR00T_WBC_ROOT=<GR00T路径> UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo \
 ISAACLAB_LOCAL_ROBOT_ID=1 ISAACLAB_HOST_BOTH_ROBOTS=1 \
 ISAACLAB_SONIC_ROBOT_COUNT=2 \
+ISAACLAB_SONIC_MERGE_ACTUATORS=1 \
 UNITREE_SKIP_LOWSTATE_CRC=1 UNITREE_LOWCMD_CRC_SAMPLE_INTERVAL=50 \
 python sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor --robot_type g129 \
   --action_source sonic_dds --device cpu --hide_ui --stats_interval 10
@@ -140,6 +161,10 @@ cd <GR00T路径>
 XROBO_TRANSPORT=udp PYTHONUNBUFFERED=1 .venv_teleop/bin/python \
   gear_sonic/scripts/pico_manager_thread_server.py --manager --no_auto_pose --port 5556
 ```
+
+手动 host 中的 `ISAACLAB_SONIC_MERGE_ACTUATORS=1` 是生产显式值；核心默认仍为 `0`。
+首次验收可再加 `ISAACLAB_SONIC_VALIDATE_ACTUATORS=1`，常态/回滚规则与 §4.1 相同，均需
+完整停止并重新创建 host 场景。
 
 ### 4.3 控制与验收
 

@@ -107,6 +107,7 @@ env DISPLAY=:1 \
   ISAACLAB_LOCAL_ROBOT_ID=1 \
   ISAACLAB_HOST_BOTH_ROBOTS=1 \
   ISAACLAB_SONIC_ROBOT_COUNT=2 \
+  ISAACLAB_SONIC_MERGE_ACTUATORS=1 \
   ISAACLAB_SCENE_SYNC_PEER_IP=127.0.0.1 \
   UNITREE_SKIP_LOWSTATE_CRC=1 \
   UNITREE_LOWCMD_CRC_SAMPLE_INTERVAL=50 \
@@ -124,6 +125,13 @@ env DISPLAY=:1 \
 
 `--hide_ui` 仍有本地 Kit 窗口：聚焦该窗口后按一次 **F12** 可执行整场景 reset。
 headless / `--no_render` 没有 F12 通路。
+
+这里显式传 `ISAACLAB_SONIC_MERGE_ACTUATORS=1`，与生产一键路径一致；核心直接启动默认
+仍为 `0`。新 checkout、GPU/Isaac Lab 升级后的首次验收，可在同一 host 命令额外传
+`ISAACLAB_SONIC_VALIDATE_ACTUATORS=1`，核对两台启动 hash 一致；该开关只用于这一次验收。
+常态必须完整重启 host 并恢复 `validate=0`；若要回滚原始 6 组，也必须完整停止并以
+`ISAACLAB_SONIC_MERGE_ACTUATORS=0 ISAACLAB_SONIC_VALIDATE_ACTUATORS=0` 重启，运行中
+改环境变量不会重建 articulation。
 
 ### 终端 2：deploy#1
 

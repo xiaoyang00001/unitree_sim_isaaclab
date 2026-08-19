@@ -328,6 +328,19 @@ wall-clock 发布频率仍受实际物理步速度限制。
 `N × 129` 维，所有已配置通道的 LowCmd ack 都匹配后才推进环境。完整启动与端口表见
 [五机器人 SONIC 手册](../../../doc/pipeline_five_robot_sonic_zh.md)。
 
+核心的 `ISAACLAB_SONIC_MERGE_ACTUATORS` 与 `ISAACLAB_SONIC_VALIDATE_ACTUATORS` 都默认
+关闭，通用/对等启动保持原行为；生产一键脚本显式采用
+`PIPELINE_SONIC_MERGE_ACTUATORS=1`、`PIPELINE_SONIC_VALIDATE_ACTUATORS=0`。手动 host
+要显式传 `ISAACLAB_SONIC_MERGE_ACTUATORS=1` 才与一键一致；`validate=1` 只用于首次或
+升级后的单次运行时 tensor 契约验收。合并不是热切换：回滚必须完整停止并以
+`ISAACLAB_SONIC_MERGE_ACTUATORS=0 ISAACLAB_SONIC_VALIDATE_ACTUATORS=0` 重启，恢复
+每台原始 6 个执行器组。
+
+四机 clean-load 同负载 A/B 中，原始 6 组的 21.049131 Hz 提升到单组的
+24.299376 Hz（+15.44%），四台的 43 关节运行时属性 hash 在合并前后完全一致；健康门禁
+与末 60 条 A/E/R/T 详见上述手册。这组数据不能与不同负载的 HandCmd/LowState 数据累计，
+也不能外推为五机结果。
+
 LowState 对新 PhysX 样本使用事件唤醒立即发布，无新样本时按多机默认 55 Hz
 做周期保活；该数字不是 topic 硬上限。同一状态 generation 的重复保活会复用
 已构造的 IDL/CRC，不会重读共享内存和重建全部状态字段。10 Hz 和 20 Hz
@@ -452,9 +465,9 @@ HandCmd 默认超时为 `0.20 s`；超时后保持最后安全的 `q/kp/kd`、�
 - 五台场景已通过 645 维动作的 headless 10 步创建/状态有限性/根节点漂移门；该检查不带
   真实 provider 的启动 Root pin，不能外推为闭环站立。五套真实 deploy 已同时进入 CONTROL
   且五路锁步能够持续推进，但优化前现场仅约 0.85 Hz；五路倒地复位、动作矩阵，以及
-  LowCmd 重复包快路、HandState 组合优化、HandCmd 100 Hz 和 LowState generation cache 全部
-  生效后的五机性能仍需同口径复验。四机优化收益不能外推到五机，也不能把配置步频
-  当成五机实测值。
+  LowCmd 重复包快路、HandState 组合优化、HandCmd 100 Hz、LowState generation cache 和
+  真身执行器 6→1 全部生效后的五机性能仍需同口径复验。四机优化收益不能外推到五机，
+  也不能把配置步频当成五机实测值。
 - 原布局（`ISAACLAB_TOTES_ON_CONVEYOR=0`）的作业闭环在源分支就未实跑过。
 - `surface_velocity` 后端下纸箱队列靠"后车撞前车"物理涌现，没有走
   `queue_drive_mask`，也不支持本节的 XY 偏离放行门；该组合尚未实测，上游带面会持续挤压

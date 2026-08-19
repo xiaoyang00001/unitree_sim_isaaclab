@@ -90,6 +90,7 @@ GR00T_WBC_ROOT=<GR00T仓库> \
 UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo \
 ISAACLAB_LOCAL_ROBOT_ID=1 ISAACLAB_HOST_BOTH_ROBOTS=1 \
 ISAACLAB_SONIC_ROBOT_COUNT=2 \
+ISAACLAB_SONIC_MERGE_ACTUATORS=1 \
 UNITREE_SKIP_LOWSTATE_CRC=1 UNITREE_LOWCMD_CRC_SAMPLE_INTERVAL=50 \
 python sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor --robot_type g129 \
   --action_source sonic_dds --device cpu --hide_ui --stats_interval 10
@@ -109,6 +110,11 @@ G1_LOCAL_ROBOT_ID=2 bash deploy.sh --disable-crc-check --input-type keyboard isa
 - 测前清残余：`pgrep -fa g1_deploy_onnx_ref` 必须为 0——残留实例会以 kHz 级频率
   轰 ack，链路数据完全不可信（本轮实测 12 个残留 = 2kHz lowcmd）。
 - 首次双实例并发冷启动会争写 planner 的 `.trt` 缓存，先单跑一次预热。
+- 手动 host 显式使用 `ISAACLAB_SONIC_MERGE_ACTUATORS=1`；核心默认仍为 `0`。新
+  checkout、GPU/Isaac Lab 升级后可仅在一次验收启动加
+  `ISAACLAB_SONIC_VALIDATE_ACTUATORS=1`，通过后完整重启并恢复 `0`。回滚原始 6 组必须
+  完整停止 host，再以 `ISAACLAB_SONIC_MERGE_ACTUATORS=0`
+  `ISAACLAB_SONIC_VALIDATE_ACTUATORS=0` 重启，不能热切换。
 
 ## 3. 键盘控制（两台各自独立）
 
@@ -145,8 +151,11 @@ G1_LOCAL_ROBOT_ID=2 bash deploy.sh --disable-crc-check --input-type keyboard isa
 归因（py-spy 150Hz）：瓶颈是 **GIL 单线程天花板**（20 核只用 1.2 核，sim 101.5%）。
 - ⚠️ **Linux 上 unitree CRC 也是纯 Python**（旧账本"C 库 ~0.01ms"不成立）——双通道
   1000 包/秒下发布 CRC 20.5% + 接收校验 14.5%，两刀 CRC 是最大收益；
-- ⭐ **执行器逐子步记账仅 5.6%**——win2 上 39% 的头号嫌疑在 Linux 不成立，
-  主机器人执行器合并这条红线刀**不需要动**；
+- 早期 py-spy 中执行器逐子步记账仅占 5.6%，只能说明当时双机负载下不是 39% 的头号
+  热点，不能推出“主机器人执行器不可合并”。后续严格展开 43 关节十项属性并做运行时
+  hash 门禁后，四机 clean-load 同负载 A/B 的 6→1 合并由 21.049131 Hz 提升到
+  24.299376 Hz（+15.44%）；生产一键路径因此默认启用。该四机结果不回填本节双机旧账本，
+  也不能外推五机，完整口径见[五机器人 SONIC 手册](pipeline_five_robot_sonic_zh.md)；
 - 剩余：native PhysX ~40%（双 43DoF 固有）、cyclonedds 反序列化 ~10%
   （500Hz lowcmd 九成是重发包，深水区）、观测/metrics 小项 ~5%。
 

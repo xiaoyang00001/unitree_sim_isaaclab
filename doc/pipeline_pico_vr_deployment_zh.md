@@ -128,6 +128,13 @@ PIPELINE_ISAAC_HANDCMD_HZ=500 bash tools/pipeline_pico_bringup.sh
 PIPELINE_DUAL_PICO=1 PIPELINE_ISAAC_HANDCMD_HZ=500 \
 bash tools/pipeline_pico_bringup.sh
 
+# 新 checkout / GPU / Isaac Lab 升级后的一次性执行器 tensor 契约验收
+PIPELINE_SONIC_VALIDATE_ACTUATORS=1 bash tools/pipeline_pico_bringup.sh
+
+# 单组执行器兼容性回滚：必须完整重启，恢复原始 6 组
+PIPELINE_SONIC_MERGE_ACTUATORS=0 PIPELINE_SONIC_VALIDATE_ACTUATORS=0 \
+bash tools/pipeline_pico_bringup.sh
+
 # 换机器时路径变量与命令同一行传入（分行裸赋值传不进去）：
 #   PIPELINE_SIM_DIR=<仿真工程> GR00T_WBC_ROOT=<GR00T> PIPELINE_SIM_PY=<python> bash tools/...
 # 纯 ssh/无桌面会话加 PIPELINE_HEADLESS=1（否则 kit 拿不到 X 会在 RTX 插件初始化段错误，
@@ -138,6 +145,13 @@ bash tools/pipeline_pico_bringup.sh
 Dex3 HandCmd；LowCmd、锁步 ACK、Control 和 Planner 仍保持 500 Hz，外仓 standalone
 Isaac 默认及非 Isaac/实机路径也仍为 500 Hz。`PIPELINE_ISAAC_HANDCMD_HZ` 只在启动时
 读取；回滚到 500 Hz 必须重启完整 bringup。
+
+真身执行器的生产一键默认是 `PIPELINE_SONIC_MERGE_ACTUATORS=1`、
+`PIPELINE_SONIC_VALIDATE_ACTUATORS=0`；核心直接启动的两个 `ISAACLAB_*` 开关仍默认关闭。
+`validate=1` 只用于首次/升级后单次启动的 GPU→CPU tensor 契约验收，核对 hash 后下一次
+完整 bringup 恢复 `0`。`merge` 不是热开关；回滚必须按上面的 `merge=0 validate=0` 命令
+完整重启，不能只给正在运行的 shell 重新赋值。两个变量只接受字面 `0/1`，非法值会在
+脚本停止旧进程前失败。
 
 启动后可核对全部 deploy 日志，确认没有某一路静默落回 500 Hz：
 
