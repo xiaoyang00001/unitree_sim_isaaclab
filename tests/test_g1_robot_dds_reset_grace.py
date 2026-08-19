@@ -26,11 +26,15 @@ else:
 class _FakeSharedMemory:
     def __init__(self, payload):
         self.payload = payload
+        self.write_count = 0
+        self.read_count = 0
 
     def read_data(self):
+        self.read_count += 1
         return self.payload
 
     def write_data(self, payload):
+        self.write_count += 1
         self.payload = payload
 
 
@@ -47,8 +51,7 @@ class _FakePublisher:
 
 class _FakeCRC:
     def Crc(self, message):
-        del message
-        return 0
+        return int(message.crc)
 
 
 @unittest.skipIf(G1RobotDDS is None, f"Unitree SDK unavailable: {UNITREE_IMPORT_ERROR}")
@@ -103,7 +106,12 @@ class G1RobotDDSResetGraceTest(unittest.TestCase):
         self.dds._last_published_reset_epoch = 0
         self.dds._lowcmd_packet_count = 0
         self.dds._lowcmd_content_update_count = 0
+        self.dds._lowcmd_duplicate_fastpath_count = 0
+        self.dds._lowcmd_shm_write_count = 0
         self.dds._last_lowcmd_signature = None
+        self.dds._last_lowcmd_wire_fingerprint = None
+        self.dds._latest_robot_command = None
+        self.dds._last_lowcmd_receive_time = None
         self.dds._last_lowcmd_ack_tick = None
         self.dds._last_lowcmd_ack_reset_epoch = None
         self.dds._lowcmd_ack_match_count = 0
@@ -202,6 +210,53 @@ class G1RobotDDSResetGraceTest(unittest.TestCase):
             self.assertAlmostEqual(motor_cmd["torques"][index], 0.3 * index, places=6)
             self.assertAlmostEqual(motor_cmd["kp"][index], 10.0 + index, places=6)
             self.assertAlmostEqual(motor_cmd["kd"][index], 1.0 + index, places=6)
+
+    def test_lowcmd_duplicate_crc_uses_fastpath_and_refreshes_liveness(self) -> None:
+        message = unitree_hg_msg_dds__LowCmd_()
+        message.mode_machine = 0xA2
+        message.crc = 0x12345678
+        message.reserve[0] = 17
+        message.reserve[1] = 0
+        message.reserve[2] = 123
+        message.reserve[3] = SONIC_LOWCMD_SYNC_MAGIC
+        for index, motor in enumerate(message.motor_cmd):
+            motor.mode = 1
+            motor.q = 0.1 * index
+            motor.kp = 10.0 + index
+            motor.kd = 1.0 + index
+
+        first_command = self.dds.dds_subscriber(message)
+        first_receive_time = first_command["receive_time_monotonic"]
+        self.assertEqual(self.dds.output_shm.write_count, 1)
+
+        time.sleep(0.001)
+        duplicate_command = self.dds.dds_subscriber(message)
+
+        self.assertIs(duplicate_command, first_command)
+        self.assertGreater(
+            duplicate_command["receive_time_monotonic"], first_receive_time
+        )
+        self.assertEqual(self.dds._lowcmd_packet_count, 2)
+        self.assertEqual(self.dds._lowcmd_content_update_count, 1)
+        self.assertEqual(self.dds._lowcmd_duplicate_fastpath_count, 1)
+        self.assertEqual(self.dds._lowcmd_shm_write_count, 1)
+        self.assertEqual(self.dds.output_shm.write_count, 1)
+        self.assertIs(self.dds.get_robot_command(), first_command)
+        self.assertEqual(self.dds.output_shm.read_count, 0)
+
+    def test_zero_crc_falls_back_to_full_content_comparison(self) -> None:
+        message = unitree_hg_msg_dds__LowCmd_()
+        message.crc = 0
+        message.motor_cmd[0].mode = 1
+        message.motor_cmd[0].q = 0.25
+        self.dds.dds_subscriber(message)
+
+        message.motor_cmd[0].q = 0.75
+        command = self.dds.dds_subscriber(message)
+
+        self.assertAlmostEqual(command["motor_cmd"]["positions"][0], 0.75)
+        self.assertEqual(self.dds._lowcmd_duplicate_fastpath_count, 0)
+        self.assertEqual(self.dds.output_shm.write_count, 2)
 
     def test_reset_epoch_is_published_only_with_the_newly_written_state(self) -> None:
         old_payload = dict(self.payload)

@@ -101,7 +101,19 @@ class G1RobotDDS(DDSObject):
         self._reset_epoch = 0
         self._lowcmd_packet_count = 0
         self._lowcmd_content_update_count = 0
+        self._lowcmd_duplicate_fastpath_count = 0
+        self._lowcmd_shm_write_count = 0
         self._last_lowcmd_signature = None
+        # SONIC deploy writes LowCmd at 500 Hz, while a new policy result is
+        # produced only after a fresh LowState.  With several robots almost
+        # every callback therefore carries the exact same wire message.  Keep
+        # a cheap CRC/mode/reserve fingerprint so those duplicates do not pay
+        # for 29 x 6 Python scalar conversions plus JSON/shared-memory I/O.
+        # A zero CRC is treated as unavailable (notably in unit-test/fallback
+        # producers) and falls back to the full conversion path.
+        self._last_lowcmd_wire_fingerprint = None
+        self._latest_robot_command = None
+        self._last_lowcmd_receive_time = None
         self._last_lowcmd_ack_tick = None
         self._last_lowcmd_ack_reset_epoch = None
         self._lowcmd_ack_match_count = 0
@@ -373,6 +385,8 @@ class G1RobotDDS(DDSObject):
         repeated_publish_hz = self._repeated_sample_publish_count / elapsed
         lowcmd_packet_hz = self._lowcmd_packet_count / elapsed
         lowcmd_content_hz = self._lowcmd_content_update_count / elapsed
+        lowcmd_duplicate_hz = self._lowcmd_duplicate_fastpath_count / elapsed
+        lowcmd_shm_write_hz = self._lowcmd_shm_write_count / elapsed
         ack_match_hz = self._lowcmd_ack_match_count / elapsed
         ack_stale_hz = self._lowcmd_ack_stale_count / elapsed
         print(
@@ -381,6 +395,8 @@ class G1RobotDDS(DDSObject):
             f"fresh_physx={fresh_sample_hz:.1f}Hz, repeats={repeated_publish_hz:.1f}Hz, "
             f"lowcmd_packets={lowcmd_packet_hz:.1f}Hz, "
             f"lowcmd_changes={lowcmd_content_hz:.1f}Hz, "
+            f"lowcmd_fast_duplicates={lowcmd_duplicate_hz:.1f}Hz, "
+            f"lowcmd_shm_writes={lowcmd_shm_write_hz:.1f}Hz, "
             f"ack_match={ack_match_hz:.1f}Hz, ack_stale={ack_stale_hz:.1f}Hz, "
             f"sample_age={self._last_sample_age_ms:.2f}ms, "
             f"sample_seq={self._last_sample_seq}, ack_tick={self._last_lowcmd_ack_tick}, "
@@ -394,6 +410,8 @@ class G1RobotDDS(DDSObject):
         self._repeated_sample_publish_count = 0
         self._lowcmd_packet_count = 0
         self._lowcmd_content_update_count = 0
+        self._lowcmd_duplicate_fastpath_count = 0
+        self._lowcmd_shm_write_count = 0
         self._lowcmd_ack_match_count = 0
         self._lowcmd_ack_stale_count = 0
 
@@ -427,7 +445,53 @@ class G1RobotDDS(DDSObject):
                     print(f"g1_robot_dds [{self.node_name}] Warning: CRC verification failed!")
                     return {}
             
-            # extract the command data
+            receive_time = time.monotonic()
+            mode_pr = int(msg.mode_pr)
+            mode_machine = int(msg.mode_machine)
+            reserve = [int(value) for value in msg.reserve]
+            crc_value = int(msg.crc) & 0xFFFFFFFF
+            wire_fingerprint = (
+                crc_value,
+                mode_pr,
+                mode_machine,
+                tuple(reserve),
+            )
+            self._lowcmd_packet_count += 1
+            self._last_lowcmd_receive_time = receive_time
+
+            # CRC covers the complete LowCmd payload.  mode/reserve are kept in
+            # the key as an explicit lifecycle/lock-step guard.  Repeated
+            # packets still refresh command liveness and ACK accounting; only
+            # the expensive materialization and SHM write are skipped.
+            if (
+                crc_value != 0
+                and wire_fingerprint
+                == getattr(self, "_last_lowcmd_wire_fingerprint", None)
+            ):
+                self._lowcmd_duplicate_fastpath_count = (
+                    getattr(self, "_lowcmd_duplicate_fastpath_count", 0) + 1
+                )
+                cached_command = getattr(self, "_latest_robot_command", None)
+                if cached_command is not None:
+                    cached_command["receive_time_monotonic"] = receive_time
+
+                sync_magic = reserve[3] if len(reserve) >= 4 else 0
+                if sync_magic == SONIC_LOWCMD_SYNC_MAGIC:
+                    self._last_lowcmd_ack_tick = reserve[0]
+                    self._last_lowcmd_ack_reset_epoch = reserve[1]
+                    if (
+                        self._last_sample_seq is not None
+                        and reserve[0] == (int(self._last_sample_seq) & 0xFFFFFFFF)
+                        and reserve[1]
+                        == (int(getattr(self, "_last_published_reset_epoch", 0)) & 0xFFFFFFFF)
+                    ):
+                        self._lowcmd_ack_match_count += 1
+                    else:
+                        self._lowcmd_ack_stale_count += 1
+                return cached_command
+
+            # Extract the complete command only for a new wire payload (or a
+            # producer without a usable CRC).
             num_cmd_motors = len(msg.motor_cmd)
             modes = [int(msg.motor_cmd[i].mode) for i in range(num_cmd_motors)]
             positions = [float(msg.motor_cmd[i].q) for i in range(num_cmd_motors)]
@@ -435,10 +499,9 @@ class G1RobotDDS(DDSObject):
             torques = [float(msg.motor_cmd[i].tau) for i in range(num_cmd_motors)]
             kp = [float(msg.motor_cmd[i].kp) for i in range(num_cmd_motors)]
             kd = [float(msg.motor_cmd[i].kd) for i in range(num_cmd_motors)]
-            reserve = [int(value) for value in msg.reserve]
             signature = (
-                int(msg.mode_pr),
-                int(msg.mode_machine),
+                mode_pr,
+                mode_machine,
                 tuple(reserve),
                 tuple(modes),
                 tuple(positions),
@@ -447,10 +510,11 @@ class G1RobotDDS(DDSObject):
                 tuple(kp),
                 tuple(kd),
             )
-            self._lowcmd_packet_count += 1
             if signature != self._last_lowcmd_signature:
                 self._lowcmd_content_update_count += 1
                 self._last_lowcmd_signature = signature
+            if crc_value != 0:
+                self._last_lowcmd_wire_fingerprint = wire_fingerprint
 
             sync_magic = reserve[3] if len(reserve) >= 4 else 0
             if sync_magic == SONIC_LOWCMD_SYNC_MAGIC:
@@ -467,9 +531,9 @@ class G1RobotDDS(DDSObject):
                     self._lowcmd_ack_stale_count += 1
 
             cmd_data = {
-                "mode_pr": int(msg.mode_pr),
-                "mode_machine": int(msg.mode_machine),
-                "receive_time_monotonic": time.monotonic(),
+                "mode_pr": mode_pr,
+                "mode_machine": mode_machine,
+                "receive_time_monotonic": receive_time,
                 "reserve": reserve,
                 "ack_state_tick": reserve[0] if sync_magic == SONIC_LOWCMD_SYNC_MAGIC else None,
                 "ack_reset_epoch": reserve[1] if sync_magic == SONIC_LOWCMD_SYNC_MAGIC else None,
@@ -484,7 +548,13 @@ class G1RobotDDS(DDSObject):
                     "kd": kd,
                 }
             }
+            # The provider runs in this process, so it can consume this atomic
+            # snapshot directly instead of JSON-decoding SHM on every poll.
+            # Keep the SHM write for compatibility with external diagnostics.
+            self._latest_robot_command = cmd_data
             self.output_shm.write_data(cmd_data)
+            self._lowcmd_shm_write_count = getattr(self, "_lowcmd_shm_write_count", 0) + 1
+            return cmd_data
             
         except Exception as e:
             print(f"g1_robot_dds [{self.node_name}] Error processing subscribe data: {e}")
@@ -496,6 +566,12 @@ class G1RobotDDS(DDSObject):
         Returns:
             Dict: the robot control command, return None if there is no new command
         """
+        cached_command = getattr(self, "_latest_robot_command", None)
+        if cached_command is not None:
+            receive_time = getattr(self, "_last_lowcmd_receive_time", None)
+            if receive_time is not None:
+                cached_command["receive_time_monotonic"] = receive_time
+            return cached_command
         if self.output_shm:
             return self.output_shm.read_data()
         return None
