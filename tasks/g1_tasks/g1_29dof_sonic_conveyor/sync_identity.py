@@ -115,12 +115,13 @@ def resolve_local_robot_id(verbose_tag: str = "[scene_sync]", load_env: bool = T
 
 
 def resolve_host_both_robots(verbose_tag: str = "[scene_sync]", load_env: bool = True) -> bool:
-    """host 双机器人模式（工作包 B）：``ISAACLAB_HOST_BOTH_ROBOTS=1`` 且身份是 ID=1。
+    """host 多机器人模式：历史开关 ``ISAACLAB_HOST_BOTH_ROBOTS=1`` 且身份是 ID=1。
 
     host 天然继承 ID=1 的全部权威语义（物体权威、复位广播、bind 15555——正是 viewer
     固定连接的上游）。ID=0（viewer）或 ID=2（对等端）下该标志无意义，打印警告并忽略，
     保证既有模式零回归。与 :func:`resolve_local_robot_id` 一样必须作为单一真源被
-    sim_main 与 conveyor_env_cfg 共用——别在任何一侧重新实现这个判定。
+    sim_main 与 conveyor_env_cfg 共用——别在任何一侧重新实现这个判定。真身数量另由
+    :func:`resolve_sonic_robot_count` 解析。
     """
     if load_env:
         load_scene_sync_env(verbose_tag)
@@ -135,3 +136,65 @@ def resolve_host_both_robots(verbose_tag: str = "[scene_sync]", load_env: bool =
         )
         return False
     return True
+
+
+def resolve_sonic_robot_count(verbose_tag: str = "[scene_sync]", load_env: bool = True) -> int:
+    """Resolve how many SONIC channels the conveyor host/viewer should expose.
+
+    ``ISAACLAB_SONIC_ROBOT_COUNT`` is shared by the authoritative host and its
+    viewers.  Two preserves the historical dual-robot topology; five promotes
+    all three conveyor standby positions to independent SONIC robots.  Values
+    3 and 4 are supported for staged bring-up.  Peer-to-peer ID=1/2 mode keeps
+    its historical two-robot semantics and ignores the extra slots in the
+    scene configuration.
+    """
+
+    if load_env:
+        load_scene_sync_env(verbose_tag)
+    raw_value = os.environ.get("ISAACLAB_SONIC_ROBOT_COUNT", "").strip() or "2"
+    try:
+        robot_count = int(raw_value)
+    except ValueError:
+        print(
+            f"{verbose_tag} Invalid ISAACLAB_SONIC_ROBOT_COUNT={raw_value!r}; "
+            "using 2."
+        )
+        return 2
+    if not 2 <= robot_count <= 5:
+        print(
+            f"{verbose_tag} Unsupported ISAACLAB_SONIC_ROBOT_COUNT={raw_value!r}; "
+            "expected 2..5, using 2."
+        )
+        return 2
+    return robot_count
+
+
+def resolve_active_sonic_robot_count(
+    verbose_tag: str = "[scene_sync]", load_env: bool = True
+) -> int:
+    """Resolve the robot count that the selected scene layout can instantiate.
+
+    The conveyor layout owns three extra workstation poses and therefore supports
+    the full requested ``2..5`` range.  The historical pushcart layout owns only
+    the original two poses, so a larger shared/default request must degrade to two
+    consistently in both ``sim_main`` and ``conveyor_env_cfg``.  Keeping this
+    policy here prevents the simulator from creating five DDS channels for a
+    two-articulation scene.
+    """
+
+    if load_env:
+        load_scene_sync_env(verbose_tag)
+    requested = resolve_sonic_robot_count(verbose_tag, load_env=False)
+    raw_layout = os.environ.get("ISAACLAB_TOTES_ON_CONVEYOR")
+    conveyor_layout = (
+        True
+        if raw_layout is None
+        else str(raw_layout).strip().lower() in {"1", "true", "yes", "on"}
+    )
+    if requested > 2 and not conveyor_layout:
+        print(
+            f"{verbose_tag} ISAACLAB_TOTES_ON_CONVEYOR=0 仅有两个机器人站位；"
+            f"SONIC 数量由请求的 {requested} 自动回退为 2。"
+        )
+        return 2
+    return requested

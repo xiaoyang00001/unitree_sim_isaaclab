@@ -23,6 +23,8 @@ import torch
 import gymnasium as gym
 from pathlib import Path
 
+from robots.sonic_multi_robot import sonic_robot_channel_specs
+
 # Windows: 抬高系统定时器分辨率。这是本工程在 Windows 上掉帧的最大单项。
 #
 # Windows 默认的系统定时器周期是 15.625ms,所有走 WaitForSingleObject 的等待
@@ -525,18 +527,28 @@ if args_cli.task == "Isaac-G1-29DoF-Sonic-Conveyor":
     _sync_identity = _sync_ilu.module_from_spec(_sync_spec)
     _sync_spec.loader.exec_module(_sync_identity)
     is_scene_sync_viewer = _sync_identity.resolve_local_robot_id(verbose_tag="[sync_identity]") == 0
-    # host 双机器人（工作包 B）：ID=1 + ISAACLAB_HOST_BOTH_ROBOTS=1，与 cfg 同源判定。
+    # host 多机器人（工作包 B）：历史开关仍为 HOST_BOTH_ROBOTS，实际数量另行解析。
     is_scene_sync_host = _sync_identity.resolve_host_both_robots(
+        verbose_tag="[sync_identity]", load_env=False
+    )
+    scene_sonic_robot_count = _sync_identity.resolve_active_sonic_robot_count(
         verbose_tag="[sync_identity]", load_env=False
     )
 else:
     is_scene_sync_host = False
+    scene_sonic_robot_count = 1
 if is_scene_sync_viewer:
     print("[viewer] Pure-mirror viewer mode (ISAACLAB_LOCAL_ROBOT_ID=0)")
 if is_scene_sync_host:
-    print("[host] Dual-robot host mode (ISAACLAB_HOST_BOTH_ROBOTS=1): robot_2 <- rt/r2/*")
-# host 需要第二套 G1/Dex3 DDS 通道（create_dds_objects 按此标志注册 g129_r2/dex3_r2）。
-args_cli.enable_second_robot_dds = is_scene_sync_host
+    print(
+        "[host] Multi-robot host mode "
+        f"(ISAACLAB_HOST_BOTH_ROBOTS=1, count={scene_sonic_robot_count})"
+    )
+# 只有 host 注册多套 G1/Dex3 DDS；viewer 的镜像数量由 cfg 单独读取同一 count，
+# 但本机 ghost 仍只需历史主通道（且走隔离 domain）。
+args_cli.sonic_robot_count = scene_sonic_robot_count if is_scene_sync_host else 1
+args_cli.enable_second_robot_dds = args_cli.sonic_robot_count > 1
+sonic_host_channel_specs = sonic_robot_channel_specs(args_cli.sonic_robot_count)
 
 if args_cli.teleop_device == "motion_controllers":
     if args_cli.task not in sonic_dex3_task_names:
@@ -1069,6 +1081,10 @@ def main():
     # profiler.enable()
     image_server = None
     teleop_interface = None
+    dds_manager = None
+    action_provider = None
+    controller = None
+    runtime_cleanup_complete = False
     shutdown_event = threading.Event()
     print("=" * 60)
     print("robot control system started")
@@ -1208,18 +1224,26 @@ def main():
                     )
                 if args_cli.task == "Isaac-G1-29DoF-Sonic-Conveyor":
                     if is_scene_sync_host:
-                        # host 的第二台真身机器人
-                        apply_g1_sonic_visual_materials("/World/envs/env_0/Robot2")
+                        # Robot 已由上面的默认调用处理；补齐 host 的 Robot2..N 真身。
+                        for _spec in sonic_host_channel_specs[1:]:
+                            apply_g1_sonic_visual_materials(
+                                f"/World/envs/env_0/{_spec.prim_name}"
+                            )
                     elif os.environ.get("ISAACLAB_PEER_ROBOT_MODE", "articulation").strip().lower() == "visual_lod":
                         # 分析几何 LOD 自带三份共享 PreviewSurface；它没有 URDF
                         # converter 的 ``visuals`` 层级，不能走本体网格材质重绑器。
                         print("[g1_materials] peer visual_lod 使用资产内置轻量材质")
                     else:
-                        # 对端镜像 G1 也上涂装，避免双机时看到通体白模误判机型
-                        apply_g1_sonic_visual_materials("/World/envs/env_0/PeerRobot")
+                        # 镜像 G1 也上涂装，避免看到通体白模误判机型。viewer 按
+                        # 配置数量处理 PeerRobot/PeerRobot2..N；对等模式仍只有一个。
                         if is_scene_sync_viewer:
-                            # viewer 有第二个镜像体（robot_2 工位）
-                            apply_g1_sonic_visual_materials("/World/envs/env_0/PeerRobot2")
+                            for _robot_id in range(1, scene_sonic_robot_count + 1):
+                                _suffix = "" if _robot_id == 1 else str(_robot_id)
+                                apply_g1_sonic_visual_materials(
+                                    f"/World/envs/env_0/PeerRobot{_suffix}"
+                                )
+                        else:
+                            apply_g1_sonic_visual_materials("/World/envs/env_0/PeerRobot")
                     # 以 InteractiveScene 实际生成的 extras 为真源，不再重复解析布局
                     # 环境变量，也不写死数量。=0 时列表自然为空；=1 默认找到三台。
                     standby_prim_paths = [
@@ -1482,6 +1506,75 @@ def main():
 
     keyboard_scene_reset_subscription = None
 
+    def cleanup_runtime_resources() -> None:
+        """Best-effort cleanup shared by startup failures and normal shutdown.
+
+        DDS threads begin before initial SONIC seeding and provider creation.  A
+        return in that initialization window must therefore perform the same
+        cleanup as the steady-state loop; closing SimulationApp alone does not
+        release DDS threads or shared-memory handles.
+        """
+
+        nonlocal runtime_cleanup_complete
+        nonlocal keyboard_scene_reset_subscription
+        nonlocal teleop_interface
+        if runtime_cleanup_complete:
+            return
+        runtime_cleanup_complete = True
+
+        if keyboard_scene_reset_subscription is not None:
+            try:
+                _scene_reset_kb_iface.unsubscribe_to_keyboard_events(
+                    _scene_reset_kb,
+                    keyboard_scene_reset_subscription,
+                )
+            except Exception as exc:
+                print(f"[keyboard] failed to unsubscribe F12 scene reset: {exc}")
+            keyboard_scene_reset_subscription = None
+
+        if controller is not None:
+            try:
+                controller.cleanup()
+            except Exception as exc:
+                print(f"[cleanup] controller cleanup failed: {exc}")
+        elif action_provider is not None:
+            try:
+                stop_provider = getattr(action_provider, "stop", None)
+                if callable(stop_provider):
+                    stop_provider()
+                action_provider.cleanup()
+            except Exception as exc:
+                print(f"[cleanup] action provider cleanup failed: {exc}")
+
+        if dds_manager is not None:
+            try:
+                dds_manager.cleanup()
+            except Exception as exc:
+                print(f"[cleanup] DDS cleanup failed: {exc}")
+
+        if image_server is not None:
+            try:
+                image_server.stop()
+            except Exception as exc:
+                print(f"[cleanup] image server cleanup failed: {exc}")
+
+        # Isaac Lab's current OpenXRDevice has no public close() method.  Its
+        # destructor explicitly releases message-bus and button subscriptions.
+        if teleop_interface is not None:
+            try:
+                teleop_cleanup = getattr(teleop_interface, "__del__", None)
+                if callable(teleop_cleanup):
+                    teleop_cleanup()
+            except Exception as exc:
+                print(f"[cleanup] OpenXR cleanup failed: {exc}")
+            teleop_interface = None
+            gc.collect()
+
+        try:
+            env.close()
+        except Exception as exc:
+            print(f"[cleanup] environment cleanup failed: {exc}")
+
     if args_cli.teleop_device != "none":
         print("========= create OpenXR teleop device =========")
         try:
@@ -1504,7 +1597,7 @@ def main():
             bind_xr_reset_button(teleop_interface, request_xr_reset)
         except Exception as e:
             print(f"Failed to create OpenXR teleop device: {e}")
-            env.close()
+            cleanup_runtime_resources()
             return
         print("========= create OpenXR teleop device success =========")
 
@@ -1558,6 +1651,7 @@ def main():
         )
     except Exception as e:
         print(f"Failed to create control configuration: {e}")
+        cleanup_runtime_resources()
         return
     
     # create controller
@@ -1576,6 +1670,7 @@ def main():
                 image_server = run_isaacsim_server()
             except Exception as e:
                 print(f"Failed to create image server: {e}")
+                cleanup_runtime_resources()
                 return
             print("========= create image server success =========")
         print("========= create dds =========")
@@ -1583,13 +1678,14 @@ def main():
             reset_pose_dds,sim_state_dds,dds_manager = create_dds_objects(args_cli,env)
         except Exception as e:
             print(f"Failed to create dds: {e}")
+            cleanup_runtime_resources()
             return
         print("========= create dds success =========")
         # 锁步的关键路径是 env.step 写完新样本后等 rt/lowstate 出门:100Hz 调度
         # 平均白等 5ms(最坏 10ms),直接吃掉每帧 ack 往返预算。SONIC 锁步改为
         # "新样本即发"(事件唤醒发布线程),保活重发节奏保持 100Hz 不变——
         # 单纯拉高发布频率会让序列化抢 GIL,省下的等待又亏在 env.step 里。
-        robot_dds_names = ["g129", "g129_r2"] if is_scene_sync_host else ["g129"]
+        robot_dds_names = [spec.robot_dds_name for spec in sonic_host_channel_specs]
         if args_cli.lowstate_pub_hz:
             for _dds_name in robot_dds_names:
                 try:
@@ -1600,7 +1696,7 @@ def main():
                 except Exception as e:
                     print(f"[sim] failed to set lowstate publish rate ({_dds_name}): {e}")
         if is_sonic_task and args_cli.sonic_sync_with_lowstate:
-            # 锁步"新样本即发"：host 模式对两条通道都要开，否则第二套 deploy 的
+            # 锁步"新样本即发"：host 模式对每条通道都要开，否则漏掉的 deploy
             # ack 往返每圈多等一个发布调度周期（5-10ms）。
             for _dds_name in robot_dds_names:
                 try:
@@ -1618,45 +1714,37 @@ def main():
                     get_robot_boy_joint_states,
                 )
 
-                get_robot_boy_joint_states(
-                    env,
-                    enable_dds=True,
-                    dds_min_interval_ms=0.0,
-                )
-                print("[sonic_dds] Initial PhysX state seeded for LowState lock-step")
-                if is_scene_sync_host:
-                    # 第二套锁步同样需要首个真实 PhysX 样本，漏掉即死锁：
-                    # g129_r2 的 sample_seq 恒为 None → ack 永不匹配 → env 永不 step。
+                for _spec in sonic_host_channel_specs:
                     get_robot_boy_joint_states(
                         env,
                         enable_dds=True,
                         dds_min_interval_ms=0.0,
-                        asset_name="robot_2",
-                        dds_object_name="g129_r2",
+                        asset_name=_spec.asset_name,
+                        dds_object_name=_spec.robot_dds_name,
                     )
-                    print("[sonic_dds:r2] Initial PhysX state seeded for LowState lock-step")
+                    print(
+                        f"[sonic_dds{_spec.log_suffix}] Initial PhysX state seeded "
+                        "for LowState lock-step"
+                    )
                 if args_cli.task in sonic_dex3_task_names:
                     from tasks.common_observations.dex3_state import (
                         get_robot_dex3_joint_states,
                     )
 
-                    get_robot_dex3_joint_states(
-                        env,
-                        enable_dds=True,
-                        dds_min_interval_ms=0.0,
-                    )
-                    print("[sonic_dds] Initial PhysX Dex3 state seeded")
-                    if is_scene_sync_host:
+                    for _spec in sonic_host_channel_specs:
                         get_robot_dex3_joint_states(
                             env,
                             enable_dds=True,
                             dds_min_interval_ms=0.0,
-                            asset_name="robot_2",
-                            dds_object_name="dex3_r2",
+                            asset_name=_spec.asset_name,
+                            dds_object_name=_spec.dex3_dds_name,
                         )
-                        print("[sonic_dds:r2] Initial PhysX Dex3 state seeded")
+                        print(
+                            f"[sonic_dds{_spec.log_suffix}] Initial PhysX Dex3 state seeded"
+                        )
             except Exception as e:
                 print(f"Failed to seed initial SONIC LowState: {e}")
+                cleanup_runtime_resources()
                 return
     else:
         print("========= create dds =========")
@@ -1664,6 +1752,7 @@ def main():
             create_dds_objects_replay(args_cli,env)
         except Exception as e:
             print(f"Failed to create dds: {e}")
+            cleanup_runtime_resources()
             return
         print("========= create dds success =========")
         from tools.data_json_load import get_data_json_list
@@ -1682,7 +1771,10 @@ def main():
             print("[viewer] Selecting the hold action source (no deploy, no DDS lock-step)")
             args_cli.action_source = "hold"
         elif is_scene_sync_host and args_cli.action_source in ("dds", "sonic_dds"):
-            print("[host] Selecting the dual-robot SONIC action source (two lock-step channels)")
+            print(
+                "[host] Selecting the multi-robot SONIC action source "
+                f"({args_cli.sonic_robot_count} lock-step channels)"
+            )
             args_cli.action_source = "sonic_dds_host"
         elif is_sonic_task and args_cli.action_source == "dds":
             print("[sonic_dds] Selecting the dedicated 29-DoF SONIC action source for this task")
@@ -1694,15 +1786,22 @@ def main():
         action_provider = create_action_provider(env,args_cli)
         if action_provider is None:
             print("action provider creation failed, exiting")
+            cleanup_runtime_resources()
             return
     except Exception as e:
         print(f"Failed to create action provider: {e}")
+        cleanup_runtime_resources()
         return
     
     # set action provider
     print("========= create controller =========")
-    controller = RobotController(env, control_config)
-    controller.set_action_provider(action_provider)
+    try:
+        controller = RobotController(env, control_config)
+        controller.set_action_provider(action_provider)
+    except Exception as e:
+        print(f"Failed to create controller: {e}")
+        cleanup_runtime_resources()
+        return
     print("========= create controller success =========")
 
     sonic_reset_supported = (
@@ -1729,7 +1828,7 @@ def main():
         sonic_env_ids = torch.arange(env.num_envs, dtype=torch.int64, device=env.device)
         provider_channels = getattr(action_provider, "channels", None)
         if provider_channels:
-            # host 双机器人：每台机器人独立监控（未进 CONTROL 的通道 root 被 pin，
+            # host 多机器人：每台机器人独立监控（未进 CONTROL 的通道 root 被 pin，
             # 不可能真倒，按通道门控防误触发）；任一台确认倒地=整场景复位。
             for _asset_index, (_asset_name, _channel) in enumerate(provider_channels.items()):
                 _monitor = fall_reset_monitor if _asset_index == 0 else _make_fall_monitor()
@@ -1797,9 +1896,9 @@ def main():
             broadcast_sync_reset()
             return False
 
-        # host 双机器人：两套 DDS 通道都要推 reset epoch + grace 窗口——漏掉任一套，
+        # host 多机器人：每套 DDS 通道都要推 reset epoch + grace 窗口——漏掉任一套，
         # 对应 deploy 会把复位瞬移的 dq 当真实速度触发 35rad/s 安全限。
-        reset_dds_names = ["g129", "g129_r2"] if is_scene_sync_host else ["g129"]
+        reset_dds_names = [spec.robot_dds_name for spec in sonic_host_channel_specs]
         reset_robot_dds_list = [
             _dds for _dds in (dds_manager.get_object(_name) for _name in reset_dds_names)
             if _dds is not None
@@ -2193,33 +2292,7 @@ def main():
     finally:
         # clean up resources
         print("\nclean up resources...")
-        if keyboard_scene_reset_subscription is not None:
-            try:
-                _scene_reset_kb_iface.unsubscribe_to_keyboard_events(
-                    _scene_reset_kb,
-                    keyboard_scene_reset_subscription,
-                )
-            except Exception as exc:
-                print(f"[keyboard] failed to unsubscribe F12 scene reset: {exc}")
-            keyboard_scene_reset_subscription = None
-        controller.cleanup()
-        if not args_cli.replay_data:
-            dds_manager.cleanup()
-        if image_server is not None:
-            image_server.stop()
-        # Isaac Lab's current OpenXRDevice has no public close() method.  Its
-        # destructor is an idempotent cleanup hook that explicitly releases
-        # the XR message-bus and button subscriptions.  Invoke it while the
-        # SimulationContext still exists; merely dropping our local reference
-        # is insufficient because those subscriptions also retain callbacks to
-        # the device.
-        if teleop_interface is not None:
-            teleop_cleanup = getattr(teleop_interface, "__del__", None)
-            if callable(teleop_cleanup):
-                teleop_cleanup()
-            teleop_interface = None
-            gc.collect()
-        env.close()
+        cleanup_runtime_resources()
         print("cleanup completed")
     # profiler.disable()
     # s = io.StringIO()

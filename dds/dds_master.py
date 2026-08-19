@@ -9,31 +9,31 @@ from dds.dds_base import DDSObject
 
 
 
-class DDSManager:    
+class DDSManager:
     _instance = None
     _lock = threading.Lock()
-    
+
     def __new__(cls):
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
                     cls._instance = super(DDSManager, cls).__new__(cls)
         return cls._instance
-    
+
     def __init__(self):
         """Init DDSManager"""
         if hasattr(self, '_initialized'):
             return
-        
+
         self._initialized = True
         self.publishing_running = False
         self.subscribing_running = False
-        
+
         self.objects: Dict[str, DDSObject] = {}
-        
+
         self.publish_thread: Optional[threading.Thread] = None
         self.subscribe_thread: Optional[threading.Thread] = None
-        
+
         # publish object cache and frequency control (Hz→interval)
         self._pub_list: List[str] = []
         self._pub_interval: Dict[str, float] = {}
@@ -47,7 +47,7 @@ class DDSManager:
         self.dds_initialized = False
         self._init_dds()
         print("[DDSManager] DDSManager initialized")
-    
+
     def _parse_object_name(self, name: str) -> tuple[str, str]:
         """Parse object name"""
         if ':' in name:
@@ -55,7 +55,7 @@ class DDSManager:
             return parts[0], parts[1]
         else:
             return "", name
-    
+
     def _init_dds(self) -> bool:
         """Init DDS system"""
         if self.dds_initialized:
@@ -89,21 +89,21 @@ class DDSManager:
         except Exception as e:
             print(f"[DDSManager] DDS system initialization failed: {e}")
             return False
-    
+
     def register_object(self, name: str, obj: DDSObject) -> bool:
         """Register DDS object"""
         if name in self.objects:
             print(f"[DDSManager] object '{name}' already exists")
             return False
-        
+
         try:
             category, obj_name = self._parse_object_name(name)
-            
+
             self.objects[name] = obj
             obj._dds_registered_name = name
 
             print(f"[DDSManager] register object '{name}' success (category: {category or 'No category'})")
-            
+
             # default frequency
             self._pub_interval[name] = self._default_pub_interval
             self._pub_next_ts[name] = 0.0
@@ -111,17 +111,17 @@ class DDSManager:
         except Exception as e:
             print(f"[DDSManager] register object '{name}' failed: {e}")
             return False
-    
+
     def unregister_object(self, name: str) -> bool:
         """Unregister DDS object"""
         if name not in self.objects:
             print(f"[DDSManager] object '{name}' not found")
             return False
-        
+
         obj = self.objects[name]
         obj.publishing = False
         obj.subscribing = False
-        
+
         del self.objects[name]
         self._pub_interval.pop(name, None)
         self._pub_next_ts.pop(name, None)
@@ -129,7 +129,7 @@ class DDSManager:
             self._pub_list.remove(name)
         print(f"[DDSManager] unregister object '{name}' success")
         return True
-    
+
     def get_object(self, name: str) -> Optional[DDSObject]:
         """Get specified object"""
         obj = self.objects.get(name)
@@ -137,7 +137,7 @@ class DDSManager:
             print(f"[DDSManager] object '{name}' not found, objects: {self.objects.keys()}")
             return None
         return obj
-    
+
     def get_objects_by_category(self, category: str) -> Dict[str, DDSObject]:
         """Get all objects by category"""
         result = {}
@@ -146,7 +146,7 @@ class DDSManager:
             if cat == category:
                 result[obj_name] = obj
         return result
-    
+
     def set_publish_rate(self, name: str, hz: float) -> None:
         """Set publish rate (Hz) for a specific object"""
         if name in self.objects and hz > 0:
@@ -154,7 +154,7 @@ class DDSManager:
             # make the next cycle take effect immediately
             self._pub_next_ts[name] = 0.0
             print(f"[DDSManager] set publish rate for '{name}' to {hz}Hz")
-    
+
     def enable_immediate_publish(self, name: str) -> None:
         """Publish this object's fresh samples immediately on notify_fresh_sample."""
         self._immediate_pub_names.add(name)
@@ -177,7 +177,7 @@ class DDSManager:
     def _publish_loop(self) -> None:
         """Publish loop thread"""
         print("[DDSManager] publish loop thread started")
-        
+
         while self.publishing_running:
             try:
                 now = time.perf_counter()
@@ -207,26 +207,40 @@ class DDSManager:
                     sleep_time = 0.001
                 if self._wake_event.wait(sleep_time):
                     self._wake_event.clear()
-                
+
             except Exception as e:
                 print(f"[DDSManager] publish loop error: {e}")
                 time.sleep(0.01)
-        
+
         print("[DDSManager] publish loop thread stopped")
-    
+
     def start_publishing(self,enable_publish_names:List[str]=None):
         """Start publishing"""
         self._pub_list.clear()
-        for name, obj in self.objects.items():
-            if enable_publish_names is None or name in enable_publish_names:
-                obj.setup_publisher()
-                obj.publishing = True
-                self._pub_list.append(name)
-        self.publishing_running = True
-        
-        self.publish_thread = threading.Thread(target=self._publish_loop)
-        self.publish_thread.daemon = True
-        self.publish_thread.start()
+        self.publishing_running = False
+        selected_objects = []
+        try:
+            for name, obj in self.objects.items():
+                if enable_publish_names is None or name in enable_publish_names:
+                    selected_objects.append(obj)
+                    if obj.setup_publisher() is False:
+                        raise RuntimeError(
+                            f"DDS publisher setup failed for object {name!r}"
+                        )
+                    obj.publishing = True
+                    self._pub_list.append(name)
+
+            self.publishing_running = True
+            self.publish_thread = threading.Thread(target=self._publish_loop)
+            self.publish_thread.daemon = True
+            self.publish_thread.start()
+        except Exception:
+            self.publishing_running = False
+            for obj in selected_objects:
+                obj.publishing = False
+            self._pub_list.clear()
+            self.publish_thread = None
+            raise
         print(f"[DDSManager] manager started, managing {len(self._pub_list)} publishing objects")
     def stop_publishing(self):
         """Stop publishing"""
@@ -249,10 +263,23 @@ class DDSManager:
         self.subscribing_running = False
     def start_subscribing(self,enable_subscribe_names:List[str]=None):
         """Start subscribing"""
-        for name, obj in self.objects.items():  
-            if enable_subscribe_names is None or name in enable_subscribe_names:
-                obj.setup_subscriber()
-                obj.subscribing = True
+        self.subscribing_running = False
+        selected_objects = []
+        try:
+            for name, obj in self.objects.items():
+                if enable_subscribe_names is None or name in enable_subscribe_names:
+                    selected_objects.append(obj)
+                    if obj.setup_subscriber() is False:
+                        raise RuntimeError(
+                            f"DDS subscriber setup failed for object {name!r}"
+                        )
+                    obj.subscribing = True
+            self.subscribing_running = True
+        except Exception:
+            self.subscribing_running = False
+            for obj in selected_objects:
+                obj.subscribing = False
+            raise
 
 
     def stop_all_communication(self):
