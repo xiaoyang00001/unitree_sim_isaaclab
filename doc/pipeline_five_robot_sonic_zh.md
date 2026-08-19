@@ -71,12 +71,17 @@ ISAACLAB_TOTES_ON_CONVEYOR=1 \
 python sim_main.py \
   --task Isaac-G1-29DoF-Sonic-Conveyor \
   --robot_type g129 --action_source sonic_dds --device cpu --no_render \
-  --stats_interval 10 --sim-state-export-hz 0 --lowstate-pub-hz 55
+  --stats_interval 10 --sim-state-export-hz 0 --lowstate-pub-hz 55 \
+  --handstate-pub-hz 10
 ```
 
 Pico bringup 和上面的性能命令关闭 `rt/sim_state` 导出：五机完整状态超过当前该通道的
 共享内存容量，而且 host/viewer 场景同步走独立 ZMQ 链路。若确有外部消费者依赖
 `rt/sim_state`，需先扩容并重新评估开销，再移除这个参数。
+
+`--handstate-pub-hz 10` 只把 Dex3 HandState 的空闲保活从通用默认 100 Hz 调到
+10 Hz；每个新 PhysX 手部样本仍通过事件唤醒立即发布，因此它不是 10 Hz 硬限流。
+未显式传入该参数时，通用 CLI 仍保持 100 Hz 默认值。
 
 ## 4. robot_3..5 deploy 的必要参数
 
@@ -146,7 +151,7 @@ Active Action Terms (shape: 645)
 
 | 场景 | 实测频率 | 平均循环时间 | 说明 |
 |---|---:|---:|---|
-| 四机、优化前 | 总体 3.65 Hz；最近 100 步 4.09 Hz | 273.68 ms | 四路 CONTROL，timeout=0 |
+| 四机、LowCmd 重复包快路前 | 总体 3.65 Hz；最近 100 步 4.09 Hz | 273.68 ms | 四路 CONTROL，timeout=0 |
 | 四机、LowCmd 重复包快路后 | 总体约 6.9–7.1 Hz；最近约 6.3–7.6 Hz | 约 142–145 ms | 四路 CONTROL，timeout=0、sync_waits=0 |
 | 五机、优化前 | 总体 0.85 Hz；最近 0.86–0.87 Hz | 约 1170 ms | 五路已通，但出现明显非线性性能断点 |
 
@@ -155,7 +160,7 @@ SONIC 每路约 500 Hz 发布 LowCmd，而四机仿真实际只产生约 7 Hz �
 写入；四机现场每路约 492–493 Hz 命中快路。该优化没有降低真实控制指令频率，也没有关闭
 足底传感器。五机尚未用这版快路重新测量，因此不能把四机增益直接外推到五机。
 
-当前四机剩余主要耗时在 `env.step`（动作应用、PhysX、事件与十路 host 观测/DDS 状态），
+在 LowCmd 重复包快路阶段，四机剩余主要耗时在 `env.step`（动作应用、PhysX、事件与十路 host 观测/DDS 状态），
 不是 N 路 ACK 等待；五机的非线性断点还需独立做无 DDS 的 2..5 台对照。配置目标仍为
 50 Hz，不能把配置值当作实测。若业务硬性要求稳定实时 50 Hz，需要进一步做物理/观测
 降载、多进程拆分或硬件预算评估。
@@ -165,3 +170,21 @@ SONIC 每路约 500 Hz 发布 LowCmd，而四机仿真实际只产生约 7 Hz �
 约提升 13%，且四路均保持 `timeouts=0`。55 Hz 仍高于 SONIC 的 50 Hz 控制节拍，因此
 一键脚本采用 55 Hz 作为多机 keepalive；通用 CLI 默认值不变，需要排查兼容性时可显式
 回到 `--lowstate-pub-hz 100`。
+
+### HandState 发布组合优化 A/B
+
+在 LowCmd 重复包快路、LowState 55 Hz 和 Dex3 HandCmd 快路均已生效后，继续对四机
+Dex3 HandState 做同口径 A/B。下表的 HandState 频率均为八个左右手 state topic 中
+单个 topic 的实测频率：
+
+| 四机配置 | 闭环频率 | 单 HandState topic | 健康门禁 |
+|---|---:|---:|---|
+| HandState 原路径（通用 100 Hz 调度） | 12.574 Hz | 98.2 Hz | 四路 CONTROL；`physics_steps` 持续增长；`sync_waits=0`；四路 `timeouts=0` |
+| 状态 generation cache + 10 Hz 空闲保活 + 新样本即发 | 14.55 Hz | 14.9–15.1 Hz | 四路 CONTROL；`physics_steps` 持续增长；`sync_waits=0`；四路 `timeouts=0` |
+
+组合优化使四机闭环频率提升约 15.7%。八个 HandState topic 的合计发布量由约
+785.6 条/秒降到约 119–121 条/秒，减少约 85%；新鲜样本仍随实际物理步立即发出。
+generation cache 同时避免保活周期反复读取共享内存 JSON、重复展开 42 个状态字段；
+现场日志中 `shm_reads=0.0Hz`。最终 60 个性能采样的循环耗时中位数为 64.5 ms、
+p90 为 82.9 ms，全部 `stepped=1` 且 `sync_waits=0`。本次 A/B 验证的是上述组合方案，
+不能把收益单独归因于 10 Hz 参数，也不能外推为五机性能结果。
