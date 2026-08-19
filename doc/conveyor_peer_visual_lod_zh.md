@@ -2,8 +2,8 @@
 
 ## 目标与边界
 
-`ISAACLAB_PEER_ROBOT_MODE=visual_lod` 把 `peer_robot`（viewer 模式还包括
-`peer_robot_2`）从 Isaac Lab `Articulation` 换成纯 USD 显示资产。它仍逐帧消费
+`ISAACLAB_PEER_ROBOT_MODE=visual_lod` 把 `peer_robot`（viewer 模式还包括配置数量内的
+`peer_robot_2..5`）从 Isaac Lab `Articulation` 换成纯 USD 显示资产。它仍逐帧消费
 `scene_state` 中的 base pose 和全部 43 个关节角，通过本地 FK 更新各 link 的
 `xformOp:orient`，不是静态整机，也不是把 articulation 隐藏起来。
 
@@ -28,8 +28,8 @@ python sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor ...
 | 本机身份 | 纯显示对象 |
 |---|---|
 | ID=1/2 对等端 | 对端一台 `PeerRobot` |
-| ID=0 viewer | `robot_1 → PeerRobot`、`robot_2 → PeerRobot2` |
-| host 双真身 | 无镜像对象，开关不改变两台本机动力学机器人 |
+| ID=0 viewer | `ISAACLAB_SONIC_ROBOT_COUNT=2..5` 对应 `PeerRobot`、`PeerRobot2..5` |
+| host 2..5 真身 | 无镜像对象，开关不改变本机动力学机器人 |
 
 回退只需删除该环境变量或显式设置：
 
@@ -103,8 +103,8 @@ python tools/validate_peer_visual_lod_usd.py
 按当前施工顺序，功能先合入，动态验收集中放到后续联合场景阶段：
 
 1. host → 单 viewer 的 43 关节全范围回放，检查腿、腰、手臂和 14 个 Dex3 关节；
-2. viewer 同时接收 `robot_1`、`robot_2`，检查两台镜像互不串写；
-3. AR 分别锚定 robot 1/2，检查 `head_link`/`pelvis` 路径、平滑和 recenter；
+2. viewer 同时接收 `robot_1..5`，检查五台镜像互不串写；
+3. AR 分别锚定 robot 1..5，检查 `head_link`/`pelvis` 路径、平滑和 recenter；
 4. reset/session 切换、乱序/缺帧/stale 恢复；
 5. articulation 与 visual_lod 的 CPU、GPU、内存、渲染帧时间 A/B。
 

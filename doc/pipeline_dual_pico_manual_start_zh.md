@@ -102,6 +102,7 @@ env DISPLAY=:1 \
   UNITREE_DDS_INTERFACE=lo \
   ISAACLAB_LOCAL_ROBOT_ID=1 \
   ISAACLAB_HOST_BOTH_ROBOTS=1 \
+  ISAACLAB_SONIC_ROBOT_COUNT=2 \
   ISAACLAB_SCENE_SYNC_PEER_IP=127.0.0.1 \
   UNITREE_SKIP_LOWSTATE_CRC=1 \
   UNITREE_LOWCMD_CRC_SAMPLE_INTERVAL=50 \
@@ -289,4 +290,4 @@ ss -ltnp | rg ':(5556|5566)\b'
 
 急停后如果要重新发车，需要重启对应 manager；若该路进入 planner 原地踉跄的退化态，则同时重启对应 deploy。
 
-完整手册在 [pipeline_pico_vr_deployment_zh.md](/home/nolovr/Documents/unitree_sim_isaaclab/doc/pipeline_pico_vr_deployment_zh.md:137)。
+完整手册在 [Pico VR 控制链部署任务书](pipeline_pico_vr_deployment_zh.md)。

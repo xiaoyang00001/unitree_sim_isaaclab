@@ -1,6 +1,9 @@
 # Isaac-G1-29DoF-Sonic-Conveyor
 
-SONIC DDS 控制的 G1 + warehouse 流水线场景 + ZMQ 双机场景同步。
+SONIC DDS 控制的 2..5 台 G1 + warehouse 流水线场景 + ZMQ host/viewer 场景同步。
+
+五台机器人控制的通道表、启动方式、GR00T deploy 陷阱和验收入口见
+[流水线五机器人 SONIC 控制](../../../doc/pipeline_five_robot_sonic_zh.md)。
 
 场景物理、USD 轻量化、资源选型、分阶段施工顺序和验收指标统一记录在
 [Isaac G1 双机器人流水线场景优化路线与验收基线](../../../doc/conveyor_scene_optimization_roadmap_zh.md)。
@@ -43,7 +46,7 @@ ISAACLAB_PEER_ROBOT_MODE=visual_lod
 ```
 
 该模式按 `scene_state` 的 base pose + 43 关节角执行 USD Xform/FK，ID=0 viewer 的
-`PeerRobot`、`PeerRobot2` 均支持；不是静态模型或隐藏 articulation。实现、协议兼容、
+`PeerRobot`、`PeerRobot2..5` 均支持；不是静态模型或隐藏 articulation。实现、协议兼容、
 资产统计和后置动态验收清单见
 [流水线镜像机器人纯显示 LOD](../../../doc/conveyor_peer_visual_lod_zh.md)。删除变量或设为
 `articulation` 即回退。
@@ -54,16 +57,17 @@ ISAACLAB_PEER_ROBOT_MODE=visual_lod
 
 | 值 | 布局 | 关键世界坐标 |
 |---|---|---|
-| `1`（默认） | 17 个箱/包沿**西拐入口弯道路径**以 pitch 0.75 **铺满**工位上游、挡停放行流向工位；现有两台机器人保持原工位，另有 3 台纯显示 G1 在支线队尾、主线和支线中段分散站位，不组成面对面队列 | 现有工位 `y=14.398`（机器人 `x=-4.54 / -6.7` 不变）；新增站位 `(-12.70,18.9534)` 位于最后一个物体南侧偏东 1 m 并朝西北正对它、`(-6.70,17.20)` 朝 `+X`、`(-9.50,21.15)` 朝 `-Y`；出生槽位 s=`8.06 − 0.75k (k=0..16)`；`y_stop=14.398` |
+| `1`（默认） | 17 个箱/包沿**西拐入口弯道路径**以 pitch 0.75 **铺满**工位上游、挡停放行流向工位；五机 host 下所有站位都是 SONIC 动力学真身，历史双机/对等模式下后三个站位仍是纯显示 G1 | 现有工位 `y=14.398`（机器人 `x=-4.54 / -6.7` 不变）；新增站位 `(-12.70,18.9534)` 位于最后一个物体南侧偏东 1 m 并朝西北正对它、`(-6.70,17.20)` 朝 `+X`、`(-9.50,21.15)` 朝 `-Y`；出生槽位 s=`8.06 − 0.75k (k=0..16)`；`y_stop=14.398` |
 | `0` | 两个原尺寸塑料筐叠放在入料口推车上；机器人面对面站在推车两侧 | 作业组 `(-5.62, 19.0)`（机器人 `x=-4.82 / -6.42`）；`y_stop=11.75` |
 
 例如：`ISAACLAB_TOTES_ON_CONVEYOR=0 python sim_main.py ...`。
 
-流水线布局新增的三台站位机器人使用 `g1_43dof_standby_visual_only.usda`：它引用原两台
-同源的完整 G1 网格，烘焙相同的 SONIC 默认关节姿态，并复用同一套白/黑分区和 Logo
-涂装；资产的 `Physics/Robot/Sensor` 三组 variant 全部选为 `None`。因此组合后外形与
-原机一致，但没有 articulation、关节、刚体、碰撞、执行器或接触传感器，也不参与
-`scene_state` 同步。切到 `ISAACLAB_TOTES_ON_CONVEYOR=0` 时不会生成这三台。
+流水线布局中的三个新增站位由 `ISAACLAB_SONIC_ROBOT_COUNT` 决定形态：host/viewer
+数量覆盖到该站位时，分别生成 SONIC 动力学真身或 `scene_state` 镜像；未覆盖的站位才使用
+`g1_43dof_standby_visual_only.usda`。该回退资产引用同源完整 G1 网格并烘焙默认姿态，
+`Physics/Robot/Sensor` 三组 variant 全关，不含 articulation、关节、刚体、碰撞、执行器或
+传感器。`ISAACLAB_TOTES_ON_CONVEYOR=0` 没有额外三个站位；共享配置仍请求 `3..5` 时，
+EnvCfg、DDS 和 provider 会一致自动回退为双机。
 
 默认的 `ISAACLAB_CONVEYOR_PROPS=layout` 会真正不生成当前布局用不到的道具：
 
@@ -315,6 +319,14 @@ python tools/smoke_conveyor_scene.py --steps 1600 --sync 0 --device cpu --pick-l
 端口：ID=1 绑 `15555`、ID=2 绑 `15556`（base+id-1），双方互连对方端口。
 发布节流默认每 4 个物理步一帧（50 Hz）。
 
+## 多机器人 host 形态
+
+`ISAACLAB_LOCAL_ROBOT_ID=1` + `ISAACLAB_HOST_BOTH_ROBOTS=1` 启用单进程 host；再用
+`ISAACLAB_SONIC_ROBOT_COUNT=2..5` 选择动力学真身数量。每台机器人拥有独立的
+`rt[/rN]/*` 身体与 Dex3 命令/状态、观测缓存和足底传感器。动作按机器人顺序拼成
+`N × 129` 维，所有已配置通道的 LowCmd ack 都匹配后才推进环境。完整启动与端口表见
+[五机器人 SONIC 手册](../../../doc/pipeline_five_robot_sonic_zh.md)。
+
 ## Dex3 夹爪控制数据流
 
 当前所谓“夹爪”实际是两只 Dex3 灵巧手，每只手有 7 个电机关节。控制输入来自 Pico
@@ -322,6 +334,9 @@ python tools/smoke_conveyor_scene.py --steps 1600 --sync 0 --device cpu --pick-l
 通过 `scene_state` 同步过去的 43 关节机器人状态。
 
 ### 双机器人链路
+
+下图描述双 Pico/前两台机器人的 VR 路径；五机 host 的 robot_3..5 使用相同 DDS 链，
+默认由独立 keyboard deploy 控制。
 
 ```text
 Pico 左右控制器 trigger
@@ -386,8 +401,9 @@ manager 把左右手目标编码为 ZMQ `pose`/`planner` 消息中的
 
 Isaac 会拒绝长度不是 7、NaN/Inf、负 `kp/kd`、错误 motor ID 或越界的命令。
 HandCmd 默认超时为 `0.20 s`；超时后保持最后安全的 `q/kp/kd`、清除 `dq/tau`，
-但不会暂停身体的 LowState/LowCmd 锁步控制。131 host 模式最终把两台机器人的
-`[q(43), dq(43), tau(43)]` 拼成 258 维动作，两个身体 LowCmd ack 都匹配后才推进环境。
+但不会暂停身体的 LowState/LowCmd 锁步控制。host 模式最终把 N 台机器人的
+`[q(43), dq(43), tau(43)]` 拼成 `N × 129` 维动作（五机为 645），N 路身体 LowCmd ack
+全部匹配后才推进环境。
 
 ### 当前已知断点
 
@@ -423,7 +439,12 @@ HandCmd 默认超时为 `0.20 s`；超时后保持最后安全的 `q/kp/kd`、�
   横向移出通道来模拟取放，验的是"只抬高保持停线、XY 偏出后正确放行"，不等于 Dex3
   真能抓起并投放箱子。当前 `d01`/`d02` 横向均为 0.38×0.25 m / 1.0 kg，
   已消除原 `c01` 的大跨度差异，但真实抓取仍需现场验收。
-- 流水线布局的 robot_2 仍是偏展示的站位，离带面较远，实际可达性尚未完全收口。
+- 五个站位沿用原布局坐标；升级为动力学真身不等于完成抓取可达性验收，robot_2..5
+  与各自目标物的 IK、碰撞和实抓闭环仍需逐台验证。
+- 五台场景已通过 645 维动作的 headless 10 步创建/状态有限性/根节点漂移门；该检查不带
+  真实 provider 的启动 Root pin，不能外推为闭环站立。五套真实 deploy 已同时进入 CONTROL
+  且五路锁步能够持续推进，但优化前现场仅约 0.85 Hz；五路倒地复位、动作矩阵和 LowCmd
+  快路后的五机性能仍需复验。不能把配置步频当成五机实测值。
 - 原布局（`ISAACLAB_TOTES_ON_CONVEYOR=0`）的作业闭环在源分支就未实跑过。
 - `surface_velocity` 后端下纸箱队列靠"后车撞前车"物理涌现，没有走
   `queue_drive_mask`，也不支持本节的 XY 偏离放行门；该组合尚未实测，上游带面会持续挤压

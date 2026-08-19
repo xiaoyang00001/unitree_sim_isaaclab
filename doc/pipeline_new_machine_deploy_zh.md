@@ -108,6 +108,7 @@ gate 见 `doc/pipeline_pico_vr_deployment_zh.md` §5。
 conda activate env_isaaclab && cd <仿真工程>
 GR00T_WBC_ROOT=<GR00T路径> UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo \
 ISAACLAB_LOCAL_ROBOT_ID=1 ISAACLAB_HOST_BOTH_ROBOTS=1 \
+ISAACLAB_SONIC_ROBOT_COUNT=2 \
 UNITREE_SKIP_LOWSTATE_CRC=1 UNITREE_LOWCMD_CRC_SAMPLE_INTERVAL=50 \
 python sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor --robot_type g129 \
   --action_source sonic_dds --device cpu --hide_ui --stats_interval 10

@@ -15,7 +15,7 @@ conveyor 任务（`Isaac-G1-29DoF-Sonic-Conveyor`）现在有三种身份，全�
 |---|---|---|---|
 | 对等端 | `ISAACLAB_LOCAL_ROBOT_ID=1/2` | 本机全动力学 robot + 对端镜像体 | 双向（机器人互发；物体/复位 ID=1 权威） |
 | viewer | `ISAACLAB_LOCAL_ROBOT_ID=0` | 双镜像体 + 场外 ghost + kinematic 物体 | 只收不发（SUB host:15555） |
-| **host** | `ID=1` + `ISAACLAB_HOST_BOTH_ROBOTS=1` | **robot_1+robot_2 双全动力学**，无镜像体 | 只发不收（robot_1+robot_2+物体） |
+| **host** | `ID=1` + `ISAACLAB_HOST_BOTH_ROBOTS=1` + `ISAACLAB_SONIC_ROBOT_COUNT=2` | **robot_1+robot_2 双全动力学**，无镜像体 | 只发不收（robot_1+robot_2+物体） |
 
 host 的第二机器人通过**第二套 DDS 通道**驱动：话题 `rt/r2/lowcmd|lowstate|secondary_imu`
 与 `rt/r2/dex3/*`、DDS 注册名 `g129_r2`/`dex3_r2`、共享内存 `isaac_robot_state_r2` 等。
@@ -86,9 +86,10 @@ teleop 设备的 xr_cfg 一起改，只改一处会出现"日志说挂了镜像�
 
 ```bash
 # ① host sim（GUI 验证形态；无画面跑法去掉 --hide_ui 换 --no_render，省 ~10ms/帧）
-GR00T_WBC_ROOT=/home/nolo/GR00T-WholeBodyControl \
+GR00T_WBC_ROOT=<GR00T仓库> \
 UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo \
 ISAACLAB_LOCAL_ROBOT_ID=1 ISAACLAB_HOST_BOTH_ROBOTS=1 \
+ISAACLAB_SONIC_ROBOT_COUNT=2 \
 UNITREE_SKIP_LOWSTATE_CRC=1 UNITREE_LOWCMD_CRC_SAMPLE_INTERVAL=50 \
 python sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor --robot_type g129 \
   --action_source sonic_dds --device cpu --hide_ui --stats_interval 10
@@ -101,7 +102,8 @@ bash deploy.sh --disable-crc-check --input-type keyboard isaac                  
 G1_LOCAL_ROBOT_ID=2 bash deploy.sh --disable-crc-check --input-type keyboard isaac  # 终端B
 
 # ③ win 侧 viewer（win2 桌面双击，参数见 run_pipeline_viewer.bat）：
-#    ISAACLAB_LOCAL_ROBOT_ID=0 + ISAACLAB_SCENE_SYNC_PEER_IP=<Ubuntu IP>
+#    ISAACLAB_LOCAL_ROBOT_ID=0 + ISAACLAB_SONIC_ROBOT_COUNT=2
+#    + ISAACLAB_SCENE_SYNC_PEER_IP=<Ubuntu IP>
 ```
 
 - 测前清残余：`pgrep -fa g1_deploy_onnx_ref` 必须为 0——残留实例会以 kHz 级频率

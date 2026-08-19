@@ -1,4 +1,4 @@
-# Pico VR 控制链部署任务书（pipeline 双机器人）
+# Pico VR 控制链部署任务书（pipeline 多机器人）
 
 > 本文是**从零把 Pico VR 控制链部署到位**的施工顺序 + 操作手册 + 判读手册。
 > 架构盘点结论与设计取舍见权威文档 `doc/pipeline_dual_robot_host_viewer_zh.md` §8，
@@ -8,6 +8,10 @@
 > §5.2 四道验收中急停/端口隔离判据未逐项留痕，复验时可补记录。
 > 自动倒地、Ubuntu F12 和 Pico 左 X 的统一 reset 说明见
 > [Isaac/SONIC 场景复位说明](scene_reset_zh.md)。
+>
+> 2026-08-19 起 bringup 默认创建五台 SONIC 动力学机器人：本手册的 Pico 主链仍聚焦
+> robot_1/2，robot_3..5 默认走独立 keyboard deploy。五机 DDS/端口和性能说明见
+> [流水线五机器人 SONIC 控制](pipeline_five_robot_sonic_zh.md)。
 
 ## 0. 链路一图流
 
@@ -23,6 +27,8 @@
        └─ DDS rt/* 锁步 ↔ host sim（Isaac 段零改动）
      deploy#2 --input-type keyboard（默认）
        └─ 双 Pico模式改为 zmq_manager :5566 ← Pico#2 UDP :63902
+     deploy#3..5 --input-type keyboard
+       └─ DDS rt/r3..r5/*（独立输入/调试端口；五路 ack AND）
      win 侧 AR viewer（观看链，与控制链完全并行独立）
 ```
 
@@ -34,7 +40,7 @@ PC Service**（.deb 留在 GR00T 仓库根，sdk 模式才用）。
 
 | 项 | 要求 | 本机现状 |
 |---|---|---|
-| GR00T 仓库 | `/home/nolo/GR00T-WholeBodyControl`，deploy isaac profile 可用 | ✅ |
+| GR00T 仓库 | `<GR00T仓库>`，deploy isaac profile 可用 | ✅ |
 | GR00T 版本 | `feat/isaac-state-sync` **≥ `6783bb8`**（14f8bf1 误删的 666 个 gear_sonic 文件已全量恢复；旧检出 manager 收数据/进 POSE 必崩） | ✅ |
 | `.venv_teleop` | Python 3.10，由 `install_scripts/install_pico.sh` 创建（uv）；`import xrobotoolkit_sdk, zmq, msgpack` 通过 | ✅ 实测通过 |
 | 防火墙 | 入站 UDP 63901 放行；双 Pico 还要放行 63902（头显→本机） | ✅ ufw 不活动 |
@@ -106,11 +112,14 @@ JSON 只会保留到下一次启动。
 一键（推荐，日志落 `/tmp/pipeline_pico/`，`PIPELINE_LOG_DIR` 可覆盖）：
 
 ```bash
-# 默认：单 Pico 控 robot_1 + keyboard 控 robot_2
+# 默认五机：单 Pico 控 robot_1 + keyboard 控 robot_2..5
 bash tools/pipeline_pico_bringup.sh
 
 # 双 Pico：两套 manager 分别控制 robot_1/robot_2
 PIPELINE_DUAL_PICO=1 bash tools/pipeline_pico_bringup.sh
+
+# 回退历史双机：
+PIPELINE_SONIC_ROBOT_COUNT=2 bash tools/pipeline_pico_bringup.sh
 
 # 换机器时路径变量与命令同一行传入（分行裸赋值传不进去）：
 #   PIPELINE_SIM_DIR=<仿真工程> GR00T_WBC_ROOT=<GR00T> PIPELINE_SIM_PY=<python> bash tools/...
@@ -119,8 +128,8 @@ PIPELINE_DUAL_PICO=1 bash tools/pipeline_pico_bringup.sh
 ```
 
 脚本做的事（手动分步照此复刻）：硬清残余 → host sim（HOST_MODE，CRC 两刀）→
-**双 deploy 并行**（错峰 20s）→ manager UDP receiver 就绪 → 双 deploy Init →
-STARTUP HOLD。默认模式的 deploy#2 是 keyboard，脚本继续给 channel#2 发 `]` 并预激活
+**全部 deploy 并行存活**（错峰启动）→ manager UDP receiver 就绪 → 全部 deploy Init →
+STARTUP HOLD。默认模式的 deploy#2..5 是 keyboard，脚本继续给对应 channel 发 `]` 并预激活
 planner；双 Pico 模式的 deploy#2 接 `zmq_manager:5566`，另起
 `pico_manager_r2.log`，两路都只等各自操作者 A+B+X+Y，脚本不代按。
 
