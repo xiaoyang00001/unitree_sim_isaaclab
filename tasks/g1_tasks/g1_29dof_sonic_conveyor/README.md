@@ -43,7 +43,7 @@ python sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor \
 |---|---|---|
 | `Conveyor-Warehouse` | Simple Warehouse 完整房间 | 只有仓库地面/墙体/货架/灯光，无 ConveyorBelt、箱队列和流水线事件 |
 | `Conveyor-Apartment` | `Apartment/scene_04.usd` | 室内北侧开放房间，多机器人站位已避开横墙 |
-| `Conveyor-Staircase` | `2-StoryStaircase.usd` | 带楼梯/Loft 的真实建筑场景，机器人组放在开阔地面 |
+| `Conveyor-Staircase` | `2-StoryStaircase.usd` | 带楼梯/Loft 的真实建筑场景，沿用 Warehouse 的稳定机器人编队 |
 | `Conveyor-Office` | Isaac Sim Office `office.usd` | 官方 Office 完整场景；首次加载可能较慢 |
 
 例如只看 Apartment 画面（不接 SONIC deploy）：

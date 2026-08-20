@@ -142,21 +142,26 @@ MULTI_SCENE_SPECS = {
         background_usd=REAL_COMPLETE_SCENE_USDS["staircase"],
         background_prim_name="TwoStoryStaircase",
         robot_positions={
-            "robot_1": (0.0, -12.0, 0.76),
-            "robot_2": (2.4, -12.0, 0.76),
-            "standby_robot_1": (-2.4, -12.0, 0.76),
-            "standby_robot_2": (0.0, -9.6, 0.76),
-            "standby_robot_3": (2.4, -9.6, 0.76),
+            # Reuse the stable Warehouse formation.  The Staircase USD's
+            # Loft collision ends at y=-8.76; the previous y=-12 pose was
+            # outside every floor and made the robot fall through the scene.
+            "robot_1": (0.0, 0.0, 0.76),
+            "robot_2": (0.0, 2.0, 0.76),
+            "standby_robot_1": (-3.0, 0.0, 0.76),
+            "standby_robot_2": (3.0, 0.0, 0.76),
+            "standby_robot_3": (0.0, 4.8, 0.76),
         },
         robot_rotations={
             "robot_1": (1.0, 0.0, 0.0, 0.0),
             "robot_2": (0.0, 0.0, 0.0, 1.0),
             "standby_robot_1": (1.0, 0.0, 0.0, 0.0),
-            "standby_robot_2": (0.70710678, 0.0, 0.0, 0.70710678),
-            "standby_robot_3": (0.0, 0.0, 0.0, 1.0),
+            "standby_robot_2": (0.0, 0.0, 0.0, 1.0),
+            "standby_robot_3": (1.0, 0.0, 0.0, 0.0),
         },
-        camera_eye=(8.0, -14.0, 6.0),
-        camera_lookat=(0.0, -10.0, 1.0),
+        # Keep the same framing as the stable Warehouse preview, with the
+        # staircase/loft visible behind the robot group.
+        camera_eye=(7.5, -8.5, 4.5),
+        camera_lookat=(0.0, 0.0, 1.0),
     ),
     "office": MultiRobotSceneSpec(
         key="office",

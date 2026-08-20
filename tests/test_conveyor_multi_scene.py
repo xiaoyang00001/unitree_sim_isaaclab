@@ -56,6 +56,12 @@ class ConveyorMultiSceneStaticTest(unittest.TestCase):
         source = MULTI_CFG.read_text(encoding="utf-8")
         self.assertIn('"robot_1": (-2.5, 5.5, 0.76)', source)
 
+    def test_staircase_reuses_the_stable_warehouse_formation(self) -> None:
+        source = MULTI_CFG.read_text(encoding="utf-8")
+        self.assertIn('"robot_1": (0.0, 0.0, 0.76)', source)
+        self.assertIn('"robot_2": (0.0, 2.0, 0.76)', source)
+        self.assertNotIn('"robot_1": (0.0, -12.0, 0.76)', source)
+
 
 if __name__ == "__main__":
     unittest.main()
