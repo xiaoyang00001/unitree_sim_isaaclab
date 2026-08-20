@@ -9,7 +9,7 @@
 17 个箱/包以 pitch 0.75 沿入口弯道路径出生（队首在主线 y≈15.53，主线 5 +
 弧上 3 + X 支线 9，队尾 s=-0.94 (-13.70, 20.05)），经支线 +X → 圆角弧 →
 主线 -Y 流到工位 y≈14.398 停住；队首行程≈1.13 m（实测带速 ~0.244 m/s ⇒
-约 230 步到位），默认 1600 步为整列稳定和可选取件补位留出时间。
+约 230 步到位），默认 1600 步为整列稳定和可选离线后持续停线验收留出时间。
 位移/停位判定都按沿路径距离 s。
 ISAACLAB_CONVEYOR_ENDLESS=off 回退直线带头（旧行为，y 判定）。
 （expected_stop_y 从 env cfg 动态取，改常量自动跟随）
@@ -19,7 +19,7 @@ ISAACLAB_CONVEYOR_ENDLESS=off 回退直线带头（旧行为，y 判定）。
   # Phase 0 单机场景冒烟（不建 socket）
   python tools/smoke_conveyor_scene.py --steps 1600
 
-  # 取放节拍验收：第 1000 步仅抬高队首，保持 50 步停线，再横向移出并断言下一个补位
+  # 单批次停线验收：第 1000 步仅抬高队首，保持 50 步，再横向移出并断言下一个不补位
   python tools/smoke_conveyor_scene.py --steps 1600 --pick-lead-at 1000 --depart-lead-after 50
 
   # PhysX Surface Velocity 实验 A/B（固定由 ID=1 驱动，默认 50 mm 容差）
@@ -74,7 +74,7 @@ parser.add_argument(
     metavar="STEP",
     help=(
         "在第 STEP 步把队首箱子原地抬高，模拟机器人取件；"
-        "保持停线后再横向移出流水线通道，并断言后一个箱子补位到工位"
+        "保持停线后再横向移出流水线通道，并断言后一个箱子仍停在原停位、不补位"
     ),
 )
 parser.add_argument(
@@ -98,7 +98,7 @@ if (
     args.pick_lead_at is not None
     and args.pick_lead_at + args.depart_lead_after > args.steps
 ):
-    parser.error("--steps 必须覆盖 pick-lead-at + depart-lead-after，才能完成偏离放行验收")
+    parser.error("--steps 必须覆盖 pick-lead-at + depart-lead-after，才能完成离线后持续停线验收")
 
 # 环境变量必须在 import tasks 之前定型（env cfg 在 import 时读取）。
 os.environ["ISAACLAB_SCENE_SYNC"] = args.sync
@@ -254,6 +254,7 @@ def main() -> int:
     hold_lead_name: str | None = None
     hold_start_p: float | None = None
     hold_displacement: float | None = None
+    post_depart_hold_p: float | None = None
 
     t0 = monotonic()
     for step in range(1, args.steps + 1):
@@ -289,6 +290,7 @@ def main() -> int:
                     float(watched[hold_lead_name].data.root_pos_w[0, 1]),
                 )
                 hold_displacement = hold_end_p - hold_start_p
+                post_depart_hold_p = hold_end_p
             move_lead_off_conveyor(picked_name, picked_obj)
         if step % max(1, args.report_every) == 0:
             snapshot(f"step={step}")
@@ -339,16 +341,28 @@ def main() -> int:
         )
         ok = ok and hold_ok
 
+    if post_depart_hold_p is not None and hold_lead_name is not None:
+        post_depart_displacement = end_p[hold_lead_name] - post_depart_hold_p
+        post_depart_ok = abs(post_depart_displacement) < 0.05
+        print(
+            f"[smoke] 首批离线后持续停线：{hold_lead_name} 位移 "
+            f"{post_depart_displacement:.4f} m（上限 0.05）| "
+            f"{'PASS' if post_depart_ok else 'FAIL'}",
+            flush=True,
+        )
+        ok = ok and post_depart_ok
+
     if (
         expected_stop_y is not None
         and ((not sync_on) or authority)
         and not surface_non_authority_offline
     ):
-        # 整带节拍：队首停在工位；取件后整列前进一格，于是断言 graded_names[0]
-        # 落在工位上就等于验证"整带重启并再次停位"。
+        # 整带节拍：首批到位后终止停线。取件后使用原队首的出生进度作为槽位基准，
+        # 断言余下箱子仍停在原槽位，而不是把 graded_names[0] 当成新队首补到主工位。
         stop_p = (
             endless_intake.path_s_of_main_y(expected_stop_y) if ENDLESS else -expected_stop_y
         )
+        picked_stop_text: str | None = None
         if ENDLESS and belt_box_mode:
             # 弯道形态：弧段拖滑速度（~0.218 m/s）低于直线段（~0.244），前车先
             # 出弧提速时对后车的间距最多被拉伸 ≈ 弧长 2.2 × (0.244/0.218−1)
@@ -361,7 +375,9 @@ def main() -> int:
             #       出生间距+0.35] 内（C 型大箱把最小安全间距抬到 0.57 m；±界给
             #      弧段拉伸/收缩留余量）。
             lead = graded_names[0]
-            lead_error = abs(end_p[lead] - stop_p)
+            lead_spawn_p = start_p[picked_name] if picked_name is not None else start_p[lead]
+            lead_target_p = stop_p - (lead_spawn_p - start_p[lead])
+            lead_error = abs(end_p[lead] - lead_target_p)
             spacing = [
                 round(end_p[graded_names[i]] - end_p[graded_names[i + 1]], 4)
                 for i in range(len(graded_names) - 1)
@@ -388,14 +404,26 @@ def main() -> int:
             stop_ok = lead_error <= args.stop_tolerance and spacing_ok
             bounds_text = ", ".join(f"[{lo:.2f},{hi:.2f}]" for lo, hi in bounds)
             print(
-                f"[smoke] 停止目标 队首 s={stop_p:.3f}（y={expected_stop_y:.3f}）| "
+                f"[smoke] 停止目标 {lead} s={lead_target_p:.3f}"
+                f"（主工位 y={expected_stop_y:.3f}）| "
                 f"队首误差 {lead_error:.4f}（容差 {args.stop_tolerance:.3f}）| "
                 f"停稳间距 {spacing}（按各对出生间距判界 {bounds_text}；"
                 f"弧段拖滑拉伸/深藏队尾收缩属预期）| {'PASS' if stop_ok else 'FAIL'}",
                 flush=True,
             )
+            if picked_name is not None:
+                picked_stop_text = (
+                    f"[smoke] 节拍验收：{picked_name} XY 偏出流水线后 {lead} 不补位，"
+                    f"保持 s={lead_target_p:.3f}，实测 s={end_p[lead]:.3f}"
+                )
         else:
-            lead_spawn_p = start_p[graded_names[0]] if belt_box_mode else stop_p
+            lead_spawn_p = (
+                start_p[picked_name]
+                if belt_box_mode and picked_name is not None
+                else start_p[graded_names[0]]
+                if belt_box_mode
+                else stop_p
+            )
             expected_slots = {
                 name: stop_p - (lead_spawn_p - start_p[name]) if belt_box_mode else stop_p
                 for name in graded_names
@@ -413,12 +441,14 @@ def main() -> int:
                 f"| 容差={args.stop_tolerance:.3f} | {'PASS' if stop_ok else 'FAIL'}",
                 flush=True,
             )
-        if picked_name is not None:
-            print(
-                f"[smoke] 节拍验收：{picked_name} XY 偏出流水线后 {graded_names[0]} 应补位到工位 "
-                f"y={expected_stop_y:.3f}，实测 y={end_xy[graded_names[0]][1]:.3f}",
-                flush=True,
-            )
+            if picked_name is not None:
+                lead = graded_names[0]
+                picked_stop_text = (
+                    f"[smoke] 节拍验收：{picked_name} XY 偏出流水线后 {lead} 不补位，"
+                    f"保持 y={-expected_slots[lead]:.3f}，实测 y={end_xy[lead][1]:.3f}"
+                )
+        if picked_stop_text is not None:
+            print(picked_stop_text, flush=True)
         ok = ok and stop_ok
     print(f"[smoke] RESULT: {'PASS' if ok else 'FAIL'}", flush=True)
 

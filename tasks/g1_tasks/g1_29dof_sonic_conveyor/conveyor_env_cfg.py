@@ -713,7 +713,7 @@ def _log_scene_layout() -> None:
     print(f"{tag} ContactReport: {CONTACT_REPORT_MODE}")
     if TOTES_ON_CONVEYOR:
         print(
-            f"{tag} 场景布局: 流水线（{len(BELT_BOX_NAMES)} 个纸箱排在工位上游、挡停放行）"
+            f"{tag} 场景布局: 流水线（{len(BELT_BOX_NAMES)} 个纸箱排在工位上游、首批到位停线）"
             " [ISAACLAB_TOTES_ON_CONVEYOR=1]"
         )
     else:
@@ -821,8 +821,8 @@ def _log_scene_layout() -> None:
         )
         if CONVEYOR_LEGACY_ENABLED and CONVEYOR_Y_STOP is not None:
             print(
-                f"{tag}   纸箱放行: 仅抬高仍停线；箱根 XY 偏出流水线通道后立即补位"
-                "（完成位锁存至复位；不依赖蓝箱/速度/驻留）"
+                f"{tag}   纸箱节拍: 首批双箱到位后持续停线；抬高或横向离线均不再启动"
+                "（仅 F12/DDS/env reset 后重新运行）"
             )
     if not CONVEYOR_DRIVE.requested_enabled:
         drive = "关 [ISAACLAB_CONVEYOR_ENABLED=0]"
@@ -1741,8 +1741,8 @@ class ConveyorEventsCfg:
         },
     )
 
-    # 纸箱队列走带挡停的驱动：队首停在工位等抓取，后面的按 queue_pitch 排队；
-    # 工位箱只被抬高、XY 仍在流水线上方时继续停线，箱根横向偏出通道后立即补位。
+    # 纸箱队列走带挡停的驱动：前两箱分别停在双机器人工位供同时抱取，后面的按
+    # queue_pitch 排队；首批到位后持续停线，箱子被抬高或横向移出通道也不再补位。
     # 每箱偏离完成位锁存到 F12/DDS/env reset，避免抓取回摆/边界抖动导致中途反悔。
     # surface_velocity 后端不需要它——那边队列是后车撞前车物理涌现出来的。
     # 入口弯道生效时切两段式路径驱动（西拐）：支线 +X → 圆角弧 → 主线 -Y，排队
@@ -1764,9 +1764,10 @@ class ConveyorEventsCfg:
             "path_radius": endless_intake.CORNER_RADIUS,
             "path_s_origin_x": endless_intake.S_ORIGIN_X,
             "extra_rects": endless_intake.ON_BELT_EXTRA_RECTS,
-            # 前两箱分别停在 robot_1/robot_2 的错位工位；任一到位即锁存整批，
-            # 两箱都横向离线后才允许第三箱补位。
+            # 前两箱分别停在 robot_1/robot_2 的错位工位；任一到位即锁存整批。
             "front_arrival_group_size": 2,
+            # 双机器人同时抱取首批双箱，本轮没有后续输送节拍；仅场景复位重新开带。
+            "restart_after_departure": False,
         },
     )
 

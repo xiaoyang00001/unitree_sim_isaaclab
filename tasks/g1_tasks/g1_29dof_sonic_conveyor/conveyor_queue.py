@@ -189,13 +189,20 @@ def latch_front_arrival_group(
 def belt_release_gate(
     arrived: torch.Tensor,
     completed: torch.Tensor,
+    *,
+    restart_after_departure: bool = True,
 ) -> torch.Tensor:
-    """整带放行门：存在"已到位但尚未偏出流水线"的箱子时禁止整带运行。
+    """整带放行门：按场景策略决定到位箱离线后是否允许再次启动。
 
     输入均为 ``(N, E)``，输出 ``(E,)``。与 ``update_lift_hold_latch`` 生成的悬空
     压停互补：那边拦的是"被抬离带面但 XY 未偏出"的悬空箱，这里拦的是"仍躺在
     工位（含被抓取推挤回上游）"的到位箱——两者一起构成"箱子被拿到流水线之外
-    才重新开带"的完整口径。``.any(dim=0)`` 是张量 reduce，不产生 GPU→CPU 同步。
+    才重新开带"的完整口径。
+
+    ``restart_after_departure=False`` 用于双机器人同时抱取首批双箱的单批次场景：
+    任一工位箱首次到位后，``arrived`` 锁存会一直关门到 F12/DDS/env reset；箱子随后
+    抬起或横向离线都不会重新启动流水线。``.any(dim=0)`` 是张量 reduce，不产生
+    GPU→CPU 同步。
     """
 
     if arrived.shape != completed.shape:
@@ -203,6 +210,8 @@ def belt_release_gate(
             "arrived 与 completed 形状必须一致："
             f"{tuple(arrived.shape)} vs {tuple(completed.shape)}"
         )
+    if not restart_after_departure:
+        return ~arrived.any(dim=0)
     return ~((arrived & ~completed).any(dim=0))
 
 

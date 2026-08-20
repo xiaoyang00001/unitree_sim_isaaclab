@@ -262,12 +262,15 @@ def drive_belt_boxes_on_conveyor(
     belt_dwell: torch.Tensor | None = None,
     release_settle_steps: int = 25,
     front_arrival_group_size: int = 1,
+    restart_after_departure: bool = True,
 ):
-    """把纸箱队列沿带面送到工位，工位箱偏出流水线通道后放行下一格。
+    """把纸箱队列沿带面送到工位，并按场景策略保持停线或放行下一格。
 
     与 ``drive_totes_on_conveyor``（每个筐各自独立判断 ``y > y_stop``）的差别只在
     停止线怎么算：队首停在工位，后车原地保持队形；工位箱只被抬高、根位置 XY 仍在
-    流水线通道上方时继续停线，横向偏出通道后下一格立即补位。判据本身在
+    流水线通道上方时继续停线。默认在横向偏出通道后让下一格补位；双机单批次场景
+    通过 ``restart_after_departure=False`` 在首批到位后持续停线，直到场景复位。
+    判据本身在
     ``conveyor_queue``（无 Isaac 依赖、有单测）：直线形态用
     ``queue_drive_mask``（裸 y），弯道形态用 ``path_progress`` +
     ``queue_drive_mask_along_path``（沿路径距离 s），完整推导见各自 docstring。
@@ -281,18 +284,19 @@ def drive_belt_boxes_on_conveyor(
 
     ``arrived`` 是与 ``departure_completed`` 同形的到位锁存：箱子首次越过工位停止
     线即置位。抱取时机器人把工位箱推挤回停止线上游 1-2 cm 是常态，裸
-    ``lead > stop`` 比较会当场误开整带并把手里的箱子往回拖；锁存后"工位被占用"
-    直到该箱平面偏出流水线（completed）才解除——启停节拍在一次抱取内只翻转一次。
-    已放行（completed）的箱子同时从队首判定与驱动输出中剔除，手臂回摆把它带回
-    带面上方时不会再按停整带或被重新拖走。
+    ``lead > stop`` 比较会当场误开整带并把手里的箱子往回拖。允许循环取件时，锁存
+    保持到该箱平面偏出流水线（completed）再放行；单批次模式则忽略完成位并一直停到
+    reset。已完成（completed）的箱子都会从队首判定与驱动输出中剔除，手臂回摆把它
+    带回带面上方时不会被重新拖走。
 
     ``lifted`` / ``belt_dwell`` 是悬空压停锁存及其驻留计数（推导见
     ``update_lift_hold_latch``）：上游截抓的箱子既没有 arrived 也没有 completed，
     携行高度又恰好横跨 z 窗阈值，瞬时判会让整带跟着手臂颠簸启停；锁存化后抬离
     带面即稳定压停，回带连续驻留 ``release_settle_steps`` 步（默认 25 步 = 0.5 s
-    @50Hz tick）才解除。同一驻留判据同时给 completed 提供场内解除
+    @50Hz tick）才解除。循环取件模式下，同一驻留判据同时给 completed 提供场内解除
     （``release_resettled_boxes``）：脱手掉回带上的已放行箱重新入队，不再变成
-    堵死队列的呆滞障碍。已知限制：箱子被抱住但仍贴在带面 z 窗内的瞬间（尚未
+    堵死队列的呆滞障碍；单批次模式不执行场内解除，保证只有 reset 能重新开带。
+    已知限制：箱子被抱住但仍贴在带面 z 窗内的瞬间（尚未
     抬起），几何判据无法区分"被抱住"与"自由躺放"，若恰逢整带此刻放行，该箱在
     抬离前仍会被短暂写输送速度——这是纯几何判据的固有盲区，靠缩短贴带抱取
     时间缓解。
@@ -394,17 +398,24 @@ def drive_belt_boxes_on_conveyor(
             completed,
             release_steps=release_settle_steps,
         )
-        completed, arrived_now = conveyor_queue.release_resettled_boxes(
-            completed, arrived_now, settled
-        )
+        # 循环取件才允许落回带面后重新入队；单批次必须保留 arrived 到 reset，
+        # 否则两箱离线后又稳定落回带面会清锁存并意外重启流水线。
+        if restart_after_departure:
+            completed, arrived_now = conveyor_queue.release_resettled_boxes(
+                completed, arrived_now, settled
+            )
         departure_completed[:, env_ids] = completed
         arrived[:, env_ids] = arrived_now
         lifted[:, env_ids] = lifted_now
         belt_dwell[:, env_ids] = dwell_now
-        # 两道门相与：既没有"悬空未离线"的箱子，也没有"到位未离线"的箱子。
+        # 悬空门与到位策略门相与；单批次模式下到位策略门锁存到 reset，不因离线放行。
         transfer_complete = conveyor_queue.lift_hold_gate(
             lifted_now
-        ) & conveyor_queue.belt_release_gate(arrived_now, completed)  # (E,)
+        ) & conveyor_queue.belt_release_gate(
+            arrived_now,
+            completed,
+            restart_after_departure=restart_after_departure,
+        )  # (E,)
     # (N, 1)：广播到 (N, E)。箱型通常只有十余个，每周期重建此小张量成本可忽略。
     half_len = pos_local.new_tensor(half_lengths).unsqueeze(-1)
     speed = -velocity_y  # velocity_y 约定为负（-Y 方向）；沿路径恒速取其模。
@@ -491,6 +502,7 @@ class DriveBeltBoxesOnConveyor(ManagerTermBase):
         extra_rects: tuple[tuple[float, float, float, float], ...] = (),
         release_settle_steps: int = 25,
         front_arrival_group_size: int = 1,
+        restart_after_departure: bool = True,
     ) -> None:
         drive_belt_boxes_on_conveyor(
             env,
@@ -516,6 +528,7 @@ class DriveBeltBoxesOnConveyor(ManagerTermBase):
             belt_dwell=self._belt_dwell,
             release_settle_steps=release_settle_steps,
             front_arrival_group_size=front_arrival_group_size,
+            restart_after_departure=restart_after_departure,
         )
 
 

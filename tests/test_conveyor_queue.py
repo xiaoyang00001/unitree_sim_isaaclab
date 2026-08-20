@@ -746,7 +746,7 @@ class ArrivalLatchTest(unittest.TestCase):
 
 
 class BeltReleaseGateTest(unittest.TestCase):
-    """整带放行门：存在"到位未偏出"的箱子就禁跑，偏出锁存后重新放行。"""
+    """整带放行门：兼容循环取件，并支持双机器人单批次终止停线。"""
 
     def test_gate_blocks_while_an_arrived_box_is_still_on_the_line(self) -> None:
         arrived = torch.tensor([[True], [False]], dtype=torch.bool)
@@ -760,6 +760,30 @@ class BeltReleaseGateTest(unittest.TestCase):
         completed = torch.tensor([[True], [False]], dtype=torch.bool)
         self.assertEqual(
             _MODULE.belt_release_gate(arrived, completed).tolist(), [True]
+        )
+
+    def test_single_batch_mode_stays_closed_after_completion(self) -> None:
+        arrived = torch.tensor([[True], [True], [False]], dtype=torch.bool)
+        completed = torch.tensor([[True], [True], [False]], dtype=torch.bool)
+        self.assertEqual(
+            _MODULE.belt_release_gate(
+                arrived,
+                completed,
+                restart_after_departure=False,
+            ).tolist(),
+            [False],
+        )
+
+    def test_single_batch_mode_opens_again_only_after_reset(self) -> None:
+        arrived = torch.zeros((3, 1), dtype=torch.bool)
+        completed = torch.zeros((3, 1), dtype=torch.bool)
+        self.assertEqual(
+            _MODULE.belt_release_gate(
+                arrived,
+                completed,
+                restart_after_departure=False,
+            ).tolist(),
+            [True],
         )
 
     def test_boxes_never_arrived_do_not_block(self) -> None:
@@ -790,6 +814,8 @@ class GrabCycleStabilityTest(unittest.TestCase):
     _BOX3 = (-5.62, 15.637, 0.775)
 
     _RELEASE_STEPS = 25
+    _FRONT_ARRIVAL_GROUP_SIZE = 1
+    _RESTART_AFTER_DEPARTURE = True
 
     def setUp(self) -> None:
         self._completed = torch.zeros((3, 1), dtype=torch.bool)
@@ -824,6 +850,10 @@ class GrabCycleStabilityTest(unittest.TestCase):
         self._arrived = _MODULE.update_arrival_latch(
             self._arrived, pos[..., 1], y_stop=_Y_STOP
         )
+        self._arrived = _MODULE.latch_front_arrival_group(
+            self._arrived,
+            group_size=self._FRONT_ARRIVAL_GROUP_SIZE,
+        )
         self._lifted, self._dwell, settled = _MODULE.update_lift_hold_latch(
             self._lifted,
             self._dwell,
@@ -832,11 +862,14 @@ class GrabCycleStabilityTest(unittest.TestCase):
             self._completed,
             release_steps=self._RELEASE_STEPS,
         )
-        self._completed, self._arrived = _MODULE.release_resettled_boxes(
-            self._completed, self._arrived, settled
-        )
+        if self._RESTART_AFTER_DEPARTURE:
+            self._completed, self._arrived = _MODULE.release_resettled_boxes(
+                self._completed, self._arrived, settled
+            )
         gate = _MODULE.lift_hold_gate(self._lifted) & _MODULE.belt_release_gate(
-            self._arrived, self._completed
+            self._arrived,
+            self._completed,
+            restart_after_departure=self._RESTART_AFTER_DEPARTURE,
         )
         drive = _MODULE.queue_drive_mask(
             pos[..., 1],
@@ -854,19 +887,20 @@ class GrabCycleStabilityTest(unittest.TestCase):
         # 抱取推挤：y 被推回停止线上游 2cm——修复前这里整带误启动且箱1 被拖拽。
         self.assertEqual(self._step((-5.42, _Y_STOP + 0.02, 0.775)), [False] * 3)
 
-    def test_completed_box_swinging_back_neither_stops_the_belt_nor_gets_dragged(
+    def test_completed_box_swinging_back_respects_restart_policy(
         self,
     ) -> None:
         self._step((-5.42, _Y_STOP - 0.011, 0.775))  # 到位锁存
         self._step((-5.42, _Y_STOP - 0.011, 0.955))  # 抬起（z 出窗）
-        # 横移出通道 → 放行，后车启动。
-        self.assertEqual(self._step((-5.05, _Y_STOP - 0.01, 0.955)), [False, True, True])
+        expected = [False, self._RESTART_AFTER_DEPARTURE, self._RESTART_AFTER_DEPARTURE]
+        # 横移出通道后，循环取件模式放行，单批次模式继续停线。
+        self.assertEqual(self._step((-5.05, _Y_STOP - 0.01, 0.955)), expected)
         # 手臂回摆：箱1 短暂回到通道内 + 带面高度窗内。修复前它重新参与队首判定
-        # （按停整带）或重新满足 drive（被拖拽）；现在两者都不发生。
-        self.assertEqual(self._step((-5.12, _Y_STOP + 0.02, 0.885)), [False, True, True])
-        self.assertEqual(self._step((-5.00, _Y_STOP + 0.02, 0.900)), [False, True, True])
+        # 或重新满足 drive（被拖拽）；现在保持所配置的重启策略且箱1始终不被驱动。
+        self.assertEqual(self._step((-5.12, _Y_STOP + 0.02, 0.885)), expected)
+        self.assertEqual(self._step((-5.00, _Y_STOP + 0.02, 0.900)), expected)
 
-    def test_full_grab_cycle_toggles_the_belt_exactly_once(self) -> None:
+    def test_full_grab_cycle_has_expected_belt_transitions(self) -> None:
         frames = [
             (-5.42, _Y_STOP - 0.011, 0.775),  # 停在工位
             (-5.42, _Y_STOP + 0.020, 0.775),  # 抱取推挤
@@ -887,7 +921,7 @@ class GrabCycleStabilityTest(unittest.TestCase):
             if prev_running is not None and running != prev_running:
                 transitions += 1
             prev_running = running
-        self.assertEqual(transitions, 1)
+        self.assertEqual(transitions, int(self._RESTART_AFTER_DEPARTURE))
 
     def test_completed_box_left_on_the_belt_still_blocks_a_follower(self) -> None:
         """防撞保底仍看物理 on_belt：已放行的箱体真实挡在带上时后车要刹住。"""
@@ -1064,26 +1098,28 @@ class ReleaseResettledBoxesTest(unittest.TestCase):
 
 
 class InterceptGrabStabilityTest(GrabCycleStabilityTest):
-    """双机流程：robot2 上游截抓 belt_box_2（无 arrived/completed 保护的箱子）。
+    """双机单批次流程：前两箱同时抱取，首批到位后不再启动流水线。
 
-    复用 GrabCycleStabilityTest 的事件层链路 helper。核心断言：box2 被抬起后
-    z 窗颠簸不再翻转整带（悬空锁存），box2 平面偏出后带才恢复。
+    复用 GrabCycleStabilityTest 的事件层链路 helper，并启用运行时相同的前两箱成组
+    到位与禁止重启参数。核心断言：任一箱或两箱横向离线后，box3 都不补位。
     """
 
-    def test_lifted_intercept_box_holds_the_belt_through_z_flutter(self) -> None:
+    _FRONT_ARRIVAL_GROUP_SIZE = 2
+    _RESTART_AFTER_DEPARTURE = False
+
+    def test_both_boxes_departing_never_restarts_the_belt(self) -> None:
         box2_lane = self._BOX2[0]
         # box1 在工位、box2 停排队位：整带停。
         self.assertEqual(self._step((-5.42, _Y_STOP - 0.011, 0.775)), [False] * 3)
-        # robot1 把 box1 横移出通道 → 放行；box2 成为新队首被驱动（贴带盲区，已知限制）。
+        # robot1 把 box1 横移出通道，首批到位锁存仍保持整带停线。
         self.assertEqual(
-            self._step((-5.05, _Y_STOP - 0.01, 0.955)), [False, True, True]
+            self._step((-5.05, _Y_STOP - 0.01, 0.955)), [False, False, False]
         )
-        # robot2 把 box2 抬离带面 → 悬空锁存 → 整带停。
+        # robot2 把 box2 抬离带面，携行颠簸穿越 z 窗也不改变终止停线状态。
         self.assertEqual(
             self._step((-4.80, _Y_STOP, 0.955), (box2_lane, 14.85, 0.960)),
             [False, False, False],
         )
-        # box2 携行颠簸 z 回窗一帧：修复前整带随之启动一帧，现在保持停。
         self.assertEqual(
             self._step((-4.80, _Y_STOP, 0.955), (box2_lane, 14.85, 0.900)),
             [False, False, False],
@@ -1092,26 +1128,25 @@ class InterceptGrabStabilityTest(GrabCycleStabilityTest):
             self._step((-4.80, _Y_STOP, 0.955), (box2_lane, 14.85, 0.960)),
             [False, False, False],
         )
-        # box2 横移出通道 → completed → 整带恢复，box3 补位。
+        # 两箱都横移出通道后仍不重启，box3 不补位。
         self.assertEqual(
             self._step((-4.80, _Y_STOP, 0.955), (-5.00, 14.85, 0.960)),
-            [False, False, True],
+            [False, False, False],
         )
 
-    def test_dropped_completed_box_self_heals_after_dwell(self) -> None:
-        # box1 放行后脱手掉回带面停止线上游，躺满驻留步数 → 重新入队被驱动。
+    def test_both_boxes_returning_to_belt_does_not_clear_terminal_stop(self) -> None:
+        # 首批到位后两箱均离线，完成位已经锁存。
         self._step((-5.42, _Y_STOP - 0.011, 0.775))
-        self.assertEqual(
-            self._step((-5.05, _Y_STOP + 0.02, 0.955)), [False, True, True]
-        )
+        self._step((-5.00, _Y_STOP, 0.960), (-5.00, _Y_STOP + 0.75, 0.960))
+
+        # 即使两箱随后落回带面并驻留超过旧自愈窗口，也不能重新入队或启动 box3。
         drive = None
-        for _ in range(self._RELEASE_STEPS):
-            drive = self._step((-5.42, _Y_STOP + 0.30, 0.775))
-        # 驻留满：completed/arrived 清零，box1 重新当队列箱被送向工位；它恰好落在
-        # box2 兜底线内 11mm，防撞保底刹住 box2（间距拉开后自然恢复），box3 照常跑。
-        self.assertEqual(drive, [True, False, True])
-        # 它到位后整带重新停住——恢复正常节拍。
-        self.assertEqual(self._step((-5.42, _Y_STOP - 0.011, 0.775)), [False] * 3)
+        for _ in range(self._RELEASE_STEPS + 1):
+            drive = self._step(
+                (-5.42, _Y_STOP + 0.30, 0.775),
+                (-5.82, _Y_STOP + 1.05, 0.775),
+            )
+        self.assertEqual(drive, [False, False, False])
 
 
 class LoopModeCompletedExclusionTest(unittest.TestCase):
