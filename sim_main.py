@@ -498,11 +498,13 @@ sonic_task_names = {
     "Isaac-G1-29DoF-Dex3-Sonic",
     "Isaac-G1-29DoF-Training-Sonic",
     "Isaac-G1-29DoF-Sonic-Conveyor",
+    "Isaac-G1-29DoF-Sonic-Cafe",
 }
 sonic_dex3_task_names = {
     "Isaac-G1-29DoF-Sonic",
     "Isaac-G1-29DoF-Dex3-Sonic",
     "Isaac-G1-29DoF-Sonic-Conveyor",
+    "Isaac-G1-29DoF-Sonic-Cafe",
 }
 is_sonic_task = args_cli.task in sonic_task_names
 
@@ -530,11 +532,12 @@ if args_cli.task == "Isaac-G1-29DoF-Sonic-Conveyor":
         verbose_tag="[sync_identity]", load_env=False
     )
 else:
-    is_scene_sync_host = False
+    # 咖啡交接场景固定为同一进程内的双 SONIC host，不启用 conveyor 的场景同步。
+    is_scene_sync_host = args_cli.task == "Isaac-G1-29DoF-Sonic-Cafe"
 if is_scene_sync_viewer:
     print("[viewer] Pure-mirror viewer mode (ISAACLAB_LOCAL_ROBOT_ID=0)")
 if is_scene_sync_host:
-    print("[host] Dual-robot host mode (ISAACLAB_HOST_BOTH_ROBOTS=1): robot_2 <- rt/r2/*")
+    print("[host] Dual-robot SONIC mode: robot <- rt/*, robot_2 <- rt/r2/*")
 # host 需要第二套 G1/Dex3 DDS 通道（create_dds_objects 按此标志注册 g129_r2/dex3_r2）。
 args_cli.enable_second_robot_dds = is_scene_sync_host
 
@@ -1206,7 +1209,8 @@ def main():
                         "imported material: "
                         + ", ".join(material_report.unmapped_visual_links)
                     )
-                if args_cli.task == "Isaac-G1-29DoF-Sonic-Conveyor":
+                if args_cli.task in {"Isaac-G1-29DoF-Sonic-Conveyor", "Isaac-G1-29DoF-Sonic-Cafe"}:
+                    standby_prim_paths = []
                     if is_scene_sync_host:
                         # host 的第二台真身机器人
                         apply_g1_sonic_visual_materials("/World/envs/env_0/Robot2")
@@ -1222,12 +1226,13 @@ def main():
                             apply_g1_sonic_visual_materials("/World/envs/env_0/PeerRobot2")
                     # 以 InteractiveScene 实际生成的 extras 为真源，不再重复解析布局
                     # 环境变量，也不写死数量。=0 时列表自然为空；=1 默认找到三台。
-                    standby_prim_paths = [
-                        prim_path
-                        for asset_name, view in env.scene.extras.items()
-                        if asset_name.startswith("standby_robot_")
-                        for prim_path in view.prim_paths
-                    ]
+                    if args_cli.task == "Isaac-G1-29DoF-Sonic-Conveyor":
+                        standby_prim_paths = [
+                            prim_path
+                            for asset_name, view in env.scene.extras.items()
+                            if asset_name.startswith("standby_robot_")
+                            for prim_path in view.prim_paths
+                        ]
                     for standby_prim_path in standby_prim_paths:
                         apply_g1_sonic_visual_materials(standby_prim_path)
                     if standby_prim_paths:
