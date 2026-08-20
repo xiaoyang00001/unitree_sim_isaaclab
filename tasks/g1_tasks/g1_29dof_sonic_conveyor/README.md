@@ -59,7 +59,7 @@ ISAACLAB_PEER_ROBOT_MODE=visual_lod
 
 | 值 | 布局 | 关键世界坐标 |
 |---|---|---|
-| `1`（默认） | 17 个箱/包沿**西拐入口弯道路径**以 pitch 0.75 排在工位上游；前两箱成组到位后供 robot_1/2 同时抱取，流水线持续停住且不再补位；生产默认前三个站位是 SONIC 动力学真身，robot_4/5 是纯显示 standby | 第一/第二机器人工位分别为 `y=14.398 / 15.148`（`x=-4.54 / -6.7`）；robot_3 位于 `(-12.70,18.9534)` 并朝西北正对末位物体；其余站位 `(-6.70,17.95)` 朝 `+X`、`(-9.50,21.15)` 朝 `-Y`；出生槽位 s=`11.06 − 0.75k (k=0..16)`；`y_stop=14.398` |
+| `1`（默认） | 17 个箱/包沿**西拐入口弯道路径**以 pitch 0.75 排在工位上游；前两箱成组到位后供 robot_1/2 同时抱取，流水线持续停住且不再补位；生产默认前三个站位是 SONIC 动力学真身，robot_4/5 是纯显示 standby | 第一/第二机器人工位分别为 `y=14.398 / 15.148`（`x=-4.54 / -6.7`）；robot_3 优先接管靠近它们的原 StandbyRobot2，位于 `(-6.70,17.95)` 并朝 `+X`；robot_4 对应远端 `(-12.70,18.9534)` 并朝西北，robot_5 对应 `(-9.50,21.15)` 并朝 `-Y`；出生槽位 s=`11.06 − 0.75k (k=0..16)`；`y_stop=14.398` |
 | `0` | 两个原尺寸塑料筐叠放在入料口推车上；机器人面对面站在推车两侧 | 作业组 `(-5.62, 19.0)`（机器人 `x=-4.82 / -6.42`）；`y_stop=11.75` |
 
 例如：`ISAACLAB_TOTES_ON_CONVEYOR=0 python sim_main.py ...`。
@@ -70,6 +70,10 @@ ISAACLAB_PEER_ROBOT_MODE=visual_lod
 `Physics/Robot/Sensor` 三组 variant 全关，不含 articulation、关节、刚体、碰撞、执行器或
 传感器。`ISAACLAB_TOTES_ON_CONVEYOR=0` 没有额外三个站位；共享配置仍请求 `3..5` 时，
 EnvCfg、DDS 和 provider 会一致自动回退为双机。
+
+额外站位使用固定接管映射，而不是按 standby 数组下标顺序：robot_3 优先接管靠近
+robot_1/2 的原 StandbyRobot2，robot_4 接管原 StandbyRobot1，robot_5 接管原
+StandbyRobot3。因而三机模式只替换近位，另外两台仍保持纯显示资产且不会与真身叠模。
 
 共享配置和一键 bringup 当前默认数量为 `3`。需要恢复四/五路能力时显式传
 `PIPELINE_SONIC_ROBOT_COUNT=4|5`；手动 host 使用对应的

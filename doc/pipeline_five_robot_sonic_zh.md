@@ -9,6 +9,12 @@
 朝向，只有数量覆盖时才具备独立 articulation、执行器、足底接触传感器、动作、观测及
 DDS 通道。五台能力全开时共使用 15 个动作 term，动作张量为 `5 × 43 × 3 = 645` 维。
 
+额外站位采用固定 ID 映射，并让 `robot_3` 优先接管近位：`robot_3` 接管原
+`StandbyRobot2` 近位 `(-6.70, 17.95)`、朝 `+X`；`robot_4` 接管原
+`StandbyRobot1` 远位 `(-12.70, 18.9534)`、朝西北；`robot_5` 接管原
+`StandbyRobot3` `(-9.50, 21.15)`、朝 `-Y`。因此生产默认三机只把近位升级为
+动力学真身，另外两个原站位继续使用 visual-only standby；四、五机按上述固定映射接管。
+
 这个数量只扩展同一 host 内的 SONIC 通道，**不扩展场景同步身份**：
 
 - Ubuntu host 仍是 `ISAACLAB_LOCAL_ROBOT_ID=1`；
