@@ -96,7 +96,12 @@ from . import endless_intake
 from .endless_intake import resolve_endless_intake
 from .peer_visual_lod import JOINT_NAMES as PEER_VISUAL_LOD_JOINT_NAMES
 from .peer_visual_lod import resolve_peer_robot_mode
-from .scene_layout import resolve_scene_layout
+from .scene_layout import (
+    resolve_scene_layout,
+    sonic_active_extra_pose_indices,
+    sonic_extra_robot_pose_index,
+    sonic_standby_pose_indices,
+)
 from .scene_props import resolve_scene_props
 from .tote_assets import resolve_tote_asset
 from .zmq_scene_sync import ZmqEnvResetSyncActionCfg, ZmqSceneStateSyncActionCfg
@@ -396,6 +401,16 @@ ROBOT_1_X = SCENE_LAYOUT.robot_1_x
 ROBOT_2_X = SCENE_LAYOUT.robot_2_x
 STANDBY_ROBOT_POSES = SCENE_LAYOUT.standby_robot_poses
 
+# 额外三个站位使用固定 SONIC ID 映射：robot_3 优先接管靠近 robot_1/2 的
+# pose[1]，robot_4/5 分别接管 pose[0]/pose[2]。纯函数同时生成活动槽位及其
+# standby 补集，供 host、viewer、展示资产和日志共用，避免数量切片漂移后叠模。
+_ACTIVE_SONIC_EXTRA_POSE_INDICES = sonic_active_extra_pose_indices(
+    ACTIVE_SONIC_ROBOT_COUNT
+)
+_STATIC_SONIC_EXTRA_POSE_INDICES = sonic_standby_pose_indices(
+    ACTIVE_SONIC_ROBOT_COUNT
+)
+
 # 第二台拖车。流水线布局下是留在原工作位的空车；原布局下载着两筐顶到流水线入料端。
 PUSHCART_2_POS = list(SCENE_LAYOUT.pushcart_2_pos)
 
@@ -472,8 +487,14 @@ def _scene_robot_pose(
         return (ROBOT_1_X, ROBOT_WORKSTATION_Y, 0.76), _ROBOT_1_ROT
     if robot_id == 2:
         return (ROBOT_2_X, ROBOT_2_WORKSTATION_Y, 0.76), _ROBOT_2_ROT
-    pose_index = robot_id - 3
-    if not 0 <= pose_index < len(STANDBY_ROBOT_POSES):
+    try:
+        pose_index = sonic_extra_robot_pose_index(robot_id)
+    except ValueError as exc:
+        raise ValueError(
+            f"robot_{robot_id} has no conveyor standby pose; "
+            "ISAACLAB_SONIC_ROBOT_COUNT>2 requires ISAACLAB_TOTES_ON_CONVEYOR=1"
+        ) from exc
+    if pose_index >= len(STANDBY_ROBOT_POSES):
         raise ValueError(
             f"robot_{robot_id} has no conveyor standby pose; "
             "ISAACLAB_SONIC_ROBOT_COUNT>2 requires ISAACLAB_TOTES_ON_CONVEYOR=1"
@@ -821,26 +842,27 @@ def _log_scene_layout() -> None:
         "（支线越过货架排 B 所需；wrapper 组变换/装饰/地贴同 Δ）"
     )
     if STANDBY_ROBOT_POSES:
-        _active_extra_count = (
-            max(0, ACTIVE_SONIC_ROBOT_COUNT - 2) if (HOST_MODE or VIEWER_MODE) else 0
-        )
         _active_extra_xy = " / ".join(
-            f"({pose.pos[0]:.2f},{pose.pos[1]:.2f})"
-            for pose in STANDBY_ROBOT_POSES[:_active_extra_count]
+            f"({STANDBY_ROBOT_POSES[index].pos[0]:.2f},"
+            f"{STANDBY_ROBOT_POSES[index].pos[1]:.2f})"
+            for index in _ACTIVE_SONIC_EXTRA_POSE_INDICES
         )
-        if _active_extra_count:
+        if _ACTIVE_SONIC_EXTRA_POSE_INDICES:
             _active_role = "SONIC 动力学真身" if HOST_MODE else "scene_state 镜像"
             print(
-                f"{tag}   新增活动机器人 ×{_active_extra_count}: {_active_extra_xy}"
+                f"{tag}   新增活动机器人 ×{len(_ACTIVE_SONIC_EXTRA_POSE_INDICES)}: "
+                f"{_active_extra_xy}"
                 f"（{_active_role}，沿流水线分散、非面对面）"
             )
-        _static_poses = STANDBY_ROBOT_POSES[_active_extra_count:]
-        if _static_poses:
+        _static_pose_indices = _STATIC_SONIC_EXTRA_POSE_INDICES
+        if _static_pose_indices:
             _static_xy = " / ".join(
-                f"({pose.pos[0]:.2f},{pose.pos[1]:.2f})" for pose in _static_poses
+                f"({STANDBY_ROBOT_POSES[index].pos[0]:.2f},"
+                f"{STANDBY_ROBOT_POSES[index].pos[1]:.2f})"
+                for index in _static_pose_indices
             )
             print(
-                f"{tag}   纯显示站位机器人 ×{len(_static_poses)}: "
+                f"{tag}   纯显示站位机器人 ×{len(_static_pose_indices)}: "
                 f"{_static_xy}（无 articulation/物理）"
             )
     if CONVEYOR_TOTE_NAMES and TOTES_ON_CONVEYOR:
@@ -1777,13 +1799,19 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
     # 未被 SONIC 数量覆盖的额外站位继续用原纯显示资产；覆盖后由上面的 RobotN 真身
     # 或 PeerRobotN 镜像取代，避免同一位置叠出两台机器人。
     standby_robot_1: AssetBaseCfg | None = (
-        _make_standby_robot_cfg(0) if ACTIVE_SONIC_ROBOT_COUNT < 3 else None
+        _make_standby_robot_cfg(0)
+        if 0 in _STATIC_SONIC_EXTRA_POSE_INDICES
+        else None
     )
     standby_robot_2: AssetBaseCfg | None = (
-        _make_standby_robot_cfg(1) if ACTIVE_SONIC_ROBOT_COUNT < 4 else None
+        _make_standby_robot_cfg(1)
+        if 1 in _STATIC_SONIC_EXTRA_POSE_INDICES
+        else None
     )
     standby_robot_3: AssetBaseCfg | None = (
-        _make_standby_robot_cfg(2) if ACTIVE_SONIC_ROBOT_COUNT < 5 else None
+        _make_standby_robot_cfg(2)
+        if 2 in _STATIC_SONIC_EXTRA_POSE_INDICES
+        else None
     )
 
     # 方向光制造明暗面，避免 DomeLight 均匀照明导致的"塑料感"。

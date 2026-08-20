@@ -24,6 +24,39 @@ CONVEYOR_NORTH_SHIFT_Y = 0.25
 # 约 2.5 mm，视觉贴地且 pelvis 高度一致。
 STANDBY_ROBOT_ROOT_Z = 0.76
 
+# robot_3..5 接管额外站位时的固定映射。三机生产默认让 robot_3 优先接管
+# 靠近 robot_1/2 的 pose[1]；robot_4/5 分别保留 pose[0]/pose[2] 的唯一槽位。
+SONIC_EXTRA_ROBOT_POSE_ORDER = (1, 0, 2)
+
+
+def sonic_extra_robot_pose_index(robot_id: int) -> int:
+    """Return the standby-pose index assigned to ``robot_3..5``."""
+
+    order_index = robot_id - 3
+    if not 0 <= order_index < len(SONIC_EXTRA_ROBOT_POSE_ORDER):
+        raise ValueError(f"robot_{robot_id} has no extra conveyor pose")
+    return SONIC_EXTRA_ROBOT_POSE_ORDER[order_index]
+
+
+def sonic_active_extra_pose_indices(robot_count: int) -> tuple[int, ...]:
+    """Return extra pose indices occupied by dynamic/mirrored SONIC robots."""
+
+    extra_count = robot_count - 2
+    if not 0 <= extra_count <= len(SONIC_EXTRA_ROBOT_POSE_ORDER):
+        raise ValueError("SONIC conveyor robot count must be in [2, 5]")
+    return SONIC_EXTRA_ROBOT_POSE_ORDER[:extra_count]
+
+
+def sonic_standby_pose_indices(robot_count: int) -> tuple[int, ...]:
+    """Return extra pose indices that must remain render-only standby assets."""
+
+    active = sonic_active_extra_pose_indices(robot_count)
+    return tuple(
+        index
+        for index in range(len(SONIC_EXTRA_ROBOT_POSE_ORDER))
+        if index not in active
+    )
+
 
 def _shifted(base_y: float) -> float:
     """把北移前的世界 y 基准值平移到当前布局；round 掉二进制浮点尾巴。"""

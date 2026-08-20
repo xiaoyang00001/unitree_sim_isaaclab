@@ -587,9 +587,20 @@ class FiveRobotWiringSourceTest(unittest.TestCase):
             self.assertIn(f"robot_{robot_id}: ArticulationCfg | None", self.cfg_source)
             self.assertIn(f"foot_contact_{robot_id}: ContactSensorCfg | None", self.cfg_source)
             self.assertIn(f"peer_robot_{robot_id}: ArticulationCfg | AssetBaseCfg | None", self.cfg_source)
-        self.assertIn("if ACTIVE_SONIC_ROBOT_COUNT < 3 else None", self.cfg_source)
-        self.assertIn("if ACTIVE_SONIC_ROBOT_COUNT < 4 else None", self.cfg_source)
-        self.assertIn("if ACTIVE_SONIC_ROBOT_COUNT < 5 else None", self.cfg_source)
+        self.assertIn(
+            "_ACTIVE_SONIC_EXTRA_POSE_INDICES = sonic_active_extra_pose_indices(",
+            self.cfg_source,
+        )
+        self.assertIn(
+            "_STATIC_SONIC_EXTRA_POSE_INDICES = sonic_standby_pose_indices(",
+            self.cfg_source,
+        )
+        self.assertIn("pose_index = sonic_extra_robot_pose_index(robot_id)", self.cfg_source)
+        for pose_index in range(3):
+            self.assertIn(
+                f"if {pose_index} in _STATIC_SONIC_EXTRA_POSE_INDICES",
+                self.cfg_source,
+            )
 
     def test_scene_publishes_and_viewer_applies_all_configured_robots(self) -> None:
         self.assertIn(
