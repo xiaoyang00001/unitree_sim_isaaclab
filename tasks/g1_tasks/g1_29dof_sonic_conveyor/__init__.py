@@ -16,11 +16,12 @@ gym.register(
 )
 
 # Complete real-scene previews reuse the Conveyor multi-robot contract.  The
-# warehouse task above remains the functional conveyor baseline; these IDs
-# swap in a complete room/building background and explicitly disable conveyor
-# props/events where that USD has no belt.
+# task above remains the functional conveyor baseline; these IDs swap in a
+# complete room/building background and explicitly disable conveyor
+# props/events.  In particular, ``Conveyor-Warehouse`` is the room-only
+# Simple Warehouse variant, not another alias for the belt layout.
 _MULTI_SCENE_TASKS = {
-    "Isaac-G1-29DoF-Sonic-Conveyor-Warehouse": conveyor_env_cfg.G129SonicConveyorEnvCfg,
+    "Isaac-G1-29DoF-Sonic-Conveyor-Warehouse": multi_scene_env_cfg.G129SonicMultiWarehouseEnvCfg,
     "Isaac-G1-29DoF-Sonic-Conveyor-Apartment": multi_scene_env_cfg.G129SonicMultiApartmentEnvCfg,
     "Isaac-G1-29DoF-Sonic-Conveyor-Staircase": multi_scene_env_cfg.G129SonicMultiStaircaseEnvCfg,
     "Isaac-G1-29DoF-Sonic-Conveyor-Office": multi_scene_env_cfg.G129SonicMultiOfficeEnvCfg,

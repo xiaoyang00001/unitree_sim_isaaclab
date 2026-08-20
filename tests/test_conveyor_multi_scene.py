@@ -13,11 +13,19 @@ class ConveyorMultiSceneStaticTest(unittest.TestCase):
     def test_multi_scene_module_is_valid_python_and_has_all_complete_assets(self) -> None:
         source = MULTI_CFG.read_text(encoding="utf-8")
         ast.parse(source)
-        for key in ("apartment", "staircase", "office"):
+        for key in ("warehouse", "apartment", "staircase", "office"):
             self.assertIn(f'"{key}": MultiRobotSceneSpec', source)
         self.assertIn("_NON_CONVEYOR_FIELDS", source)
         self.assertIn('"conveyor_collider"', source)
         self.assertIn('*(f"belt_box_{index}"', source)
+        self.assertIn("ISAAC_REAL_WAREHOUSE_USD", source)
+
+    def test_conveyor_warehouse_is_room_only(self) -> None:
+        source = MULTI_CFG.read_text(encoding="utf-8")
+        init_source = CONVEYOR_INIT.read_text(encoding="utf-8")
+        self.assertIn("G129SonicMultiWarehouseEnvCfg", init_source)
+        self.assertIn('background_prim_name="Warehouse"', source)
+        self.assertIn('"warehouse": REAL_WAREHOUSE_USD', source)
 
     def test_every_robot_role_is_declared_and_not_removed(self) -> None:
         source = MULTI_CFG.read_text(encoding="utf-8")
@@ -47,7 +55,6 @@ class ConveyorMultiSceneStaticTest(unittest.TestCase):
     def test_apartment_group_is_not_spawned_inside_the_known_collision_wall(self) -> None:
         source = MULTI_CFG.read_text(encoding="utf-8")
         self.assertIn('"robot_1": (-2.5, 5.5, 0.76)', source)
-        self.assertNotIn('"robot_1": (0.0, 0.0, 0.76)', source)
 
 
 if __name__ == "__main__":

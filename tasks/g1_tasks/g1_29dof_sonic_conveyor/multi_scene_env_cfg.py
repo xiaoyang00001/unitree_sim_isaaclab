@@ -3,7 +3,7 @@
 The original conveyor configuration couples three concerns: the SONIC robot
 and scene-sync contract, the warehouse conveyor assets, and the conveyor
 events.  This module reuses the first concern while making the latter two
-explicit.  Apartment, Staircase, and Office therefore keep all robot fields
+explicit.  Warehouse, Apartment, Staircase, and Office therefore keep all robot fields
 and DDS/sync wiring but do not accidentally spawn boxes or conveyor colliders
 against an unrelated floor asset.
 
@@ -50,7 +50,12 @@ from .conveyor_env_cfg import (
 _LIGHTWHEEL_ROOT = os.environ.get(
     "LIGHTWHEEL_OPEN_SOURCE_ROOT_DIR", "/home/nolo/Lightwheel_OpenSource"
 )
+REAL_WAREHOUSE_USD = os.environ.get(
+    "ISAAC_REAL_WAREHOUSE_USD",
+    f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/warehouse.usd",
+)
 REAL_COMPLETE_SCENE_USDS = {
+    "warehouse": REAL_WAREHOUSE_USD,
     "apartment": os.path.join(
         _LIGHTWHEEL_ROOT, "Locomotion", "Apartment", "scene_04.usd"
     ),
@@ -78,6 +83,30 @@ class MultiRobotSceneSpec:
 # remain real articulations in host mode, so keeping them away from walls and
 # furniture matters even when the default camera only renders robot_1.
 MULTI_SCENE_SPECS = {
+    "warehouse": MultiRobotSceneSpec(
+        key="warehouse",
+        background_usd=REAL_COMPLETE_SCENE_USDS["warehouse"],
+        background_prim_name="Warehouse",
+        robot_positions={
+            # The Simple Warehouse has a clear central aisle between the
+            # pillar rows. Keep the physical pair in that aisle so the room
+            # variant remains walkable when HOST_BOTH_ROBOTS is enabled.
+            "robot_1": (0.0, 0.0, 0.76),
+            "robot_2": (0.0, 2.0, 0.76),
+            "standby_robot_1": (-3.0, 0.0, 0.76),
+            "standby_robot_2": (3.0, 0.0, 0.76),
+            "standby_robot_3": (0.0, 4.8, 0.76),
+        },
+        robot_rotations={
+            "robot_1": (1.0, 0.0, 0.0, 0.0),
+            "robot_2": (0.0, 0.0, 0.0, 1.0),
+            "standby_robot_1": (1.0, 0.0, 0.0, 0.0),
+            "standby_robot_2": (0.0, 0.0, 0.0, 1.0),
+            "standby_robot_3": (1.0, 0.0, 0.0, 0.0),
+        },
+        camera_eye=(7.5, -8.5, 4.5),
+        camera_lookat=(0.0, 0.0, 1.0),
+    ),
     "apartment": MultiRobotSceneSpec(
         key="apartment",
         background_usd=REAL_COMPLETE_SCENE_USDS["apartment"],
@@ -194,7 +223,7 @@ def _make_background_cfg(spec: MultiRobotSceneSpec) -> AssetBaseCfg:
     )
 
 
-# Every conveyor-only field is explicitly removed from the non-warehouse
+# Every conveyor-only field is explicitly removed from the complete-room
 # variants.  The robot and peer fields are intentionally *not* in this list.
 _NON_CONVEYOR_FIELDS = (
     "packing_table",
@@ -311,6 +340,9 @@ def _make_scene_cfg_class(class_name: str, spec: MultiRobotSceneSpec):
     return configclass(type(class_name, (G129SonicConveyorSceneCfg,), attrs))
 
 
+G129SonicMultiWarehouseSceneCfg = _make_scene_cfg_class(
+    "G129SonicMultiWarehouseSceneCfg", MULTI_SCENE_SPECS["warehouse"]
+)
 G129SonicMultiApartmentSceneCfg = _make_scene_cfg_class(
     "G129SonicMultiApartmentSceneCfg", MULTI_SCENE_SPECS["apartment"]
 )
@@ -394,6 +426,11 @@ def _make_env_cfg_class(class_name: str, scene_cfg_cls, spec: MultiRobotSceneSpe
     return configclass(type(class_name, (G129SonicEnvCfg,), attrs))
 
 
+G129SonicMultiWarehouseEnvCfg = _make_env_cfg_class(
+    "G129SonicMultiWarehouseEnvCfg",
+    G129SonicMultiWarehouseSceneCfg,
+    MULTI_SCENE_SPECS["warehouse"],
+)
 G129SonicMultiApartmentEnvCfg = _make_env_cfg_class(
     "G129SonicMultiApartmentEnvCfg",
     G129SonicMultiApartmentSceneCfg,
