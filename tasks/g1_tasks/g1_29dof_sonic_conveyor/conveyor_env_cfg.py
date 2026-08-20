@@ -515,6 +515,12 @@ CONVEYOR_LEGACY_ENABLED = CONVEYOR_DRIVE.legacy_enabled
 CONVEYOR_SURFACE_VELOCITY_ENABLED = CONVEYOR_DRIVE.surface_velocity_enabled
 CONVEYOR_SURFACE_RECYCLE_ENABLED = CONVEYOR_DRIVE.surface_recycle_enabled
 CONVEYOR_ENABLED = CONVEYOR_LEGACY_ENABLED or CONVEYOR_SURFACE_VELOCITY_ENABLED
+# Opt-in fast path for the legacy belt-box event.  The implementation is
+# deliberately CPU-only: scene sync already requires the production host to
+# use the CPU pipeline, while CUDA keeps the historical branch-free writes.
+CONVEYOR_SKIP_IDLE_VELOCITY_WRITES = _env_bool(
+    "ISAACLAB_CONVEYOR_SKIP_IDLE_VELOCITY_WRITES", False
+)
 
 # 循环模式（ISAACLAB_CONVEYOR_Y_STOP<=0 ⇒ y_stop=None）下纸箱同样需要回收。
 # 塑料筐的 legacy 驱动自带 loop 分支会把筐传回入料端，但纸箱走的是
@@ -2061,6 +2067,7 @@ class ConveyorEventsCfg:
             "path_radius": endless_intake.CORNER_RADIUS,
             "path_s_origin_x": endless_intake.S_ORIGIN_X,
             "extra_rects": endless_intake.ON_BELT_EXTRA_RECTS,
+            "skip_idle_velocity_writes": CONVEYOR_SKIP_IDLE_VELOCITY_WRITES,
         },
     )
 
