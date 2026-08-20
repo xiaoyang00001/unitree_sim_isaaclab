@@ -35,6 +35,45 @@ python sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor \
 单机自测（不建 socket）：`ISAACLAB_SCENE_SYNC=0`。
 持久配置写 `configs/scene_sync.env`（进程环境变量永远优先）。
 
+## 多机器人完整真实场景变体
+
+基于同一套 Conveyor 多机器人配置，新增了四个可直接选择的任务 ID：
+
+| 任务 ID 后缀 | 完整背景 | 说明 |
+|---|---|---|
+| `Conveyor-Warehouse` | Simple Warehouse + 流水线 | 现有完整流水线基线的别名 |
+| `Conveyor-Apartment` | `Apartment/scene_04.usd` | 室内北侧开放房间，多机器人站位已避开横墙 |
+| `Conveyor-Staircase` | `2-StoryStaircase.usd` | 带楼梯/Loft 的真实建筑场景，机器人组放在开阔地面 |
+| `Conveyor-Office` | Isaac Sim Office `office.usd` | 官方 Office 完整场景；首次加载可能较慢 |
+
+例如只看 Apartment 画面（不接 SONIC deploy）：
+
+```bash
+ISAACLAB_SCENE_SYNC=0 \
+ISAACLAB_CONVEYOR_VISIBLE_ROBOTS=first \
+python sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor-Apartment \
+  --action_source hold --device cpu
+```
+
+这四个变体都保留 Conveyor 的机器人角色字段：对等模式是本机 `robot` + 对端
+`peer_robot`，`HOST_BOTH_ROBOTS=1` 时再实例化第二台全动力学 `robot_2`，viewer
+模式则有 `peer_robot` + `peer_robot_2`；三台 `standby_robot_*` 始终是纯显示资产。
+默认显示策略是只渲染全局 `robot_1`。隐藏只改变 USD/Imageable 可见性，不会因为隐藏
+而删除已实例化机器人的动力学、DDS 或 scene-sync 配置。
+需要检查完整编队时可重启并设置：
+
+```bash
+ISAACLAB_CONVEYOR_VISIBLE_ROBOTS=all
+```
+
+也可用逗号选择（如 `robot_1,robot_2,standby_robot_1`）。原有的
+`Isaac-G1-29DoF-Sonic-Warehouse/Apartment/Staircase/Office` 任务保持单机器人语义；
+要看这里的多机器人版本，请使用上表中带 `Conveyor-` 的任务 ID。非 Warehouse 变体
+会显式关闭输送带道具和 ConveyorEvents，避免把流水线坐标硬拼到房间/楼梯/办公室 USD。
+这些新变体会无条件保留三台 standby 外观；后文关于
+`ISAACLAB_TOTES_ON_CONVEYOR=0` 不生成 standby 的说明只适用于原始
+`Isaac-G1-29DoF-Sonic-Conveyor` 基线。
+
 镜像机器人默认继续使用已验过的无碰撞 articulation。需要先试用不进入 PhysX 的
 43-DoF 纯显示 LOD，可在接收镜像的进程增加：
 

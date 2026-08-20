@@ -509,6 +509,10 @@ sonic_task_names = {
     "Isaac-G1-29DoF-Sonic-Apartment",
     "Isaac-G1-29DoF-Sonic-Staircase",
     "Isaac-G1-29DoF-Sonic-Office",
+    "Isaac-G1-29DoF-Sonic-Conveyor-Warehouse",
+    "Isaac-G1-29DoF-Sonic-Conveyor-Apartment",
+    "Isaac-G1-29DoF-Sonic-Conveyor-Staircase",
+    "Isaac-G1-29DoF-Sonic-Conveyor-Office",
 }
 sonic_dex3_task_names = {
     "Isaac-G1-29DoF-Sonic",
@@ -525,7 +529,19 @@ sonic_dex3_task_names = {
     "Isaac-G1-29DoF-Sonic-Apartment",
     "Isaac-G1-29DoF-Sonic-Staircase",
     "Isaac-G1-29DoF-Sonic-Office",
+    "Isaac-G1-29DoF-Sonic-Conveyor-Warehouse",
+    "Isaac-G1-29DoF-Sonic-Conveyor-Apartment",
+    "Isaac-G1-29DoF-Sonic-Conveyor-Staircase",
+    "Isaac-G1-29DoF-Sonic-Conveyor-Office",
 }
+conveyor_scene_task_names = {
+    "Isaac-G1-29DoF-Sonic-Conveyor",
+    "Isaac-G1-29DoF-Sonic-Conveyor-Warehouse",
+    "Isaac-G1-29DoF-Sonic-Conveyor-Apartment",
+    "Isaac-G1-29DoF-Sonic-Conveyor-Staircase",
+    "Isaac-G1-29DoF-Sonic-Conveyor-Office",
+}
+conveyor_or_cafe_task_names = conveyor_scene_task_names | {"Isaac-G1-29DoF-Sonic-Cafe"}
 is_sonic_task = args_cli.task in sonic_task_names
 
 # 纯镜像 viewer（工作包 A）：ISAACLAB_LOCAL_ROBOT_ID=0 表示本机只收不发地复刻
@@ -534,7 +550,7 @@ is_sonic_task = args_cli.task in sonic_task_names
 # 只对 conveyor 任务生效：其余 SONIC 任务没有场景同步概念，残留的环境变量
 # 不该改写它们的行为。
 is_scene_sync_viewer = False
-if args_cli.task == "Isaac-G1-29DoF-Sonic-Conveyor":
+if args_cli.task in conveyor_scene_task_names:
     # 身份解析必须与 conveyor_env_cfg 同源（含 scene_sync.env 的 setdefault 注入
     # 与 int() 解析）——双源判定会在「ID 写在 env 文件」或 "00" 写法下裂脑。
     # 不能 import tasks 包取（会在 AppLauncher 之前拖进 isaaclab），按文件路径加载。
@@ -1229,7 +1245,7 @@ def main():
                         "imported material: "
                         + ", ".join(material_report.unmapped_visual_links)
                     )
-                if args_cli.task in {"Isaac-G1-29DoF-Sonic-Conveyor", "Isaac-G1-29DoF-Sonic-Cafe"}:
+                if args_cli.task in conveyor_or_cafe_task_names:
                     standby_prim_paths = []
                     if is_scene_sync_host:
                         # host 的第二台真身机器人
@@ -1246,7 +1262,7 @@ def main():
                             apply_g1_sonic_visual_materials("/World/envs/env_0/PeerRobot2")
                     # 以 InteractiveScene 实际生成的 extras 为真源，不再重复解析布局
                     # 环境变量，也不写死数量。=0 时列表自然为空；=1 默认找到三台。
-                    if args_cli.task == "Isaac-G1-29DoF-Sonic-Conveyor":
+                    if args_cli.task in conveyor_scene_task_names:
                         standby_prim_paths = [
                             prim_path
                             for asset_name, view in env.scene.extras.items()
@@ -1785,7 +1801,7 @@ def main():
     elif sonic_reset_supported:
         print("[fall_reset] automatic detection disabled; safe manual reset recovery remains available")
 
-    # ZMQ 双机场景同步（Isaac-G1-29DoF-Sonic-Conveyor 任务才有这两个 term）。
+    # ZMQ 双机场景同步（Conveyor 多机器人任务族才有这两个 term）。
     # 复位编排：ID=1 是复位权威，本机整环境复位后广播 reset_id；镜像端（ID=2）
     # 在主循环里消费该事件并跟随复位，scene_state 帧按 reset_id 门控丢弃复位前旧帧。
     def _get_scene_sync_term(term_name: str):

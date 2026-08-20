@@ -100,6 +100,17 @@ from .sync_identity import load_scene_sync_env, resolve_host_both_robots, resolv
 
 load_scene_sync_env(verbose_tag="[conveyor_env_cfg]")
 
+# Import after scene_sync.env has been loaded so the optional display policy
+# follows the same setdefault semantics as the rest of the Conveyor config.
+# In particular, ``ISAACLAB_CONVEYOR_VISIBLE_ROBOTS`` may live in that file,
+# not only in the shell environment.
+from .robot_visibility import (  # noqa: E402
+    DEFAULT_VISIBILITY_MODE,
+    VISIBLE_ROBOTS_ENV,
+    VISIBLE_ROBOT_NAMES,
+    is_robot_visual_visible,
+)
+
 CONTACT_REPORT_MODE = resolve_contact_report_mode(os.environ)
 TOTE_COLLIDER_MODE, TOTE_USD_PATH = resolve_tote_asset(_ASSETS_DIR / "props", os.environ)
 
@@ -701,6 +712,11 @@ def _log_scene_layout() -> None:
             f"{tag} 本机身份: {LOCAL_ROBOT_GLOBAL_NAME}"
             f"（物体权威={'是' if OBJECT_AUTHORITY else '否'}，物体镜像={'是' if MIRROR_OBJECTS else '否'}）"
         )
+    print(
+        f"{tag} 机器人显示策略: {os.environ.get(VISIBLE_ROBOTS_ENV, DEFAULT_VISIBILITY_MODE)!r}"
+        f" -> {','.join(sorted(VISIBLE_ROBOT_NAMES)) or 'none'}"
+        "（只改视觉，不删 DDS/动力学/同步实体）"
+    )
     if SCENE_SYNC_ENABLED:
         print(
             f"{tag} 场景同步: bind={SCENE_SYNC_BIND_ENDPOINT} connect={SCENE_SYNC_CONNECT_ENDPOINT}"
@@ -1044,6 +1060,12 @@ def _make_local_robot_cfg() -> ArticulationCfg:
     cfg = make_sonic_robot_cfg()
     cfg.init_state.pos = LOCAL_ROBOT_POS
     cfg.init_state.rot = LOCAL_ROBOT_ROT
+    # Visibility is a render-only policy.  Keep the articulation, DDS and
+    # scene-sync identity alive even when this local robot is hidden (for
+    # example, ID=2 while the default view shows global robot_1).
+    cfg.spawn.visible = is_robot_visual_visible(
+        "robot_2" if LOCAL_ROBOT_ID == 2 else "robot_1"
+    )
     configure_robot_contact_reports(cfg.spawn, CONTACT_REPORT_MODE)
     return cfg
 
@@ -1059,6 +1081,7 @@ def _make_second_local_robot_cfg() -> ArticulationCfg:
     cfg.prim_path = "{ENV_REGEX_NS}/Robot2"
     cfg.init_state.pos = (ROBOT_2_X, ROBOT_2_WORKSTATION_Y, 0.76)
     cfg.init_state.rot = _ROBOT_2_ROT
+    cfg.spawn.visible = is_robot_visual_visible("robot_2")
     configure_robot_contact_reports(cfg.spawn, CONTACT_REPORT_MODE)
     return cfg
 
@@ -1154,6 +1177,10 @@ def _make_peer_robot_cfg() -> ArticulationCfg:
         cfg.spawn.activate_contact_sensors = False
         cfg.spawn.rigid_props = sim_utils.RigidBodyPropertiesCfg(**_PEER_RIGID_PROPS)
         cfg.spawn.collision_props = sim_utils.CollisionPropertiesCfg(collision_enabled=False)
+    # The peer's global identity depends on whether this process is ID=1 or
+    # ID=2.  Apply visibility after the USD/URDF fallback branch so both
+    # spawners receive the same render-only policy.
+    cfg.spawn.visible = is_robot_visual_visible(PEER_ROBOT_GLOBAL_NAME)
     return cfg
 
 
@@ -1163,6 +1190,7 @@ def _make_second_peer_robot_cfg() -> ArticulationCfg:
     cfg.prim_path = "{ENV_REGEX_NS}/PeerRobot2"
     cfg.init_state.pos = PEER2_ROBOT_POS
     cfg.init_state.rot = PEER2_ROBOT_ROT
+    cfg.spawn.visible = is_robot_visual_visible("robot_2")
     return cfg
 
 
@@ -1185,10 +1213,11 @@ def _make_peer_visual_lod_cfg(
     prim_path: str = "{ENV_REGEX_NS}/PeerRobot",
     pos: tuple[float, float, float] = PEER_ROBOT_POS,
     rot: tuple[float, float, float, float] = PEER_ROBOT_ROT,
+    global_name: str = PEER_ROBOT_GLOBAL_NAME,
 ) -> AssetBaseCfg:
     """Create a render-only G1 mirror; scene-state drives its link Xforms."""
 
-    return AssetBaseCfg(
+    cfg = AssetBaseCfg(
         prim_path=prim_path,
         init_state=AssetBaseCfg.InitialStateCfg(pos=pos, rot=rot),
         spawn=UsdFileCfg(
@@ -1196,6 +1225,8 @@ def _make_peer_visual_lod_cfg(
             activate_contact_sensors=False,
         ),
     )
+    cfg.spawn.visible = is_robot_visual_visible(global_name)
+    return cfg
 
 
 def _make_peer_scene_cfg() -> ArticulationCfg | AssetBaseCfg:
@@ -1210,6 +1241,7 @@ def _make_second_peer_scene_cfg() -> ArticulationCfg | AssetBaseCfg:
             prim_path="{ENV_REGEX_NS}/PeerRobot2",
             pos=PEER2_ROBOT_POS,
             rot=PEER2_ROBOT_ROT,
+            global_name="robot_2",
         )
     return _make_second_peer_robot_cfg()
 
@@ -1227,7 +1259,7 @@ def _make_standby_robot_cfg(index: int) -> AssetBaseCfg | None:
     if index >= len(STANDBY_ROBOT_POSES):
         return None
     pose = STANDBY_ROBOT_POSES[index]
-    return AssetBaseCfg(
+    cfg = AssetBaseCfg(
         prim_path=f"{{ENV_REGEX_NS}}/{_STANDBY_ROBOT_PRIM_NAMES[index]}",
         init_state=AssetBaseCfg.InitialStateCfg(pos=pose.pos, rot=pose.rot),
         # 引用原两台同源的完整 SONIC G1，切掉物理/控制/传感 variant，并烘焙
@@ -1239,6 +1271,8 @@ def _make_standby_robot_cfg(index: int) -> AssetBaseCfg | None:
             activate_contact_sensors=False,
         ),
     )
+    cfg.spawn.visible = is_robot_visual_visible(f"standby_robot_{index + 1}")
+    return cfg
 
 
 # ==================================================================
