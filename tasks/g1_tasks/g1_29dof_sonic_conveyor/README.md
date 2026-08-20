@@ -1,9 +1,11 @@
 # Isaac-G1-29DoF-Sonic-Conveyor
 
 SONIC DDS 控制的 2..5 台 G1 + warehouse 流水线场景 + ZMQ host/viewer 场景同步。
+生产默认启用 `robot_1..3` 三路 SONIC，`robot_4/5` 保持原始 visual-only standby；
+四/五路仍可显式启用。
 
-五台机器人控制的通道表、启动方式、GR00T deploy 陷阱和验收入口见
-[流水线五机器人 SONIC 控制](../../../doc/pipeline_five_robot_sonic_zh.md)。
+完整五路能力的通道表、启动方式、GR00T deploy 陷阱和验收入口见
+[流水线多机器人 SONIC 控制](../../../doc/pipeline_five_robot_sonic_zh.md)。
 
 场景物理、USD 轻量化、资源选型、分阶段施工顺序和验收指标统一记录在
 [Isaac G1 双机器人流水线场景优化路线与验收基线](../../../doc/conveyor_scene_optimization_roadmap_zh.md)。
@@ -57,7 +59,7 @@ ISAACLAB_PEER_ROBOT_MODE=visual_lod
 
 | 值 | 布局 | 关键世界坐标 |
 |---|---|---|
-| `1`（默认） | 17 个箱/包沿**西拐入口弯道路径**以 pitch 0.75 **铺满**工位上游、挡停放行流向工位；五机 host 下所有站位都是 SONIC 动力学真身，历史双机/对等模式下后三个站位仍是纯显示 G1 | 现有工位 `y=14.398`（机器人 `x=-4.54 / -6.7` 不变）；新增站位 `(-12.70,18.9534)` 位于最后一个物体南侧偏东 1 m 并朝西北正对它、`(-6.70,17.20)` 朝 `+X`、`(-9.50,21.15)` 朝 `-Y`；出生槽位 s=`8.06 − 0.75k (k=0..16)`；`y_stop=14.398` |
+| `1`（默认） | 17 个箱/包沿**西拐入口弯道路径**以 pitch 0.75 **铺满**工位上游、挡停放行流向工位；生产默认三机 host 的前三个站位是 SONIC 动力学真身，robot_4/5 是纯显示 standby；显式五机时所有站位才都升级为真身 | 现有工位 `y=14.398`（机器人 `x=-4.54 / -6.7` 不变）；新增站位 `(-12.70,18.9534)` 位于最后一个物体南侧偏东 1 m 并朝西北正对它、`(-6.70,17.20)` 朝 `+X`、`(-9.50,21.15)` 朝 `-Y`；出生槽位 s=`8.06 − 0.75k (k=0..16)`；`y_stop=14.398` |
 | `0` | 两个原尺寸塑料筐叠放在入料口推车上；机器人面对面站在推车两侧 | 作业组 `(-5.62, 19.0)`（机器人 `x=-4.82 / -6.42`）；`y_stop=11.75` |
 
 例如：`ISAACLAB_TOTES_ON_CONVEYOR=0 python sim_main.py ...`。
@@ -68,6 +70,10 @@ ISAACLAB_PEER_ROBOT_MODE=visual_lod
 `Physics/Robot/Sensor` 三组 variant 全关，不含 articulation、关节、刚体、碰撞、执行器或
 传感器。`ISAACLAB_TOTES_ON_CONVEYOR=0` 没有额外三个站位；共享配置仍请求 `3..5` 时，
 EnvCfg、DDS 和 provider 会一致自动回退为双机。
+
+共享配置和一键 bringup 当前默认数量为 `3`。需要恢复四/五路能力时显式传
+`PIPELINE_SONIC_ROBOT_COUNT=4|5`；手动 host 使用对应的
+`ISAACLAB_SONIC_ROBOT_COUNT=4|5`。该切换会重建场景与 deploy，不是运行期热更新。
 
 默认的 `ISAACLAB_CONVEYOR_PROPS=layout` 会真正不生成当前布局用不到的道具：
 
@@ -326,7 +332,11 @@ wall-clock 发布频率仍受实际物理步速度限制。
 `ISAACLAB_SONIC_ROBOT_COUNT=2..5` 选择动力学真身数量。每台机器人拥有独立的
 `rt[/rN]/*` 身体与 Dex3 命令/状态、观测缓存和足底传感器。动作按机器人顺序拼成
 `N × 129` 维，所有已配置通道的 LowCmd ack 都匹配后才推进环境。完整启动与端口表见
-[五机器人 SONIC 手册](../../../doc/pipeline_five_robot_sonic_zh.md)。
+[多机器人 SONIC 手册](../../../doc/pipeline_five_robot_sonic_zh.md)。
+
+生产 bringup 当前选择三台真身；第 4、5 个站位继续使用原始
+`g1_43dof_standby_visual_only.usda`，不创建对应 DDS/deploy。四/五机仅在显式
+`PIPELINE_SONIC_ROBOT_COUNT=4|5` 时启用。
 
 核心的 `ISAACLAB_SONIC_MERGE_ACTUATORS` 与 `ISAACLAB_SONIC_VALIDATE_ACTUATORS` 都默认
 关闭，通用/对等启动保持原行为；生产一键脚本显式采用
@@ -341,6 +351,14 @@ wall-clock 发布频率仍受实际物理步速度限制。
 与末 60 条 A/E/R/T 详见上述手册。这组数据不能与不同负载的 HandCmd/LowState 数据累计，
 也不能外推为五机结果。
 
+后续 clean-load 收敛测试中，四机完整 velocity 写入基线为
+`2705 / 120.28 = 22.489192 Hz`；空闲纸箱写入跳过候选为
+`2732 / 120.21 = 22.726895 Hz`，仅提升 1.057%，未达到 5% 采用门槛，因此核心
+`ISAACLAB_CONVEYOR_SKIP_IDLE_VELOCITY_WRITES` 仍默认 `0`。三机生产配置达到
+`3929 / 120.15 = 32.700791 Hz`，比该四机基线提升 45.41%；三路 timeout、stale、
+`sync_waits` 均为 0 且姿态健康。足底 ContactSensor 的
+`ISAACLAB_CONVEYOR_CONTACT_HISTORY_LENGTH` 默认也仍为 `4`，`0` 只作为实验候选。
+
 LowState 对新 PhysX 样本使用事件唤醒立即发布，无新样本时按多机默认 55 Hz
 做周期保活；该数字不是 topic 硬上限。同一状态 generation 的重复保活会复用
 已构造的 IDL/CRC，不会重读共享内存和重建全部状态字段。10 Hz 和 20 Hz
@@ -354,8 +372,8 @@ LowState 对新 PhysX 样本使用事件唤醒立即发布，无新样本时按�
 
 ### 双机器人链路
 
-下图描述双 Pico/前两台机器人的 VR 路径；五机 host 的 robot_3..5 使用相同 DDS 链，
-默认由独立 keyboard deploy 控制。
+下图描述双 Pico/前两台机器人的 VR 路径；生产默认的 robot_3 使用相同 DDS 链并由独立
+keyboard deploy 控制。显式四/五机时，robot_4/5 也采用同样的隔离 keyboard 链。
 
 ```text
 Pico 左右控制器 trigger

@@ -9,9 +9,10 @@
 > 自动倒地、Ubuntu F12 和 Pico 左 X 的统一 reset 说明见
 > [Isaac/SONIC 场景复位说明](scene_reset_zh.md)。
 >
-> 2026-08-19 起 bringup 默认创建五台 SONIC 动力学机器人：本手册的 Pico 主链仍聚焦
-> robot_1/2，robot_3..5 默认走独立 keyboard deploy。五机 DDS/端口和性能说明见
-> [流水线五机器人 SONIC 控制](pipeline_five_robot_sonic_zh.md)。
+> 2026-08-20 起生产 bringup 收敛为三台 SONIC 动力学机器人：本手册的 Pico 主链仍聚焦
+> robot_1/2，robot_3 默认走独立 keyboard deploy；robot_4/5 恢复原始 visual-only
+> standby。四/五路仍可显式启用，完整 DDS/端口和历史性能说明见
+> [流水线多机器人 SONIC 控制](pipeline_five_robot_sonic_zh.md)。
 
 ## 0. 链路一图流
 
@@ -27,8 +28,10 @@
        └─ DDS rt/* 锁步 ↔ host sim（Isaac 段零改动）
      deploy#2 --input-type keyboard（默认）
        └─ 双 Pico模式改为 zmq_manager :5566 ← Pico#2 UDP :63902
-     deploy#3..5 --input-type keyboard
-       └─ DDS rt/r3..r5/*（独立输入/调试端口；五路 ack AND）
+     deploy#3 --input-type keyboard（生产默认）
+       └─ DDS rt/r3/*（独立输入/调试端口；三路 ack AND）
+     robot_4/5 visual-only standby
+       └─ 显式 PIPELINE_SONIC_ROBOT_COUNT=4|5 时才增加 deploy 与 rt/r4..r5/*
      win 侧 AR viewer（观看链，与控制链完全并行独立）
 ```
 
@@ -112,7 +115,7 @@ JSON 只会保留到下一次启动。
 一键（推荐，日志落 `/tmp/pipeline_pico/`，`PIPELINE_LOG_DIR` 可覆盖）：
 
 ```bash
-# 默认五机：单 Pico 控 robot_1 + keyboard 控 robot_2..5
+# 生产默认三机：单 Pico 控 robot_1 + keyboard 控 robot_2/3
 bash tools/pipeline_pico_bringup.sh
 
 # 双 Pico：两套 manager 分别控制 robot_1/robot_2
@@ -120,6 +123,9 @@ PIPELINE_DUAL_PICO=1 bash tools/pipeline_pico_bringup.sh
 
 # 回退历史双机：
 PIPELINE_SONIC_ROBOT_COUNT=2 bash tools/pipeline_pico_bringup.sh
+
+# 显式四/五机联调（robot_4/5 才从 visual-only standby 升级为 SONIC 真身）
+PIPELINE_SONIC_ROBOT_COUNT=5 bash tools/pipeline_pico_bringup.sh
 
 # HandCmd 兼容性回滚：必须重启完整 bringup，不是热更新
 PIPELINE_ISAAC_HANDCMD_HZ=500 bash tools/pipeline_pico_bringup.sh
@@ -162,9 +168,15 @@ rg -n "Dex3 HandCmd Rate: 100 Hz|Isaac Dex3 HandCmd publish rate: 100 Hz" \
 
 脚本做的事（手动分步照此复刻）：硬清残余 → host sim（HOST_MODE，CRC 两刀）→
 **全部 deploy 并行存活**（错峰启动）→ manager UDP receiver 就绪 → 全部 deploy Init →
-STARTUP HOLD。默认模式的 deploy#2..5 是 keyboard，脚本继续给对应 channel 发 `]` 并预激活
+STARTUP HOLD。生产默认模式的 deploy#2/3 是 keyboard，脚本继续给对应 channel 发 `]` 并预激活
 planner；双 Pico 模式的 deploy#2 接 `zmq_manager:5566`，另起
 `pico_manager_r2.log`，两路都只等各自操作者 A+B+X+Y，脚本不代按。
+
+默认数量的选择来自 `PIPELINE_SONIC_ROBOT_COUNT=3`；显式设为 `4` 或 `5` 时，脚本才会
+为 robot_4/5 创建真身、DDS 与额外 keyboard deploy。数量切换不是热更新，必须完整重启
+bringup。空闲纸箱 velocity 写入候选仅提升 1.057%，未达到 5% 门槛，生产未启用；核心
+`ISAACLAB_CONVEYOR_SKIP_IDLE_VELOCITY_WRITES` 默认仍为 `0`；
+`ISAACLAB_CONVEYOR_CONTACT_HISTORY_LENGTH` 默认仍为 `4`。
 
 启动顺序不敏感的原因（改脚本前要懂）：manager 拿到**第一帧头显数据才 bind 对应
 ZMQ PUB 5556/5566**；deploy 的 SUB 是 connect 语义会一直重试；command 话题有 **1Hz keepalive** 兜

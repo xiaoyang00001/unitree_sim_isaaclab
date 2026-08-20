@@ -1,14 +1,14 @@
 # 流水线多机场景——新机器部署速查（交接用）
 
-> 目标：在一台新 Ubuntu 机器上跑起 **host 全链**（默认 Isaac 五机器人仿真 + 五套 GR00T
-> deploy + 可选 Pico VR 控制），并可选配 Windows AR viewer。本文只写施工顺序与
-> 必改配置；原理、判读、坑的展开见文末指路。
+> 目标：在一台新 Ubuntu 机器上跑起 **host 全链**（生产默认 Isaac 三机器人仿真 + 三套
+> GR00T deploy + 可选 Pico VR 控制；四/五路可显式启用），并可选配 Windows AR viewer。
+> 本文只写施工顺序与必改配置；原理、判读、坑的展开见文末指路。
 
 ## 0. 环境组成与机器角色
 
 | 角色 | 机器 | 跑什么 | 必需？ |
 |---|---|---|---|
-| host | Ubuntu + NVIDIA GPU | sim（默认 robot_1..5 五台动力学）+ deploy#1..5 + pico_manager | ✅ |
+| host | Ubuntu + NVIDIA GPU | sim（默认 robot_1..3 三台动力学，robot_4/5 visual-only standby）+ deploy#1..3 + pico_manager | ✅ |
 | viewer | Windows + NVIDIA GPU | IsaacLab 纯镜像（只收不发）+ SteamVR AR | 可选 |
 | 操作端 | Pico 4 Ultra | GameLink app（全身追踪+手柄 → host） | 可选（keyboard 可替代调试） |
 
@@ -88,8 +88,10 @@ PIPELINE_SIM_PY=$(conda run -n env_isaaclab which python) \
 bash tools/pipeline_pico_bringup.sh
 ```
 
-默认拉起 sim + deploy#1(zmq_manager) + deploy#2..5(keyboard) + pico_manager 全套，并对
-每个 Isaac deploy 显式传 `--isaac-handcmd-hz 100`；LowCmd、锁步 ACK、Control 和 Planner
+默认拉起 sim + deploy#1(zmq_manager) + deploy#2/3(keyboard) + pico_manager 全套，并对
+每个 Isaac deploy 显式传 `--isaac-handcmd-hz 100`；robot_4/5 保持原始 visual-only
+standby，只有显式
+`PIPELINE_SONIC_ROBOT_COUNT=4|5` 才增加对应真身和 deploy。LowCmd、锁步 ACK、Control 和 Planner
 仍保持 500 Hz。外仓 standalone Isaac 默认及非 Isaac/实机路径也仍为 500 Hz。
 一键脚本的生产默认同时为 `PIPELINE_SONIC_MERGE_ACTUATORS=1`、
 `PIPELINE_SONIC_VALIDATE_ACTUATORS=0`：host 使用 43 关节单组执行器，正常启动不做
@@ -97,6 +99,21 @@ GPU→CPU tensor 校验；核心 `ISAACLAB_*` 两个开关本身仍默认关闭�
 `PIPELINE_DUAL_PICO=1` 把 deploy#2 换成 zmq_manager 并追加 manager#2，端口矩阵与实机
 gate 见 `doc/pipeline_pico_vr_deployment_zh.md` §5。
 **无头显也能跑**（channel#1 停在等发车属正常，不影响物理与锁步）。
+
+四/五路能力测试必须完整重启 bringup，例如：
+
+```bash
+PIPELINE_SONIC_ROBOT_COUNT=5 PIPELINE_SIM_DIR=$PWD GR00T_WBC_ROOT=<GR00T路径> \
+PIPELINE_SIM_PY=$(conda run -n env_isaaclab which python) \
+bash tools/pipeline_pico_bringup.sh
+```
+
+当前 clean-load 选择依据：四机基线 `2705 / 120.28 = 22.489192 Hz`，空闲纸箱 velocity
+写入跳过候选 `2732 / 120.21 = 22.726895 Hz`，只提升 1.057%，未达到 5% 采用门槛；
+三机生产配置 `3929 / 120.15 = 32.700791 Hz`，比四机基线提升 45.41%，三路
+timeout/stale/`sync_waits` 均为 0 且姿态健康。因此生产不打开空闲写候选，核心
+`ISAACLAB_CONVEYOR_SKIP_IDLE_VELOCITY_WRITES` 默认仍为 `0`；
+`ISAACLAB_CONVEYOR_CONTACT_HISTORY_LENGTH` 默认仍为 `4`。
 
 新机首次或升级 GPU/Isaac Lab 后，做一次带 tensor 契约门禁的完整启动；验收通过后下一次
 完整启动恢复默认 `validate=0`。若单组有兼容性回归，以 `merge=0` 完整重启即可恢复原始
