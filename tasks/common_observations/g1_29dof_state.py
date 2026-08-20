@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Sequence
 
 import torch
 
-from dds.dds_master import dds_manager
 from robots.g1_joint_order import G1_29DOF_DDS_JOINT_ORDER
 
 if TYPE_CHECKING:
@@ -120,6 +119,11 @@ def _get_g1_robot_dds_instance(dds_object_name: str = "g129"):
     """Borrow the manager-owned G1 DDS object once it has been registered."""
     instance = _g1_robot_dds_by_name.get(dds_object_name)
     if instance is None:
+        # Importing dds_master constructs the global DDSManager and initializes
+        # the Unitree DDS participant.  Keep that side effect behind the
+        # enable_dds call path so pure scene-sync viewers remain ZMQ-only.
+        from dds.dds_master import dds_manager
+
         instance = dds_manager.get_object(dds_object_name)
         if instance is not None:
             _g1_robot_dds_by_name[dds_object_name] = instance

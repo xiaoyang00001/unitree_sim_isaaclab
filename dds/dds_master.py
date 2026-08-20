@@ -45,8 +45,17 @@ class DDSManager:
         self._wake_event = threading.Event()
 
         self.dds_initialized = False
-        self._init_dds()
-        print("[DDSManager] DDSManager initialized")
+        self.dds_disabled = os.environ.get(
+            "UNITREE_SIM_DISABLE_DDS", "0"
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if self.dds_disabled:
+            print(
+                "[DDSManager] Unitree DDS disabled for this process "
+                "(pure scene-sync viewer)"
+            )
+        else:
+            self._init_dds()
+            print("[DDSManager] DDSManager initialized")
 
     def _parse_object_name(self, name: str) -> tuple[str, str]:
         """Parse object name"""

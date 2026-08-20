@@ -2070,6 +2070,31 @@ class HostObservationsCfg:
 
 
 @configclass
+class ViewerObservationsCfg:
+    """Viewer observations without Unitree DDS publishing side effects."""
+
+    @configclass
+    class PolicyCfg(ObsGroup):
+        # The off-stage ghost still supplies the observation tensors required by
+        # the inherited SONIC environment, but a pure viewer must never look up
+        # DDS objects or publish ghost body/hand state.
+        robot_body_state = ObsTerm(
+            func=get_robot_boy_joint_states,
+            params={"enable_dds": False, "dds_min_interval_ms": 0.0},
+        )
+        robot_dex3_state = ObsTerm(
+            func=get_robot_dex3_joint_states,
+            params={"enable_dds": False, "dds_min_interval_ms": 0.0},
+        )
+
+        def __post_init__(self):
+            self.enable_corruption = False
+            self.concatenate_terms = False
+
+    policy: PolicyCfg = PolicyCfg()
+
+
+@configclass
 class ConveyorEventsCfg:
     """背景锁定 + 互斥的 legacy / Surface Velocity 流水线事件。"""
 
@@ -2219,10 +2244,14 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
     actions: ConveyorActionsCfg | HostConveyorActionsCfg = (
         HostConveyorActionsCfg() if HOST_MODE else ConveyorActionsCfg()
     )
-    # host 模式换成多机器人观测组（每台的两个 DDS 副作用 ObsTerm 是各自 body/Dex3
-    # 状态话题的发布载体）；其余模式沿用底座观测组。
-    observations: SonicObservationsCfg | HostObservationsCfg = (
-        HostObservationsCfg() if HOST_MODE else SonicObservationsCfg()
+    # host 模式换成多机器人 DDS 观测组；viewer 保留相同观测张量但禁止
+    # DDS 副作用；对等双机模式继续沿用底座 SONIC 观测组发布状态。
+    observations: SonicObservationsCfg | ViewerObservationsCfg | HostObservationsCfg = (
+        HostObservationsCfg()
+        if HOST_MODE
+        else ViewerObservationsCfg()
+        if VIEWER_MODE
+        else SonicObservationsCfg()
     )
     events: ConveyorEventsCfg = ConveyorEventsCfg()
 

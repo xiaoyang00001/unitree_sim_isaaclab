@@ -556,10 +556,33 @@ if is_scene_sync_host:
         f"(ISAACLAB_HOST_BOTH_ROBOTS=1, count={scene_sonic_robot_count})"
     )
 # 只有 host 注册多套 G1/Dex3 DDS；viewer 的镜像数量由 cfg 单独读取同一 count，
-# 但本机 ghost 仍只需历史主通道（且走隔离 domain）。
+# 本机 ghost 不参与 Unitree DDS，只由 hold provider 维持在场外。
 args_cli.sonic_robot_count = scene_sonic_robot_count if is_scene_sync_host else 1
 args_cli.enable_second_robot_dds = args_cli.sonic_robot_count > 1
 sonic_host_channel_specs = sonic_robot_channel_specs(args_cli.sonic_robot_count)
+
+# 纯 Viewer 的唯一外部数据链是 host -> Viewer 的 ZMQ scene-sync。
+# 该身份不存在 deploy，不应创建 Cyclone participant、LowState/HandState
+# writer、ResetPose subscriber 或 SimState/Rewards writer。这个进程环境开关必须在
+# dds.dds_master 被 tasks 的 import-time 注册间接导入前就位。
+runtime_dds_enabled = not is_scene_sync_viewer
+os.environ["UNITREE_SIM_DISABLE_DDS"] = "0" if runtime_dds_enabled else "1"
+if is_scene_sync_viewer:
+    if args_cli.action_source != "hold":
+        print(
+            f"[viewer] Ignoring action source {args_cli.action_source!r}; "
+            "using hold (no deploy, no Unitree DDS)"
+        )
+    args_cli.action_source = "hold"
+    args_cli.enable_dex1_dds = False
+    args_cli.enable_dex3_dds = False
+    args_cli.enable_inspire_dds = False
+    args_cli.enable_wholebody_dds = False
+    if args_cli.replay_data:
+        parser.error(
+            "replay_data is unavailable in pure scene-sync viewer mode; "
+            "the viewer must receive its authoritative scene from ZMQ"
+        )
 
 if args_cli.teleop_device == "motion_controllers":
     if args_cli.task not in sonic_dex3_task_names:
@@ -581,7 +604,7 @@ enabled_hand_dds_count = sum(
 )
 if enabled_hand_dds_count > 1:
     parser.error("only one of --enable_dex1_dds, --enable_dex3_dds and --enable_inspire_dds may be enabled")
-if args_cli.task in sonic_dex3_task_names:
+if args_cli.task in sonic_dex3_task_names and runtime_dds_enabled:
     if args_cli.enable_dex1_dds or args_cli.enable_inspire_dds:
         parser.error("the 43-DoF SONIC task requires Dex3 DDS, not Dex1/Inspire DDS")
     if not args_cli.enable_dex3_dds:
@@ -596,7 +619,11 @@ if args_cli.auto_reset_on_fall is None:
 
 if args_cli.sonic_sync_with_lowstate is None:
     args_cli.sonic_sync_with_lowstate = is_sonic_task and not is_scene_sync_viewer
-if args_cli.sim_state_export_hz is None and is_sonic_task:
+if is_scene_sync_viewer:
+    # Viewer receives the authoritative complete scene over ZMQ and must not
+    # publish a second, stale DDS scene state.
+    args_cli.sim_state_export_hz = 0.0
+elif args_cli.sim_state_export_hz is None and is_sonic_task:
     args_cli.sim_state_export_hz = 5.0
 
 if args_cli.step_hz is None:
@@ -664,9 +691,8 @@ for option_name in (
 if args_cli.dds_domain is None:
     raw_dds_domain = os.environ.get("UNITREE_DDS_DOMAIN", "").strip()
     if not raw_dds_domain:
-        # viewer 默认避开权威端的 domain 1：同机联调时 ghost 的 rt/lowstate 绝不能
-        # 混进 host↔deploy 的锁步链路（deploy 会同时收到两路 lowstate）。
-        raw_dds_domain = "9" if is_scene_sync_viewer else "1"
+        # Viewer 不会初始化 DDS；保留该值只为统一 CLI 校验。
+        raw_dds_domain = "1"
     try:
         args_cli.dds_domain = int(raw_dds_domain)
     except ValueError:
@@ -677,7 +703,7 @@ if args_cli.dds_domain < 0:
 dds_interface_arg = args_cli.dds_interface
 if dds_interface_arg is None:
     dds_interface_arg = os.environ.get("UNITREE_DDS_INTERFACE", "").strip() or None
-    if dds_interface_arg is None and is_sonic_task:
+    if dds_interface_arg is None and is_sonic_task and runtime_dds_enabled:
         dds_interface_arg = "lo"
 elif dds_interface_arg.strip().lower() == "auto":
     dds_interface_arg = None
@@ -687,30 +713,27 @@ else:
         parser.error("--dds-interface must be a network interface name or 'auto'")
 
 args_cli.dds_interface = dds_interface_arg
-# viewer 的 domain 隔离只有默认值兜底；显式 UNITREE_DDS_DOMAIN=1（照抄标准 SONIC
-# 前缀）会击穿它——ghost 的 rt/lowstate 带着合法锁步魔数混进同机 host↔deploy 的
-# domain-1/lo 信道，deploy 按错误 sample_seq 回 ack，host 闭环失速。大声提醒。
-if is_scene_sync_viewer and args_cli.dds_domain == 1 and (args_cli.dds_interface or "") == "lo":
-    print("!" * 72)
-    print("!! [viewer] DDS domain=1 + interface=lo 与同机 host<->deploy 锁步链路同信道！")
-    print("!! [viewer] ghost 的 rt/lowstate 会与 host 样本交错，deploy 的 ack 会答错序。")
-    print("!! [viewer] 同机联调请去掉显式的 UNITREE_DDS_DOMAIN=1（viewer 默认 domain=9）。")
-    print("!" * 72)
 os.environ["UNITREE_DDS_DOMAIN"] = str(args_cli.dds_domain)
 if args_cli.dds_interface:
     os.environ["UNITREE_DDS_INTERFACE"] = args_cli.dds_interface
 else:
     os.environ.pop("UNITREE_DDS_INTERFACE", None)
 
-print(
-    "[DDS Config] "
-    f"domain={args_cli.dds_domain}, interface={args_cli.dds_interface or 'auto'}"
-)
+if runtime_dds_enabled:
+    print(
+        "[DDS Config] "
+        f"domain={args_cli.dds_domain}, interface={args_cli.dds_interface or 'auto'}"
+    )
+else:
+    print("[viewer] Unitree DDS disabled; ZMQ scene sync only")
 
 if args_cli.no_render and args_cli.xr:
     parser.error("--no_render cannot be combined with --xr")
 
-from dds.dds_create import create_dds_objects, create_dds_objects_replay
+create_dds_objects = None
+create_dds_objects_replay = None
+if runtime_dds_enabled:
+    from dds.dds_create import create_dds_objects, create_dds_objects_replay
 
 if args_cli.no_render and args_cli.livestream_type != 0:
     parser.error("--no_render cannot be combined with a non-zero --livestream_type")
@@ -986,7 +1009,6 @@ from layeredcontrol.robot_control_system import (
     ControlConfig,
 )
 
-from dds.reset_pose_dds import *
 import tasks
 from isaaclab.devices.teleop_device_factory import create_teleop_device
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
@@ -998,7 +1020,6 @@ from tools.augmentation_utils import (
 )
 
 from tools.data_json_load import sim_state_to_json
-from dds.sim_state_dds import *
 from action_provider.create_action_provider import create_action_provider
 from tools.get_stiffness import get_robot_stiffness_from_env
 from tools.get_reward import get_step_reward_value,get_current_rewards
@@ -1105,6 +1126,8 @@ def main():
     image_server = None
     teleop_interface = None
     dds_manager = None
+    reset_pose_dds = None
+    sim_state_dds = None
     action_provider = None
     controller = None
     runtime_cleanup_complete = False
@@ -1696,21 +1719,29 @@ def main():
                 cleanup_runtime_resources()
                 return
             print("========= create image server success =========")
-        print("========= create dds =========")
-        try:
-            reset_pose_dds,sim_state_dds,dds_manager = create_dds_objects(args_cli,env)
-        except Exception as e:
-            print(f"Failed to create dds: {e}")
-            cleanup_runtime_resources()
-            return
-        print("========= create dds success =========")
+        if runtime_dds_enabled:
+            print("========= create dds =========")
+            try:
+                reset_pose_dds, sim_state_dds, dds_manager = create_dds_objects(
+                    args_cli, env
+                )
+            except Exception as e:
+                print(f"Failed to create dds: {e}")
+                cleanup_runtime_resources()
+                return
+            print("========= create dds success =========")
+        else:
+            print(
+                "[viewer] Skipping Unitree DDS objects; "
+                "scene state and reset events come from ZMQ"
+            )
         # 锁步的关键路径是 env.step 写完新样本后等 rt/lowstate 出门:100Hz 调度
         # 平均白等 5ms(最坏 10ms),直接吃掉每帧 ack 往返预算。SONIC 锁步改为
         # "新样本即发"(事件唤醒发布线程),保活重发节奏保持 100Hz 不变——
         # 单纯拉高发布频率会让序列化抢 GIL,省下的等待又亏在 env.step 里。
         robot_dds_names = [spec.robot_dds_name for spec in sonic_host_channel_specs]
         dex3_dds_names = [spec.dex3_dds_name for spec in sonic_host_channel_specs]
-        if args_cli.lowstate_pub_hz:
+        if runtime_dds_enabled and args_cli.lowstate_pub_hz:
             for _dds_name in robot_dds_names:
                 try:
                     dds_manager.set_publish_rate(_dds_name, float(args_cli.lowstate_pub_hz))
@@ -1719,7 +1750,7 @@ def main():
                     )
                 except Exception as e:
                     print(f"[sim] failed to set lowstate publish rate ({_dds_name}): {e}")
-        if is_sonic_task and args_cli.sonic_sync_with_lowstate:
+        if runtime_dds_enabled and is_sonic_task and args_cli.sonic_sync_with_lowstate:
             # 锁步"新样本即发"：host 模式对每条通道都要开，否则漏掉的 deploy
             # ack 往返每圈多等一个发布调度周期（5-10ms）。
             for _dds_name in robot_dds_names:
@@ -1727,7 +1758,7 @@ def main():
                     dds_manager.enable_immediate_publish(_dds_name)
                 except Exception as e:
                     print(f"[sim] failed to enable immediate lowstate publish ({_dds_name}): {e}")
-        if args_cli.handstate_pub_hz is not None:
+        if runtime_dds_enabled and args_cli.handstate_pub_hz is not None:
             for _dds_name in dex3_dds_names:
                 try:
                     dds_manager.set_publish_rate(
@@ -1742,7 +1773,7 @@ def main():
                         f"[sim] failed to set handstate publish rate "
                         f"({_dds_name}): {e}"
                     )
-        if args_cli.task in sonic_dex3_task_names:
+        if runtime_dds_enabled and args_cli.task in sonic_dex3_task_names:
             # A fresh hand sample is tied to the same completed PhysX step as
             # LowState.  Wake the publisher immediately; the configured rate
             # above is only an idle liveness heartbeat.
@@ -1754,7 +1785,7 @@ def main():
                         f"[sim] failed to enable immediate handstate publish "
                         f"({_dds_name}): {e}"
                     )
-        if is_sonic_task and not is_scene_sync_viewer:
+        if runtime_dds_enabled and is_sonic_task:
             # The first env.reset happens before the DDS object is registered,
             # so its observation cannot seed rt/lowstate. Lock-step control
             # needs one real initial PhysX sample before it can request the
@@ -1856,7 +1887,8 @@ def main():
     print("========= create controller success =========")
 
     sonic_reset_supported = (
-        is_sonic_task
+        dds_manager is not None
+        and is_sonic_task
         and args_cli.action_source in ("sonic_dds", "sonic_dds_host")
         and hasattr(action_provider, "begin_fall_recovery")
         and hasattr(action_provider, "control_started")
@@ -2055,10 +2087,14 @@ def main():
         except Exception as exc:
             print(f"[keyboard] F12 scene reset unavailable: {exc}")
         
-    print(
-        "[DDS Config] Runtime "
-        f"domain={args_cli.dds_domain}, interface={args_cli.dds_interface or 'auto'}"
-    )
+    if runtime_dds_enabled:
+        print(
+            "[DDS Config] Runtime "
+            f"domain={args_cli.dds_domain}, "
+            f"interface={args_cli.dds_interface or 'auto'}"
+        )
+    else:
+        print("[DDS Config] Runtime disabled for pure scene-sync viewer")
     try:
         # start controller - start asynchronous components
         print("========= start controller =========")
@@ -2074,7 +2110,10 @@ def main():
         recent_loop_times = []  # for calculating moving average frequency
         sim_state_update_count = 0
         sim_state_work_s = 0.0
-        if args_cli.sim_state_export_hz is None:
+        if not runtime_dds_enabled or sim_state_dds is None:
+            sim_state_export_enabled = False
+            sim_state_export_interval_s = 0.0
+        elif args_cli.sim_state_export_hz is None:
             sim_state_export_enabled = True
             sim_state_export_interval_s = 0.0  # legacy every-loop behavior
         else:
@@ -2138,11 +2177,13 @@ def main():
                         if sim_state_export_interval_s > 0.0:
                             next_sim_state_export_time = current_time + sim_state_export_interval_s
 
-                    try:
-                        reset_pose_cmd = reset_pose_dds.get_reset_pose_command()
-                    except Exception as e:
-                        print(f"Failed to get reset pose command: {e}")
-                        raise e
+                    reset_pose_cmd = None
+                    if runtime_dds_enabled and reset_pose_dds is not None:
+                        try:
+                            reset_pose_cmd = reset_pose_dds.get_reset_pose_command()
+                        except Exception as e:
+                            print(f"Failed to get reset pose command: {e}")
+                            raise e
                     # Compute current reward values manually if needed for debugging
                     try:
                         if (loop_count % reward_interval) == 0:

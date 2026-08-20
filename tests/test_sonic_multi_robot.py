@@ -642,7 +642,7 @@ class FiveRobotWiringSourceTest(unittest.TestCase):
         )
         self.assertIn("for _dds_name in dex3_dds_names", self.sim_source)
         self.assertIn(
-            "if args_cli.task in sonic_dex3_task_names:\n"
+            "if runtime_dds_enabled and args_cli.task in sonic_dex3_task_names:\n"
             "            # A fresh hand sample is tied to the same completed PhysX step as\n"
             "            # LowState.  Wake the publisher immediately",
             self.sim_source,

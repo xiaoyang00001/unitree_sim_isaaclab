@@ -76,7 +76,6 @@ def get_robot_arm_joint_names() -> list[str]:
     ]
 
 # global variable to cache the DDS instance
-from dds.dds_master import dds_manager
 _g1_robot_dds = None
 _dds_initialized = False
 
