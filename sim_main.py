@@ -1227,7 +1227,8 @@ def main():
                             apply_g1_sonic_visual_materials("/World/envs/env_0/PeerRobot2")
                             apply_g1_sonic_visual_materials("/World/envs/env_0/PeerRobot3")
                     # 以 InteractiveScene 实际生成的 extras 为真源，不再重复解析布局
-                    # 环境变量，也不写死数量；host/viewer 下第一待机位已由 Robot3 接管。
+                    # 环境变量，也不写死数量；host/viewer 下近位待机位已由
+                    # Robot3 接管。
                     standby_prim_paths = [
                         prim_path
                         for asset_name, view in env.scene.extras.items()

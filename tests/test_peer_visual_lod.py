@@ -228,7 +228,9 @@ class PeerVisualLodWiringTests(unittest.TestCase):
         self.assertEqual(source.count("= _make_standby_robot_cfg("), 2)
         for name in ("StandbyRobot1", "StandbyRobot2", "StandbyRobot3"):
             self.assertIn(f'"{name}"', source)
-        self.assertIn("None if (HOST_MODE or VIEWER_MODE) else _make_standby_robot_cfg(0)", source)
+        self.assertIn("standby_robot_1: AssetBaseCfg | None = _make_standby_robot_cfg(0)", source)
+        self.assertIn("None if (HOST_MODE or VIEWER_MODE) else _make_standby_robot_cfg(1)", source)
+        self.assertIn("standby_robot_3: AssetBaseCfg | None = _make_standby_robot_cfg(2)", source)
 
         # 新增展示体不能改动原有两台的朝向契约。
         self.assertIn(

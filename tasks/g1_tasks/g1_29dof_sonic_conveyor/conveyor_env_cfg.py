@@ -401,17 +401,25 @@ BELT_BOX_ROT = [1.0, 0.0, 0.0, 0.0]
 _ROBOT_YAW_IDENTITY = _env_bool("ISAACLAB_ROBOT_YAW_IDENTITY", False)
 _ROBOT_1_ROT = (1.0, 0.0, 0.0, 0.0) if _ROBOT_YAW_IDENTITY else (0.0, 0.0, 0.0, 1.0)
 _ROBOT_2_ROT = (1.0, 0.0, 0.0, 0.0)
-# 第三台机器人接管流水线布局的第一台纯显示待机位。推车布局没有该站位，
-# 三机 host/viewer 必须直接失败，避免场景实体与 387 维 DDS 动作契约裂脑。
-if (HOST_MODE or VIEWER_MODE) and not STANDBY_ROBOT_POSES:
+# Robot3 固定接管靠近 robot_1/2 的第二个纯显示待机位。固定三机分支只保留
+# 这一个下标，不引入 Robot4/5 数量矩阵。
+_ROBOT_3_STANDBY_POSE_INDEX = 1
+if (
+    (HOST_MODE or VIEWER_MODE)
+    and len(STANDBY_ROBOT_POSES) <= _ROBOT_3_STANDBY_POSE_INDEX
+):
     raise ValueError(
         "three-robot SONIC host/viewer requires ISAACLAB_TOTES_ON_CONVEYOR=1"
     )
 _ROBOT_3_POS = (
-    STANDBY_ROBOT_POSES[0].pos if STANDBY_ROBOT_POSES else (0.0, -30.0, 0.76)
+    STANDBY_ROBOT_POSES[_ROBOT_3_STANDBY_POSE_INDEX].pos
+    if len(STANDBY_ROBOT_POSES) > _ROBOT_3_STANDBY_POSE_INDEX
+    else (0.0, -30.0, 0.76)
 )
 _ROBOT_3_ROT = (
-    STANDBY_ROBOT_POSES[0].rot if STANDBY_ROBOT_POSES else (1.0, 0.0, 0.0, 0.0)
+    STANDBY_ROBOT_POSES[_ROBOT_3_STANDBY_POSE_INDEX].rot
+    if len(STANDBY_ROBOT_POSES) > _ROBOT_3_STANDBY_POSE_INDEX
+    else (1.0, 0.0, 0.0, 0.0)
 )
 
 LOCAL_ROBOT_POS = (
@@ -434,7 +442,7 @@ PEER_ROBOT_ROT = _ROBOT_1_ROT if PEER_ROBOT_ID == 1 else _ROBOT_2_ROT
 # viewer 的第二镜像体：robot_2 的工位。对等模式不用（保持 None，场景里不生成）。
 PEER2_ROBOT_POS = (ROBOT_2_X, ROBOT_2_WORKSTATION_Y, 0.76)
 PEER2_ROBOT_ROT = _ROBOT_2_ROT
-# viewer 的第三镜像体与 host Robot3 共用原第一待机位。
+# viewer 的第三镜像体与 host Robot3 共用近位待机位。
 PEER3_ROBOT_POS = _ROBOT_3_POS
 PEER3_ROBOT_ROT = _ROBOT_3_ROT
 
@@ -761,7 +769,11 @@ def _log_scene_layout() -> None:
                 f"{tag}   robot_3={'SONIC 真身' if HOST_MODE else 'scene_state 镜像'}: "
                 f"({_ROBOT_3_POS[0]:.2f},{_ROBOT_3_POS[1]:.2f})"
             )
-            _remaining_standby_poses = STANDBY_ROBOT_POSES[1:]
+            _remaining_standby_poses = tuple(
+                pose
+                for index, pose in enumerate(STANDBY_ROBOT_POSES)
+                if index != _ROBOT_3_STANDBY_POSE_INDEX
+            )
         _standby_xy = " / ".join(
             f"({pose.pos[0]:.2f},{pose.pos[1]:.2f})"
             for pose in _remaining_standby_poses
@@ -1095,7 +1107,7 @@ def _make_second_local_robot_cfg() -> ArticulationCfg:
 
 
 def _make_third_local_robot_cfg() -> ArticulationCfg:
-    """host 专用：第三台全动力学 SONIC 本体，接管原第一待机位。"""
+    """host 专用：第三台全动力学 SONIC 本体，接管原第二个近位待机位。"""
 
     cfg = make_sonic_robot_cfg()
     cfg.prim_path = "{ENV_REGEX_NS}/Robot3"
@@ -1665,12 +1677,12 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
         _make_foot_contact_sensor("Robot3") if HOST_MODE else None
     )
 
-    # 第一个待机位已由 Robot3 真身（host）或 PeerRobot3 镜像（viewer）接管，避免同位
-    # 叠模；旧对等双机模式继续保留原纯显示体。其余两个待机位不变。
-    standby_robot_1: AssetBaseCfg | None = (
-        None if (HOST_MODE or VIEWER_MODE) else _make_standby_robot_cfg(0)
+    # 第二个近位待机位已由 Robot3 真身（host）或 PeerRobot3 镜像（viewer）接管，
+    # 避免同位叠模；旧对等双机模式继续保留原纯显示体。其余两个待机位不变。
+    standby_robot_1: AssetBaseCfg | None = _make_standby_robot_cfg(0)
+    standby_robot_2: AssetBaseCfg | None = (
+        None if (HOST_MODE or VIEWER_MODE) else _make_standby_robot_cfg(1)
     )
-    standby_robot_2: AssetBaseCfg | None = _make_standby_robot_cfg(1)
     standby_robot_3: AssetBaseCfg | None = _make_standby_robot_cfg(2)
 
     # 方向光制造明暗面，避免 DomeLight 均匀照明导致的"塑料感"。

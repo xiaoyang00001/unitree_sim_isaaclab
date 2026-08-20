@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
+import sys
 import unittest
 
 
@@ -60,6 +62,40 @@ class SonicThirdRobotWiringTests(unittest.TestCase):
             self.assertIn(value, source)
         self.assertNotIn("robot_4:", source)
         self.assertNotIn("robot_5:", source)
+
+    def test_robot3_uses_near_standby_slot_without_overlap(self) -> None:
+        source = _source(
+            "tasks/g1_tasks/g1_29dof_sonic_conveyor/conveyor_env_cfg.py"
+        )
+        self.assertIn("_ROBOT_3_STANDBY_POSE_INDEX = 1", source)
+        self.assertIn(
+            "STANDBY_ROBOT_POSES[_ROBOT_3_STANDBY_POSE_INDEX].pos",
+            source,
+        )
+        self.assertIn(
+            "None if (HOST_MODE or VIEWER_MODE) else _make_standby_robot_cfg(1)",
+            source,
+        )
+        self.assertIn(
+            "standby_robot_1: AssetBaseCfg | None = _make_standby_robot_cfg(0)",
+            source,
+        )
+        self.assertIn(
+            "standby_robot_3: AssetBaseCfg | None = _make_standby_robot_cfg(2)",
+            source,
+        )
+
+        layout_path = REPO_ROOT / (
+            "tasks/g1_tasks/g1_29dof_sonic_conveyor/scene_layout.py"
+        )
+        spec = importlib.util.spec_from_file_location("_third_robot_scene_layout", layout_path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        near_pose = module.resolve_scene_layout({}).standby_robot_poses[1]
+        self.assertEqual(near_pose.pos, (-6.7, 17.95, 0.76))
+        self.assertEqual(near_pose.rot, (1.0, 0.0, 0.0, 0.0))
 
     def test_sim_seeds_publishes_and_resets_third_channel(self) -> None:
         source = _source("sim_main.py")
