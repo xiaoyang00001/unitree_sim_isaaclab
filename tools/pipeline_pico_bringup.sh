@@ -3,7 +3,7 @@
 #   sim(HOST_MODE 多机器人) + deploy#1(--input-type zmq_manager ← Pico manager)
 #   + 默认 deploy#2(keyboard 调试通道)，或 PIPELINE_DUAL_PICO=1 时：
 #     deploy#2(--input-type zmq_manager ← Pico manager#2)
-#   + robot_3..N（PIPELINE_SONIC_ROBOT_COUNT，默认 5）各走独立 keyboard deploy；
+#   + robot_3..N（PIPELINE_SONIC_ROBOT_COUNT，默认 3）各走独立 keyboard deploy；
 #     外部 GR00T deploy.sh 尚未原生识别 ID=3..5，本脚本显式钉死 rt/rN 前缀与输出端口。
 #
 # 与 keyboard 版编排的差异：
@@ -43,7 +43,7 @@ PY="${PIPELINE_SIM_PY:-$HOME/miniconda3/envs/env_isaaclab/bin/python}"
 MGR_PY="$GR00T_ROOT/.venv_teleop/bin/python"
 PEER_IP="${ISAACLAB_SCENE_SYNC_PEER_IP:-192.168.50.127}"
 DUAL_PICO="${PIPELINE_DUAL_PICO:-0}"
-SONIC_ROBOT_COUNT="${PIPELINE_SONIC_ROBOT_COUNT:-5}"
+SONIC_ROBOT_COUNT="${PIPELINE_SONIC_ROBOT_COUNT:-3}"
 # 生产默认启用真身执行器 6→1 合并；遇到回归可在启动前显式设 0 原路回滚。
 # runtime tensor 校验只用于 A/B/诊断，默认关闭，避免正常启动发生 GPU→CPU 同步。
 # 使用 ${VAR-default} 而不是 ${VAR:-default}：显式空串也必须被下面的严格校验拒绝。

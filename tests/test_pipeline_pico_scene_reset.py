@@ -126,8 +126,8 @@ class PipelinePicoSceneResetTest(unittest.TestCase):
         self.assertIn("--enable_isaac_scene_reset", single_manager)
         self.assertIn("UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo", single_manager)
 
-    def test_five_robot_host_and_staged_count_are_forwarded(self) -> None:
-        self.assertIn('SONIC_ROBOT_COUNT="${PIPELINE_SONIC_ROBOT_COUNT:-5}"', self.source)
+    def test_three_robot_default_and_staged_count_are_forwarded(self) -> None:
+        self.assertIn('SONIC_ROBOT_COUNT="${PIPELINE_SONIC_ROBOT_COUNT:-3}"', self.source)
         self.assertIn('ISAACLAB_SONIC_ROBOT_COUNT="$SONIC_ROBOT_COUNT"', self.source)
         self.assertIn("2|3|4|5", self.source)
 

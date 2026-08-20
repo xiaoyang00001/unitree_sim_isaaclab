@@ -294,19 +294,27 @@ class SonicRobotCountResolverTest(unittest.TestCase):
                 )
 
     def test_active_count_follows_layout_and_pushcart_falls_back_to_two(self) -> None:
-        for layout, expected in (("1", 5), ("true", 5), ("0", 2), ("off", 2)):
-            with self.subTest(layout=layout), mock.patch.dict(
-                os.environ,
-                {
-                    "ISAACLAB_SONIC_ROBOT_COUNT": "5",
-                    "ISAACLAB_TOTES_ON_CONVEYOR": layout,
-                },
-                clear=False,
+        for count in (3, 5):
+            for layout, expected in (
+                ("1", count),
+                ("true", count),
+                ("0", 2),
+                ("off", 2),
             ):
-                self.assertEqual(
-                    self.sync_identity.resolve_active_sonic_robot_count(load_env=False),
-                    expected,
-                )
+                with self.subTest(count=count, layout=layout), mock.patch.dict(
+                    os.environ,
+                    {
+                        "ISAACLAB_SONIC_ROBOT_COUNT": str(count),
+                        "ISAACLAB_TOTES_ON_CONVEYOR": layout,
+                    },
+                    clear=False,
+                ):
+                    self.assertEqual(
+                        self.sync_identity.resolve_active_sonic_robot_count(
+                            load_env=False
+                        ),
+                        expected,
+                    )
 
 
 class DDSManagerStartupTest(unittest.TestCase):
@@ -580,6 +588,7 @@ class FiveRobotWiringSourceTest(unittest.TestCase):
             self.assertIn(f"foot_contact_{robot_id}: ContactSensorCfg | None", self.cfg_source)
             self.assertIn(f"peer_robot_{robot_id}: ArticulationCfg | AssetBaseCfg | None", self.cfg_source)
         self.assertIn("if ACTIVE_SONIC_ROBOT_COUNT < 3 else None", self.cfg_source)
+        self.assertIn("if ACTIVE_SONIC_ROBOT_COUNT < 4 else None", self.cfg_source)
         self.assertIn("if ACTIVE_SONIC_ROBOT_COUNT < 5 else None", self.cfg_source)
 
     def test_scene_publishes_and_viewer_applies_all_configured_robots(self) -> None:
@@ -628,9 +637,9 @@ class FiveRobotWiringSourceTest(unittest.TestCase):
             self.sim_source,
         )
 
-    def test_shared_scene_config_enables_five_robot_topology(self) -> None:
+    def test_shared_scene_config_defaults_to_three_robot_topology(self) -> None:
         source = SCENE_SYNC_ENV_PATH.read_text(encoding="utf-8")
-        self.assertIn("ISAACLAB_SONIC_ROBOT_COUNT=5", source)
+        self.assertIn("ISAACLAB_SONIC_ROBOT_COUNT=3", source)
 
 
 if __name__ == "__main__":

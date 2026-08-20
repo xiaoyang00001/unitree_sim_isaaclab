@@ -233,6 +233,7 @@ class PeerVisualLodWiringTests(unittest.TestCase):
         # 五机 host/viewer 中相同站位改由 Robot3..5 / PeerRobot3..5 接管，
         # 纯显示体必须条件关闭，不能叠出第六至第八台机器人。
         self.assertIn("if ACTIVE_SONIC_ROBOT_COUNT < 3 else None", source)
+        self.assertIn("if ACTIVE_SONIC_ROBOT_COUNT < 4 else None", source)
         self.assertIn("if ACTIVE_SONIC_ROBOT_COUNT < 5 else None", source)
 
         # 新增展示体不能改动原有两台的朝向契约。
