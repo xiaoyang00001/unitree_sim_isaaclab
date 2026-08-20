@@ -24,6 +24,7 @@ from . import move_cylinder_g1_29dof_inspire_wholebody
 from . import g1_29dof_dex3_sonic
 from . import g1_29dof_sonic_conveyor
 from . import g1_29dof_sonic_cafe
+from . import g1_29dof_sonic_open_space
 
 # export all modules
 __all__ = [
@@ -39,5 +40,6 @@ __all__ = [
         "move_cylinder_g1_29dof_inspire_wholebody",
         "g1_29dof_dex3_sonic",
         "g1_29dof_sonic_conveyor",
-        "g1_29dof_sonic_cafe"
+        "g1_29dof_sonic_cafe",
+        "g1_29dof_sonic_open_space"
 ]

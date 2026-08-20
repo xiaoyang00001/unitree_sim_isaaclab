@@ -221,6 +221,40 @@ UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo \
   --profile_interval 250
 ```
 
+如果只需要一台机器人在真实地形中行走，可选择以下场景（Gravel 默认推荐）：
+`Isaac-G1-29DoF-Sonic-Grass`、`Isaac-G1-29DoF-Sonic-Gravel`、
+`Isaac-G1-29DoF-Sonic-Mud`、`Isaac-G1-29DoF-Sonic-Slate`、
+`Isaac-G1-29DoF-Sonic-Snow`。它们复用同一套 SONIC G1/Dex3 资产，每个场景只加载一
+个真实地形和一台机器人，不加载桌子、输送线或第二台机器人：
+
+```bash
+UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo \
+/home/nolovr/IsaacLab/isaaclab.sh -p sim_main.py \
+  --task Isaac-G1-29DoF-Sonic-Gravel \
+  --robot_type g129 \
+  --action_source sonic_dds \
+  --device cpu
+```
+
+上面五个选项是独立的真实地形片段，并不是完整建筑/室内场景。如果要看资源库中
+带地面、墙体、货架、灯光和导航结构的完整真实场景，请使用
+`Isaac-G1-29DoF-Sonic-Warehouse`（同样只有一台机器人）：
+
+```bash
+UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo \
+/home/nolovr/IsaacLab/isaaclab.sh -p sim_main.py \
+  --task Isaac-G1-29DoF-Sonic-Warehouse \
+  --robot_type g129 \
+  --action_source sonic_dds \
+  --device cpu
+```
+
+另外还加入了三个完整环境选项：
+`Isaac-G1-29DoF-Sonic-Apartment`（公寓建筑）、
+`Isaac-G1-29DoF-Sonic-Staircase`（两层楼梯/阁楼）、
+`Isaac-G1-29DoF-Sonic-Office`（官方办公室）。其中 Office 由 Isaac Sim 官方资源库
+在线解析，Apartment 和 Staircase 使用本机 Lightwheel 资源；它们都不是单独地面片段。
+
 当前代码已经回到进行 MuJoCo 第 3～7 项对齐之前的动力学/接触基线，同时保留 43DoF articulation、完整 `mode/q/dq/tau/kp/kd` LowCmd 和倒地复位。左右脚恢复 SONIC 训练 URDF 原有的 7 个 cylinder（Isaac 导入时转换为 capsule）碰撞条，不再使用 MuJoCo 单平底 box；第 4～7 项 armature、干摩擦、hip 降限、PhysX 外力迭代和 torso 惯量改动均不在当前代码中。PICO manager 保持 GR00T Git 原版本，没有额外加入“可以更钝来换稳定”的新滤波；GUI 保持约 50 Hz，C++ policy/reference 保持 50 Hz，`LowState.tick` 只用于诊断。若只想排除渲染负载，可临时加 `--no_render` 做 A/B。
 
 另一个终端启动 SONIC 时必须使用 `isaac` profile：

@@ -499,12 +499,32 @@ sonic_task_names = {
     "Isaac-G1-29DoF-Training-Sonic",
     "Isaac-G1-29DoF-Sonic-Conveyor",
     "Isaac-G1-29DoF-Sonic-Cafe",
+    "Isaac-G1-29DoF-Sonic-OpenSpace",
+    "Isaac-G1-29DoF-Sonic-Grass",
+    "Isaac-G1-29DoF-Sonic-Gravel",
+    "Isaac-G1-29DoF-Sonic-Mud",
+    "Isaac-G1-29DoF-Sonic-Slate",
+    "Isaac-G1-29DoF-Sonic-Snow",
+    "Isaac-G1-29DoF-Sonic-Warehouse",
+    "Isaac-G1-29DoF-Sonic-Apartment",
+    "Isaac-G1-29DoF-Sonic-Staircase",
+    "Isaac-G1-29DoF-Sonic-Office",
 }
 sonic_dex3_task_names = {
     "Isaac-G1-29DoF-Sonic",
     "Isaac-G1-29DoF-Dex3-Sonic",
     "Isaac-G1-29DoF-Sonic-Conveyor",
     "Isaac-G1-29DoF-Sonic-Cafe",
+    "Isaac-G1-29DoF-Sonic-OpenSpace",
+    "Isaac-G1-29DoF-Sonic-Grass",
+    "Isaac-G1-29DoF-Sonic-Gravel",
+    "Isaac-G1-29DoF-Sonic-Mud",
+    "Isaac-G1-29DoF-Sonic-Slate",
+    "Isaac-G1-29DoF-Sonic-Snow",
+    "Isaac-G1-29DoF-Sonic-Warehouse",
+    "Isaac-G1-29DoF-Sonic-Apartment",
+    "Isaac-G1-29DoF-Sonic-Staircase",
+    "Isaac-G1-29DoF-Sonic-Office",
 }
 is_sonic_task = args_cli.task in sonic_task_names
 
@@ -545,7 +565,7 @@ if args_cli.teleop_device == "motion_controllers":
     if args_cli.task not in sonic_dex3_task_names:
         parser.error(
             "--teleop_device motion_controllers is currently supported only by "
-            "Isaac-G1-29DoF-Sonic, Isaac-G1-29DoF-Dex3-Sonic and Isaac-G1-29DoF-Sonic-Conveyor"
+            "the single-robot SONIC tasks (including Isaac-G1-29DoF-Sonic-OpenSpace)"
         )
     # Follow Isaac Lab's teleoperation runner behavior: selecting an OpenXR
     # device implies XR, while an explicit --xr remains accepted as well.
