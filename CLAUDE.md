@@ -164,7 +164,7 @@ provider 在 `action_provider/create_action_provider.py` 里按需惰性导入�
 - ⚠️ SONIC 行走 policy 不感知桌子。桌子是 kinematic 的且就在正前方 0.55 m，跑行走类动作会撞上去——
   这是场景约束，不是 bug。需要纯行走验证时用 `Training-Sonic`。
 
-### 流水线双机器人 host/viewer（conveyor 任务的三种身份）
+### 流水线多机器人 host/viewer（conveyor 任务的三种身份）
 
 **权威文档 `doc/pipeline_dual_robot_host_viewer_zh.md`，动这套前必读**（启动手册/键盘序列/
 帧率账本/五个实测坑全在里面）。身份由 `sync_identity.py` **单一真源**解析（sim_main 与
@@ -173,18 +173,25 @@ env cfg 共用，进程环境变量优先于 `configs/scene_sync.env`——别�
 - `ISAACLAB_LOCAL_ROBOT_ID=1/2`：对等端（既有双机模式，机器人互为镜像）；
 - `ISAACLAB_LOCAL_ROBOT_ID=0`：**viewer 纯镜像**——只收不发、双镜像体、本机 robot 退化为
   场外 ghost、自动切 `hold` 动作源（不挂锁步，50Hz 满帧）、DDS 默认落 domain 9；
-- `ID=1` + `ISAACLAB_HOST_BOTH_ROBOTS=1`：**host 双机器人**——robot_1+robot_2 双全动力学，
-  各一套 deploy（第二套 `G1_LOCAL_ROBOT_ID=2 ./deploy.sh isaac` 自动走 `rt/r2/*` 话题 +
-  `g129_r2`/`_r2` shm），动作源自动切 `sonic_dds_host`（258 维、双 ack AND 锁步）。
+- `ID=1` + `ISAACLAB_HOST_BOTH_ROBOTS=1`：**host 2..5 机器人**——数量由
+  `ISAACLAB_SONIC_ROBOT_COUNT` 决定，每台都是 43-DoF 全动力学 SONIC 真身并拥有独立
+  `rt[/rN]/*` DDS；动作源自动切 `sonic_dds_host`（`N×129` 维、N 路 ack AND 锁步）。
+  生产 bringup 与共享配置当前默认 `N=3`；robot_4/5 保持原始
+  `g1_43dof_standby_visual_only.usda` 展示站位。需要四/五路联调时显式设置
+  `PIPELINE_SONIC_ROBOT_COUNT=4|5`（手动 host 对应 `ISAACLAB_SONIC_ROBOT_COUNT=4|5`）。
+  完整端口/命名与历史五机能力见 `doc/pipeline_five_robot_sonic_zh.md`。
 
-⚠️ 三条高频坑：host 的两套 deploy **必须并行启动**（串行等 Init Done 会在双 ack 门下自锁）；
+⚠️ 三条高频坑：host 的全部 deploy **必须并行启动**（逐个等 Init Done 会在 N 路 ack 门下自锁）；
 测前 `pgrep -fa g1_deploy_onnx_ref` 必须为 0（残留实例 kHz 级轰 ack）；host 建议
-`UNITREE_SKIP_LOWSTATE_CRC=1` + `UNITREE_LOWCMD_CRC_SAMPLE_INTERVAL=50` + 两套 deploy
+`UNITREE_SKIP_LOWSTATE_CRC=1` + `UNITREE_LOWCMD_CRC_SAMPLE_INTERVAL=50` + 全部 deploy
 `--disable-crc-check`（**Linux 的 unitree CRC 也是纯 Python**，双通道 1000 包/秒下占 35% GIL）。
 
+⚠️ 外部 GR00T 的 `deploy.sh` 当前只自动识别 ID=2；启动 robot_3..5 时必须额外显式设置
+`SONIC_DDS_TOPIC_PREFIX=rt/rN` 并隔离调试端口，否则会静默落回 robot_1 的 `rt/*`。
+
 Pico VR 控制接入（分支 `feat/pipeline-pico-vr-control`，正路；keyboard 只是调试）：
-`tools/pipeline_pico_bringup.sh` 一键拉起（deploy#1 换 `--input-type zmq_manager`，Isaac 段
-零改动）。**POSE 全身跟随已实测跟动**（2026-08-03，tag `pipeline-pico-pose-v1`；摇杆行走/
+`tools/pipeline_pico_bringup.sh` 一键拉起（生产默认三机：deploy#1 换 `--input-type zmq_manager`，
+robot_2/3 为隔离 keyboard 通道；robot_4/5 保持纯显示待机）。**POSE 全身跟随已实测跟动**（2026-08-03，tag `pipeline-pico-pose-v1`；摇杆行走/
 急停待补测）。部署/操作/判读见 `doc/pipeline_pico_vr_deployment_zh.md`，架构盘点见权威文档 §8。
 双 Pico 编排用 `PIPELINE_DUAL_PICO=1 bash tools/pipeline_pico_bringup.sh`：manager UDP
 63901/63902、ZMQ PUB 5556/5566 显式隔离，deploy#2 显式订 5566 且脚本不再代按发车；

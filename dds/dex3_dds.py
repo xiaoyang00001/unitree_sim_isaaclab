@@ -14,6 +14,14 @@ from unitree_sdk2py.idl.default import unitree_hg_msg_dds__HandState_
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import HandCmd_, HandState_
 
 
+HAND_COMMAND_SIDES = ("left", "right")
+HAND_COMMAND_FIELDS = ("modes", "positions", "velocities", "torques", "kp", "kd")
+HAND_COMMAND_SHM_HEARTBEAT_S = 0.05
+HAND_COMMAND_STATS_INTERVAL_S = 5.0
+HAND_STATE_FIELDS = ("positions", "velocities", "torques")
+HAND_STATE_STATS_INTERVAL_S = 5.0
+
+
 class Dex3DDS(DDSObject):
     """Bridge both seven-motor Dex3 hands between DDS and Isaac Lab."""
 
@@ -36,8 +44,41 @@ class Dex3DDS(DDSObject):
         self.left_cmd_subscriber = None
         self.right_cmd_subscriber = None
 
+        self._state_lock = threading.RLock()
+        self._latest_hand_states = None
+        self._hand_state_generation = 0
+        self._applied_hand_state_generation = -1
+        self._handstate_stats_window_start = time.monotonic()
+        self._handstate_source_write_count = 0
+        self._handstate_publish_cycle_count = 0
+        self._handstate_message_update_count = 0
+        self._handstate_shm_read_count = 0
+
         self.existing_data = {"left_hand_cmd": {}, "right_hand_cmd": {}}
         self._command_lock = threading.Lock()
+        # SONIC sends each HandCmd topic at 500 Hz, although the command
+        # normally changes only when a new policy result is available.  Keep
+        # the fully decoded payload and receive time separately: duplicate
+        # packets can refresh liveness without rebuilding two JSON hand
+        # payloads or contending on shared memory.
+        self._latest_hand_commands = {side: None for side in HAND_COMMAND_SIDES}
+        self._last_hand_command_fingerprints = {
+            side: None for side in HAND_COMMAND_SIDES
+        }
+        self._last_hand_command_receive_times = {
+            side: None for side in HAND_COMMAND_SIDES
+        }
+        self._handcmd_stats_window_start = time.monotonic()
+        self._handcmd_packet_counts = {side: 0 for side in HAND_COMMAND_SIDES}
+        self._handcmd_change_counts = {side: 0 for side in HAND_COMMAND_SIDES}
+        self._handcmd_duplicate_counts = {side: 0 for side in HAND_COMMAND_SIDES}
+        self._handcmd_out_of_order_counts = {
+            side: 0 for side in HAND_COMMAND_SIDES
+        }
+        self._handcmd_shm_write_count = 0
+        self._handcmd_shm_last_attempt_time = 0.0
+        self._handcmd_shm_timestamp = None
+        self._handcmd_shm_dirty = False
         self.setup_shared_memory(
             input_shm_name=f"isaac_dex3_state{self.shm_suffix}",
             input_size=4096,
@@ -92,20 +133,142 @@ class Dex3DDS(DDSObject):
             )
             return False
 
+    @staticmethod
+    def _hand_command_fingerprint(msg: HandCmd_) -> tuple:
+        """Return an exact value fingerprint for the complete wire command."""
+
+        return (
+            tuple(msg.reserve),
+            tuple(
+                (
+                    motor.mode,
+                    motor.q,
+                    motor.dq,
+                    motor.tau,
+                    motor.kp,
+                    motor.kd,
+                    motor.reserve,
+                )
+                for motor in msg.motor_cmd
+            ),
+        )
+
+    def _snapshot_hand_commands_locked(self) -> Dict[str, Any]:
+        """Materialize a caller-owned snapshot while ``_command_lock`` is held."""
+
+        snapshot: Dict[str, Any] = {}
+        for side in HAND_COMMAND_SIDES:
+            command = self._latest_hand_commands[side]
+            if command is None:
+                snapshot[f"{side}_hand_cmd"] = {}
+                continue
+            side_snapshot = {
+                field_name: list(command[field_name])
+                for field_name in HAND_COMMAND_FIELDS
+            }
+            side_snapshot["receive_time_monotonic"] = (
+                self._last_hand_command_receive_times[side]
+            )
+            snapshot[f"{side}_hand_cmd"] = side_snapshot
+        return snapshot
+
+    def _collect_hand_command_stats_locked(self, now: float) -> Optional[str]:
+        elapsed = now - self._handcmd_stats_window_start
+        if elapsed < HAND_COMMAND_STATS_INTERVAL_S:
+            return None
+
+        side_stats = []
+        for side in HAND_COMMAND_SIDES:
+            side_stats.append(
+                f"{side}={self._handcmd_packet_counts[side] / elapsed:.1f}Hz "
+                f"(changes={self._handcmd_change_counts[side] / elapsed:.1f}, "
+                f"duplicates={self._handcmd_duplicate_counts[side] / elapsed:.1f}, "
+                f"out_of_order={self._handcmd_out_of_order_counts[side]})"
+            )
+        result = (
+            f"[{self.node_name}] HandCmd receive: {', '.join(side_stats)}, "
+            f"shm_writes={self._handcmd_shm_write_count / elapsed:.1f}Hz"
+        )
+        self._handcmd_stats_window_start = now
+        for side in HAND_COMMAND_SIDES:
+            self._handcmd_packet_counts[side] = 0
+            self._handcmd_change_counts[side] = 0
+            self._handcmd_duplicate_counts[side] = 0
+            self._handcmd_out_of_order_counts[side] = 0
+        self._handcmd_shm_write_count = 0
+        return result
+
     def dds_subscriber(self, msg: HandCmd_, datatype: str = None) -> None:
         """Store one complete hand command with a precise receive timestamp."""
 
         try:
-            if datatype not in ("left", "right"):
+            if datatype not in HAND_COMMAND_SIDES:
                 raise ValueError(f"invalid hand side: {datatype!r}")
-            command = self.process_hand_command(msg, datatype)
-            if command and self.output_shm:
-                # DDS callbacks can execute concurrently. Publish both side
-                # snapshots atomically so the action provider never observes
-                # a half-updated payload.
-                with self._command_lock:
-                    self.existing_data[f"{datatype}_hand_cmd"] = command
-                    self.output_shm.write_data(self.existing_data)
+            receive_time = time.monotonic()
+            fingerprint = self._hand_command_fingerprint(msg)
+            report_line = None
+            with self._command_lock:
+                self._handcmd_packet_counts[datatype] += 1
+                previous_receive_time = self._last_hand_command_receive_times[datatype]
+                if (
+                    previous_receive_time is not None
+                    and receive_time < previous_receive_time
+                ):
+                    # A delayed callback must not roll a newer same-side
+                    # command or its liveness timestamp backwards.
+                    self._handcmd_out_of_order_counts[datatype] += 1
+                    report_line = self._collect_hand_command_stats_locked(receive_time)
+                else:
+                    is_duplicate = (
+                        self._latest_hand_commands[datatype] is not None
+                        and fingerprint
+                        == self._last_hand_command_fingerprints[datatype]
+                    )
+                    if is_duplicate:
+                        self._handcmd_duplicate_counts[datatype] += 1
+                    else:
+                        command = self.process_hand_command(
+                            msg,
+                            datatype,
+                            receive_time_monotonic=receive_time,
+                        )
+                        if not command:
+                            return
+                        self._latest_hand_commands[datatype] = command
+                        self._last_hand_command_fingerprints[datatype] = fingerprint
+                        self._handcmd_change_counts[datatype] += 1
+
+                    # A repeated packet is still a live command.  Store the
+                    # timestamp separately so published snapshots remain
+                    # immutable and concurrent readers cannot see half an
+                    # update.
+                    self._last_hand_command_receive_times[datatype] = receive_time
+
+                    output_shm = getattr(self, "output_shm", None)
+                    heartbeat_due = (
+                        receive_time - self._handcmd_shm_last_attempt_time
+                        >= HAND_COMMAND_SHM_HEARTBEAT_S
+                    )
+                    if output_shm is not None and (
+                        not is_duplicate
+                        or self._handcmd_shm_dirty
+                        or heartbeat_due
+                    ):
+                        snapshot = self._snapshot_hand_commands_locked()
+                        self.existing_data = snapshot
+                        self._handcmd_shm_last_attempt_time = receive_time
+                        write_succeeded = output_shm.write_data(snapshot) is not False
+                        self._handcmd_shm_dirty = not write_succeeded
+                        if write_succeeded:
+                            self._handcmd_shm_write_count += 1
+                            # Preserve SharedMemoryManager.read_data()'s public
+                            # top-level metadata for in-process cache readers.
+                            self._handcmd_shm_timestamp = int(time.time()) & 0xFFFFFFFF
+
+                    report_line = self._collect_hand_command_stats_locked(receive_time)
+
+            if report_line:
+                print(report_line)
         except Exception as exc:
             print(
                 f"dex3_dds [{self.node_name}] "
@@ -113,7 +276,11 @@ class Dex3DDS(DDSObject):
             )
 
     def process_hand_command(
-        self, msg: HandCmd_, datatype: str = None
+        self,
+        msg: HandCmd_,
+        datatype: str = None,
+        *,
+        receive_time_monotonic: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Convert HandCmd into a JSON/shared-memory-safe dictionary."""
 
@@ -128,7 +295,11 @@ class Dex3DDS(DDSObject):
                 "kd": [float(motor.kd) for motor in motors],
                 # SharedMemoryManager's metadata timestamp has one-second
                 # resolution; control safety needs a monotonic subsecond age.
-                "receive_time_monotonic": time.monotonic(),
+                "receive_time_monotonic": (
+                    time.monotonic()
+                    if receive_time_monotonic is None
+                    else float(receive_time_monotonic)
+                ),
             }
         except Exception as exc:
             print(
@@ -141,22 +312,78 @@ class Dex3DDS(DDSObject):
         """Publish the latest simulated states for both hands."""
 
         try:
-            data = self.input_shm.read_data() or {}
-            if "left_hand" in data:
-                self._update_hand_state(self.left_hand_state, data["left_hand"])
-                if self.left_state_publisher:
-                    self.left_state_publisher.Write(self.left_hand_state)
-            if "right_hand" in data:
-                self._update_hand_state(self.right_hand_state, data["right_hand"])
-                if self.right_state_publisher:
-                    self.right_state_publisher.Write(self.right_hand_state)
+            with self._state_lock:
+                data = self._latest_hand_states
+                generation = self._hand_state_generation if data is not None else None
+
+            if data is None:
+                input_shm = getattr(self, "input_shm", None)
+                data = input_shm.read_data() if input_shm else None
+                data = data or {}
+                with self._state_lock:
+                    self._handstate_shm_read_count += 1
+
+            needs_message_update = (
+                generation is None
+                or generation != self._applied_hand_state_generation
+            )
+            if needs_message_update:
+                update_succeeded = True
+                updated_any = False
+                if "left_hand" in data:
+                    updated_any = True
+                    update_succeeded = (
+                        self._update_hand_state(
+                            self.left_hand_state, data["left_hand"]
+                        )
+                        and update_succeeded
+                    )
+                if "right_hand" in data:
+                    updated_any = True
+                    update_succeeded = (
+                        self._update_hand_state(
+                            self.right_hand_state, data["right_hand"]
+                        )
+                        and update_succeeded
+                    )
+                if updated_any and update_succeeded and generation is not None:
+                    self._applied_hand_state_generation = generation
+
+            if "left_hand" in data and self.left_state_publisher:
+                self.left_state_publisher.Write(self.left_hand_state)
+            if "right_hand" in data and self.right_state_publisher:
+                self.right_state_publisher.Write(self.right_hand_state)
+
+            report_line = None
+            now = time.monotonic()
+            with self._state_lock:
+                self._handstate_publish_cycle_count += 1
+                if needs_message_update:
+                    self._handstate_message_update_count += 1
+                elapsed = now - self._handstate_stats_window_start
+                if elapsed >= HAND_STATE_STATS_INTERVAL_S:
+                    report_line = (
+                        f"[{self.node_name}] HandState publish: "
+                        f"source={self._handstate_source_write_count / elapsed:.1f}Hz, "
+                        f"cycles={self._handstate_publish_cycle_count / elapsed:.1f}Hz, "
+                        f"message_updates="
+                        f"{self._handstate_message_update_count / elapsed:.1f}Hz, "
+                        f"shm_reads={self._handstate_shm_read_count / elapsed:.1f}Hz"
+                    )
+                    self._handstate_stats_window_start = now
+                    self._handstate_source_write_count = 0
+                    self._handstate_publish_cycle_count = 0
+                    self._handstate_message_update_count = 0
+                    self._handstate_shm_read_count = 0
+            if report_line:
+                print(report_line)
         except Exception as exc:
             print(
                 f"dex3_dds [{self.node_name}] Error processing publish data: {exc}"
             )
         return None
 
-    def _update_hand_state(self, hand_state, hand_data: Dict[str, Any]) -> None:
+    def _update_hand_state(self, hand_state, hand_data: Dict[str, Any]) -> bool:
         try:
             positions = hand_data["positions"]
             velocities = hand_data["velocities"]
@@ -173,14 +400,29 @@ class Dex3DDS(DDSObject):
                 motor_state.q = float(positions[motor_index])
                 motor_state.dq = float(velocities[motor_index])
                 motor_state.tau_est = float(torques[motor_index])
+            return motor_count > 0
         except (KeyError, TypeError, ValueError, IndexError) as exc:
             print(
                 f"dex3_dds [{self.node_name}] Error updating hand state: {exc}"
             )
+            return False
 
     def get_hand_commands(self) -> Optional[Dict[str, Any]]:
-        if self.output_shm:
-            return self.output_shm.read_data()
+        # Action providers run in this process, so use the decoded cache and
+        # avoid JSON-decoding shared memory on every simulation step.  Return
+        # caller-owned lists to preserve the old read_data() ownership model.
+        with self._command_lock:
+            if any(
+                self._latest_hand_commands[side] is not None
+                for side in HAND_COMMAND_SIDES
+            ):
+                snapshot = self._snapshot_hand_commands_locked()
+                if self._handcmd_shm_timestamp is not None:
+                    snapshot["_timestamp"] = self._handcmd_shm_timestamp
+                return snapshot
+        output_shm = getattr(self, "output_shm", None)
+        if output_shm:
+            return output_shm.read_data()
         return None
 
     def get_left_hand_command(self) -> Optional[Dict[str, Any]]:
@@ -201,13 +443,33 @@ class Dex3DDS(DDSObject):
         right_hand_data: Dict[str, Any],
     ) -> None:
         try:
-            if self.input_shm:
-                self.input_shm.write_data(
-                    {
-                        "left_hand": left_hand_data,
-                        "right_hand": right_hand_data,
-                    }
-                )
+            state_data = {
+                "left_hand": {
+                    field_name: list(left_hand_data[field_name])
+                    for field_name in HAND_STATE_FIELDS
+                },
+                "right_hand": {
+                    field_name: list(right_hand_data[field_name])
+                    for field_name in HAND_STATE_FIELDS
+                },
+            }
+            with self._state_lock:
+                self._latest_hand_states = state_data
+                self._hand_state_generation += 1
+                self._handstate_source_write_count += 1
+
+            input_shm = getattr(self, "input_shm", None)
+            if input_shm:
+                input_shm.write_data(state_data)
+
+            # Fresh PhysX hand feedback should leave immediately.  The DDS
+            # manager ignores this notification unless sim_main explicitly
+            # enables immediate publishing for this registered Dex3 object.
+            registered_name = getattr(self, "_dds_registered_name", None)
+            if registered_name is not None:
+                from dds.dds_master import dds_manager
+
+                dds_manager.notify_fresh_sample(registered_name)
         except Exception as exc:
             print(
                 f"dex3_dds [{self.node_name}] Error publishing hand states: {exc}"
@@ -258,20 +520,27 @@ class Dex3DDS(DDSObject):
             "velocities": self._to_list(velocities),
             "torques": self._to_list(torques),
         }
-        existing = self.input_shm.read_data() if self.input_shm else {}
-        existing = existing or {}
         zero_state = {
             "positions": [0.0] * 7,
             "velocities": [0.0] * 7,
             "torques": [0.0] * 7,
         }
-        if hand_side == "left":
-            self.publish_hand_states(
-                hand_data,
-                existing.get("right_hand", zero_state),
-            )
-        else:
-            self.publish_hand_states(
-                existing.get("left_hand", zero_state),
-                hand_data,
-            )
+        # Keep the read-modify-write pair atomic with concurrent left/right
+        # helpers.  RLock lets publish_hand_states commit the combined pair
+        # without exposing an intermediate single-hand generation.
+        with self._state_lock:
+            existing = self._latest_hand_states
+            if existing is None:
+                input_shm = getattr(self, "input_shm", None)
+                existing = input_shm.read_data() if input_shm else {}
+                existing = existing or {}
+            if hand_side == "left":
+                self.publish_hand_states(
+                    hand_data,
+                    existing.get("right_hand", zero_state),
+                )
+            else:
+                self.publish_hand_states(
+                    existing.get("left_hand", zero_state),
+                    hand_data,
+                )

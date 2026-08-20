@@ -5,10 +5,13 @@ G1 robot DDS communication class
 Handle the state publishing and command receiving of the G1 robot
 """
 
-import numpy as np
+import copy
 import os
+import threading
 import time
 from typing import Any, Dict, Optional
+
+import numpy as np
 # from dds.dds_base import BaseDDSNode, node_manager
 from dds.dds_base import DDSObject
 from unitree_sdk2py.core.channel import ChannelPublisher, ChannelSubscriber
@@ -92,7 +95,15 @@ class G1RobotDDS(DDSObject):
         self._torso_imu_publish_count = 0
         self._fresh_sample_count = 0
         self._repeated_sample_publish_count = 0
+        self._lowstate_message_update_count = 0
+        self._lowstate_shm_read_count = 0
         self._last_sample_seq = None
+        self._publish_transaction_lock = threading.Lock()
+        self._robot_state_lock = threading.RLock()
+        self._latest_robot_state = None
+        self._robot_state_generation = 0
+        self._applied_robot_state_key = None
+        self._lowstate_have_torso_imu = False
         self._latest_written_sample_seq = None
         self._latest_written_sample_time = None
         self._latest_written_sim_time_s = None
@@ -101,7 +112,19 @@ class G1RobotDDS(DDSObject):
         self._reset_epoch = 0
         self._lowcmd_packet_count = 0
         self._lowcmd_content_update_count = 0
+        self._lowcmd_duplicate_fastpath_count = 0
+        self._lowcmd_shm_write_count = 0
         self._last_lowcmd_signature = None
+        # SONIC deploy writes LowCmd at 500 Hz, while a new policy result is
+        # produced only after a fresh LowState.  With several robots almost
+        # every callback therefore carries the exact same wire message.  Keep
+        # a cheap CRC/mode/reserve fingerprint so those duplicates do not pay
+        # for 29 x 6 Python scalar conversions plus JSON/shared-memory I/O.
+        # A zero CRC is treated as unavailable (notably in unit-test/fallback
+        # producers) and falls back to the full conversion path.
+        self._last_lowcmd_wire_fingerprint = None
+        self._latest_robot_command = None
+        self._last_lowcmd_receive_time = None
         self._last_lowcmd_ack_tick = None
         self._last_lowcmd_ack_reset_epoch = None
         self._lowcmd_ack_match_count = 0
@@ -149,21 +172,30 @@ class G1RobotDDS(DDSObject):
         recurrent/history state without changing the standard G1 message type.
         The marker is ignored by real-robot and MuJoCo paths.
         """
-        self._reset_epoch = (int(getattr(self, "_reset_epoch", 0)) + 1) & 0xFFFFFFFF
+        with self._robot_state_lock:
+            self._reset_epoch = (
+                int(getattr(self, "_reset_epoch", 0)) + 1
+            ) & 0xFFFFFFFF
+            reset_epoch = self._reset_epoch
         print(
-            f"[{self.node_name}] Isaac reset epoch -> {self._reset_epoch} "
+            f"[{self.node_name}] Isaac reset epoch -> {reset_epoch} "
             f"({reason})"
         )
-        return self._reset_epoch
+        return reset_epoch
 
     def get_latest_written_state_info(self) -> Dict[str, Any]:
         """Return the state generation that the next Isaac step must consume."""
-        return {
-            "sample_seq": getattr(self, "_latest_written_sample_seq", None),
-            "sample_time_monotonic": getattr(self, "_latest_written_sample_time", None),
-            "sim_time_s": getattr(self, "_latest_written_sim_time_s", None),
-            "reset_epoch": int(getattr(self, "_latest_written_reset_epoch", 0)),
-        }
+        with self._robot_state_lock:
+            return {
+                "sample_seq": getattr(self, "_latest_written_sample_seq", None),
+                "sample_time_monotonic": getattr(
+                    self, "_latest_written_sample_time", None
+                ),
+                "sim_time_s": getattr(self, "_latest_written_sim_time_s", None),
+                "reset_epoch": int(
+                    getattr(self, "_latest_written_reset_epoch", 0)
+                ),
+            }
     
     def setup_subscriber(self) -> bool:
         """Setup the subscriber of the G1 robot"""
@@ -191,131 +223,193 @@ class G1RobotDDS(DDSObject):
         if duration_s <= 0.0:
             return
 
-        now = time.monotonic()
-        new_deadline = now + duration_s
-        was_active = self._reset_state_grace_active and now < self._reset_state_grace_until
-        if not was_active:
-            self._reset_state_grace_samples = 0
-            self._reset_state_grace_max_abs_dq = 0.0
-        self._reset_state_grace_until = max(self._reset_state_grace_until, new_deadline)
-        self._reset_state_grace_active = True
-        action = "extended" if was_active else "started"
-        print(
-            f"[{self.node_name}] Reset LowState grace {action}: "
-            f"zeroing published dq/tau for {duration_s:.3f}s ({reason})"
-        )
+        # Lock order is always publish transaction -> robot state.  Waiting
+        # for an in-flight transaction makes the return boundary meaningful:
+        # once this method returns, no pre-grace LowState can still be sent.
+        with self._publish_transaction_lock:
+            now = time.monotonic()
+            new_deadline = now + duration_s
+            with self._robot_state_lock:
+                was_active = (
+                    self._reset_state_grace_active
+                    and now < self._reset_state_grace_until
+                )
+                if not was_active:
+                    self._reset_state_grace_samples = 0
+                    self._reset_state_grace_max_abs_dq = 0.0
+                self._reset_state_grace_until = max(
+                    self._reset_state_grace_until, new_deadline
+                )
+                self._reset_state_grace_active = True
+            action = "extended" if was_active else "started"
+            print(
+                f"[{self.node_name}] Reset LowState grace {action}: "
+                f"zeroing published dq/tau for {duration_s:.3f}s ({reason})"
+            )
     
     def dds_publisher(self) -> Any:
         """Convert Isaac Lab state to DDS message and publish."""
+        # Treat IDL materialization plus secondary_imu -> LowState writes as
+        # one transaction with respect to reset-grace transitions.
+        with self._publish_transaction_lock:
+            return self._publish_robot_state_transaction()
+
+    def _publish_robot_state_transaction(self) -> Any:
         try:
-            data = self.input_shm.read_data()
+            # The in-process writer commits an immutable snapshot and its
+            # generation under one lock.  Prefer that cache so a repeated DDS
+            # keepalive does not JSON-decode shared memory or rebuild the IDL
+            # message.  SHM remains the compatibility fallback for external
+            # and legacy observation writers.
+            with self._robot_state_lock:
+                data = self._latest_robot_state
+                generation = (
+                    self._robot_state_generation if data is not None else None
+                )
+
+            if data is None:
+                input_shm = getattr(self, "input_shm", None)
+                data = input_shm.read_data() if input_shm else None
+                with self._robot_state_lock:
+                    self._lowstate_shm_read_count += 1
             if data is None:
                 return
 
-            motor_state = self.low_state.motor_state
-
-            positions = data.get("joint_positions")
-            velocities = data.get("joint_velocities")
-            torques = data.get("joint_torques")
-
-            if positions is None or velocities is None or torques is None:
-                return
-
-            q_array = np.asarray(positions, dtype=np.float32)
-            dq_array = np.asarray(velocities, dtype=np.float32)
-            tau_array = np.asarray(torques, dtype=np.float32)
-            if not (len(q_array) == len(dq_array) == len(tau_array)):
-                raise ValueError(
-                    "joint state arrays must have equal lengths: "
-                    f"q={len(q_array)}, dq={len(dq_array)}, tau={len(tau_array)}"
-                )
-            if len(q_array) > len(motor_state):
-                raise ValueError(
-                    f"joint state contains {len(q_array)} motors, LowState supports {len(motor_state)}"
-                )
-            if not (
-                np.isfinite(q_array).all()
-                and np.isfinite(dq_array).all()
-                and np.isfinite(tau_array).all()
-            ):
-                raise ValueError("joint state contains NaN or Inf")
-
             publish_time = time.monotonic()
-            if publish_time < self._reset_state_grace_until:
-                self._reset_state_grace_active = True
-                self._reset_state_grace_samples += 1
-                if dq_array.size:
-                    self._reset_state_grace_max_abs_dq = max(
-                        self._reset_state_grace_max_abs_dq,
-                        float(np.max(np.abs(dq_array))),
-                    )
-                dq_array = np.zeros_like(dq_array)
-                tau_array = np.zeros_like(tau_array)
-            elif self._reset_state_grace_active:
+            grace_complete = None
+            with self._robot_state_lock:
+                if publish_time < self._reset_state_grace_until:
+                    reset_grace_active = True
+                    self._reset_state_grace_active = True
+                    self._reset_state_grace_samples += 1
+                else:
+                    reset_grace_active = False
+                    if self._reset_state_grace_active:
+                        grace_complete = (
+                            self._reset_state_grace_samples,
+                            self._reset_state_grace_max_abs_dq,
+                        )
+                        self._reset_state_grace_active = False
+            if grace_complete is not None:
                 print(
                     f"[{self.node_name}] Reset LowState grace complete: "
-                    f"samples={self._reset_state_grace_samples}, "
-                    f"max_raw_abs_dq={self._reset_state_grace_max_abs_dq:.3f}rad/s; "
+                    f"samples={grace_complete[0]}, "
+                    f"max_raw_abs_dq={grace_complete[1]:.3f}rad/s; "
                     "restoring live dq/tau"
                 )
-                self._reset_state_grace_active = False
 
-            for i in range(len(q_array)):
-                motor = motor_state[i]
-                motor.q = q_array[i]
-                motor.dq = dq_array[i]
-                motor.tau_est = tau_array[i]
-
-            base_imu = data.get("base_imu_data", data.get("imu_data"))
-            if not self._copy_imu_state(self.low_state.imu_state, base_imu, "base/pelvis"):
-                return
-
-            torso_imu = data.get("torso_imu_data")
-            have_torso_imu = self._copy_imu_state(
-                self.torso_imu_state,
-                torso_imu,
-                "torso",
-                required=False,
+            source_sample_seq = data.get("sample_seq")
+            # A generation is meaningful only for the in-process cache and a
+            # SONIC writer that supplied an explicit PhysX sequence.  Legacy
+            # tasks with sample_seq=None intentionally retain their historical
+            # behavior: rebuild every cycle and advance tick every cycle.
+            application_key = (
+                (generation, reset_grace_active)
+                if generation is not None and source_sample_seq is not None
+                else None
+            )
+            needs_message_update = (
+                application_key is None
+                or application_key != self._applied_robot_state_key
             )
 
-            sample_seq = data.get("sample_seq")
-            if sample_seq is None:
-                # Backward-compatible fallback for non-SONIC observation writers.
-                sample_seq = int(self.low_state.tick) + 1
-            sample_seq = int(sample_seq)
+            if needs_message_update:
+                motor_state = self.low_state.motor_state
+                positions = data.get("joint_positions")
+                velocities = data.get("joint_velocities")
+                torques = data.get("joint_torques")
+                if positions is None or velocities is None or torques is None:
+                    return
+
+                q_array = np.asarray(positions, dtype=np.float32)
+                dq_array = np.asarray(velocities, dtype=np.float32)
+                tau_array = np.asarray(torques, dtype=np.float32)
+                if not (len(q_array) == len(dq_array) == len(tau_array)):
+                    raise ValueError(
+                        "joint state arrays must have equal lengths: "
+                        f"q={len(q_array)}, dq={len(dq_array)}, tau={len(tau_array)}"
+                    )
+                if len(q_array) > len(motor_state):
+                    raise ValueError(
+                        f"joint state contains {len(q_array)} motors, "
+                        f"LowState supports {len(motor_state)}"
+                    )
+                if not (
+                    np.isfinite(q_array).all()
+                    and np.isfinite(dq_array).all()
+                    and np.isfinite(tau_array).all()
+                ):
+                    raise ValueError("joint state contains NaN or Inf")
+
+                if reset_grace_active:
+                    if dq_array.size:
+                        with self._robot_state_lock:
+                            self._reset_state_grace_max_abs_dq = max(
+                                self._reset_state_grace_max_abs_dq,
+                                float(np.max(np.abs(dq_array))),
+                            )
+                    dq_array = np.zeros_like(dq_array)
+                    tau_array = np.zeros_like(tau_array)
+
+                for i in range(len(q_array)):
+                    motor = motor_state[i]
+                    motor.q = q_array[i]
+                    motor.dq = dq_array[i]
+                    motor.tau_est = tau_array[i]
+
+                base_imu = data.get("base_imu_data", data.get("imu_data"))
+                if not self._copy_imu_state(
+                    self.low_state.imu_state, base_imu, "base/pelvis"
+                ):
+                    return
+
+                torso_imu = data.get("torso_imu_data")
+                have_torso_imu = self._copy_imu_state(
+                    self.torso_imu_state,
+                    torso_imu,
+                    "torso",
+                    required=False,
+                )
+
+                if source_sample_seq is None:
+                    sample_seq = int(self.low_state.tick) + 1
+                else:
+                    sample_seq = int(source_sample_seq)
+                self.low_state.tick = sample_seq & 0xFFFFFFFF
+
+                published_reset_epoch = int(
+                    data.get("reset_epoch", getattr(self, "_reset_epoch", 0))
+                ) & 0xFFFFFFFF
+                self._last_published_reset_epoch = published_reset_epoch
+                self.low_state.reserve[0] = published_reset_epoch
+                self.low_state.reserve[1] = 1  # protocol version
+                self.low_state.reserve[2] = 0
+                self.low_state.reserve[3] = ISAAC_LOWSTATE_SYNC_MAGIC
+                # LowState CRC is checked by the C++ peer.  It may only be
+                # skipped when the peer explicitly disabled that check.
+                if getattr(self, "_skip_lowstate_crc", False):
+                    self.low_state.crc = 0
+                else:
+                    self.low_state.crc = self.crc.Crc(self.low_state)
+
+                # Advance the applied key only after every IDL field and CRC
+                # has been built successfully.  A malformed generation is
+                # retried instead of being silently treated as cached.
+                with self._robot_state_lock:
+                    self._lowstate_have_torso_imu = have_torso_imu
+                    if application_key is not None:
+                        self._applied_robot_state_key = application_key
+                    self._lowstate_message_update_count += 1
+            else:
+                sample_seq = int(source_sample_seq)
+                with self._robot_state_lock:
+                    have_torso_imu = self._lowstate_have_torso_imu
+
             if self._last_sample_seq != sample_seq:
                 self._fresh_sample_count += 1
                 self._last_sample_seq = sample_seq
             else:
                 self._repeated_sample_publish_count += 1
-
-            # Tick identifies a fresh PhysX sample.  Re-publishing the same
-            # shared-memory state at 100 Hz deliberately keeps the same tick so
-            # diagnostics and future synchronized consumers can distinguish it
-            # from a newly advanced simulation state.
-            self.low_state.tick = sample_seq & 0xFFFFFFFF
-            # Isaac/Sonic synchronized-control extension.  Standard Unitree
-            # fields remain untouched; consumers opt in by checking the magic.
-            published_reset_epoch = int(
-                data.get("reset_epoch", getattr(self, "_reset_epoch", 0))
-            ) & 0xFFFFFFFF
-            self._last_published_reset_epoch = published_reset_epoch
-            self.low_state.reserve[0] = published_reset_epoch
-            self.low_state.reserve[1] = 1  # protocol version
-            self.low_state.reserve[2] = 0
-            self.low_state.reserve[3] = ISAAC_LOWSTATE_SYNC_MAGIC
-            # LowState 的 CRC 由对端(C++ deploy)校验,不能像 lowcmd 那样抽样。
-            # 但在 Windows 上它是纯 Python 回退,实测 2.15ms/包 @102.8Hz =
-            # 22% 单线程 GIL,跑在发布线程里,主循环轮询 ack 时与它抢 GIL,
-            # 把每次 sleep(1ms) 拉长、轮询次数翻倍(A 从 0.9ms 涨到 11.9ms)。
-            # 置 UNITREE_SKIP_LOWSTATE_CRC=1 可跳过,但**必须**同时给 deploy 传
-            # --disable-crc-check,否则对端会丢弃每一帧。仿真场景下链路可靠性
-            # 由 DDS 保证,这个校验不是必需的。
-            # getattr 兜底:tests 用 __new__ + 手工赋属性构造实例
-            if getattr(self, "_skip_lowstate_crc", False):
-                self.low_state.crc = 0
-            else:
-                self.low_state.crc = self.crc.Crc(self.low_state)
 
             # Publish the secondary IMU first and LowState last.  In the
             # synchronized bridge the unique LowState tick is the commit marker
@@ -371,16 +465,24 @@ class G1RobotDDS(DDSObject):
         torso_imu_hz = self._torso_imu_publish_count / elapsed
         fresh_sample_hz = self._fresh_sample_count / elapsed
         repeated_publish_hz = self._repeated_sample_publish_count / elapsed
+        message_update_hz = self._lowstate_message_update_count / elapsed
+        shm_read_hz = self._lowstate_shm_read_count / elapsed
         lowcmd_packet_hz = self._lowcmd_packet_count / elapsed
         lowcmd_content_hz = self._lowcmd_content_update_count / elapsed
+        lowcmd_duplicate_hz = self._lowcmd_duplicate_fastpath_count / elapsed
+        lowcmd_shm_write_hz = self._lowcmd_shm_write_count / elapsed
         ack_match_hz = self._lowcmd_ack_match_count / elapsed
         ack_stale_hz = self._lowcmd_ack_stale_count / elapsed
         print(
             f"[{self.node_name}] DDS publish: lowstate={lowstate_hz:.1f}Hz, "
             f"secondary_imu={torso_imu_hz:.1f}Hz, "
             f"fresh_physx={fresh_sample_hz:.1f}Hz, repeats={repeated_publish_hz:.1f}Hz, "
+            f"message_updates={message_update_hz:.1f}Hz, "
+            f"shm_reads={shm_read_hz:.1f}Hz, "
             f"lowcmd_packets={lowcmd_packet_hz:.1f}Hz, "
             f"lowcmd_changes={lowcmd_content_hz:.1f}Hz, "
+            f"lowcmd_fast_duplicates={lowcmd_duplicate_hz:.1f}Hz, "
+            f"lowcmd_shm_writes={lowcmd_shm_write_hz:.1f}Hz, "
             f"ack_match={ack_match_hz:.1f}Hz, ack_stale={ack_stale_hz:.1f}Hz, "
             f"sample_age={self._last_sample_age_ms:.2f}ms, "
             f"sample_seq={self._last_sample_seq}, ack_tick={self._last_lowcmd_ack_tick}, "
@@ -392,8 +494,12 @@ class G1RobotDDS(DDSObject):
         self._torso_imu_publish_count = 0
         self._fresh_sample_count = 0
         self._repeated_sample_publish_count = 0
+        self._lowstate_message_update_count = 0
+        self._lowstate_shm_read_count = 0
         self._lowcmd_packet_count = 0
         self._lowcmd_content_update_count = 0
+        self._lowcmd_duplicate_fastpath_count = 0
+        self._lowcmd_shm_write_count = 0
         self._lowcmd_ack_match_count = 0
         self._lowcmd_ack_stale_count = 0
 
@@ -427,7 +533,53 @@ class G1RobotDDS(DDSObject):
                     print(f"g1_robot_dds [{self.node_name}] Warning: CRC verification failed!")
                     return {}
             
-            # extract the command data
+            receive_time = time.monotonic()
+            mode_pr = int(msg.mode_pr)
+            mode_machine = int(msg.mode_machine)
+            reserve = [int(value) for value in msg.reserve]
+            crc_value = int(msg.crc) & 0xFFFFFFFF
+            wire_fingerprint = (
+                crc_value,
+                mode_pr,
+                mode_machine,
+                tuple(reserve),
+            )
+            self._lowcmd_packet_count += 1
+            self._last_lowcmd_receive_time = receive_time
+
+            # CRC covers the complete LowCmd payload.  mode/reserve are kept in
+            # the key as an explicit lifecycle/lock-step guard.  Repeated
+            # packets still refresh command liveness and ACK accounting; only
+            # the expensive materialization and SHM write are skipped.
+            if (
+                crc_value != 0
+                and wire_fingerprint
+                == getattr(self, "_last_lowcmd_wire_fingerprint", None)
+            ):
+                self._lowcmd_duplicate_fastpath_count = (
+                    getattr(self, "_lowcmd_duplicate_fastpath_count", 0) + 1
+                )
+                cached_command = getattr(self, "_latest_robot_command", None)
+                if cached_command is not None:
+                    cached_command["receive_time_monotonic"] = receive_time
+
+                sync_magic = reserve[3] if len(reserve) >= 4 else 0
+                if sync_magic == SONIC_LOWCMD_SYNC_MAGIC:
+                    self._last_lowcmd_ack_tick = reserve[0]
+                    self._last_lowcmd_ack_reset_epoch = reserve[1]
+                    if (
+                        self._last_sample_seq is not None
+                        and reserve[0] == (int(self._last_sample_seq) & 0xFFFFFFFF)
+                        and reserve[1]
+                        == (int(getattr(self, "_last_published_reset_epoch", 0)) & 0xFFFFFFFF)
+                    ):
+                        self._lowcmd_ack_match_count += 1
+                    else:
+                        self._lowcmd_ack_stale_count += 1
+                return cached_command
+
+            # Extract the complete command only for a new wire payload (or a
+            # producer without a usable CRC).
             num_cmd_motors = len(msg.motor_cmd)
             modes = [int(msg.motor_cmd[i].mode) for i in range(num_cmd_motors)]
             positions = [float(msg.motor_cmd[i].q) for i in range(num_cmd_motors)]
@@ -435,10 +587,9 @@ class G1RobotDDS(DDSObject):
             torques = [float(msg.motor_cmd[i].tau) for i in range(num_cmd_motors)]
             kp = [float(msg.motor_cmd[i].kp) for i in range(num_cmd_motors)]
             kd = [float(msg.motor_cmd[i].kd) for i in range(num_cmd_motors)]
-            reserve = [int(value) for value in msg.reserve]
             signature = (
-                int(msg.mode_pr),
-                int(msg.mode_machine),
+                mode_pr,
+                mode_machine,
                 tuple(reserve),
                 tuple(modes),
                 tuple(positions),
@@ -447,10 +598,11 @@ class G1RobotDDS(DDSObject):
                 tuple(kp),
                 tuple(kd),
             )
-            self._lowcmd_packet_count += 1
             if signature != self._last_lowcmd_signature:
                 self._lowcmd_content_update_count += 1
                 self._last_lowcmd_signature = signature
+            if crc_value != 0:
+                self._last_lowcmd_wire_fingerprint = wire_fingerprint
 
             sync_magic = reserve[3] if len(reserve) >= 4 else 0
             if sync_magic == SONIC_LOWCMD_SYNC_MAGIC:
@@ -467,9 +619,9 @@ class G1RobotDDS(DDSObject):
                     self._lowcmd_ack_stale_count += 1
 
             cmd_data = {
-                "mode_pr": int(msg.mode_pr),
-                "mode_machine": int(msg.mode_machine),
-                "receive_time_monotonic": time.monotonic(),
+                "mode_pr": mode_pr,
+                "mode_machine": mode_machine,
+                "receive_time_monotonic": receive_time,
                 "reserve": reserve,
                 "ack_state_tick": reserve[0] if sync_magic == SONIC_LOWCMD_SYNC_MAGIC else None,
                 "ack_reset_epoch": reserve[1] if sync_magic == SONIC_LOWCMD_SYNC_MAGIC else None,
@@ -484,7 +636,13 @@ class G1RobotDDS(DDSObject):
                     "kd": kd,
                 }
             }
+            # The provider runs in this process, so it can consume this atomic
+            # snapshot directly instead of JSON-decoding SHM on every poll.
+            # Keep the SHM write for compatibility with external diagnostics.
+            self._latest_robot_command = cmd_data
             self.output_shm.write_data(cmd_data)
+            self._lowcmd_shm_write_count = getattr(self, "_lowcmd_shm_write_count", 0) + 1
+            return cmd_data
             
         except Exception as e:
             print(f"g1_robot_dds [{self.node_name}] Error processing subscribe data: {e}")
@@ -496,6 +654,12 @@ class G1RobotDDS(DDSObject):
         Returns:
             Dict: the robot control command, return None if there is no new command
         """
+        cached_command = getattr(self, "_latest_robot_command", None)
+        if cached_command is not None:
+            receive_time = getattr(self, "_last_lowcmd_receive_time", None)
+            if receive_time is not None:
+                cached_command["receive_time_monotonic"] = receive_time
+            return cached_command
         if self.output_shm:
             return self.output_shm.read_data()
         return None
@@ -522,35 +686,51 @@ class G1RobotDDS(DDSObject):
             base_imu_data: pelvis/base IMU in [pos, quat(wxyz), accel, gyro] layout
             torso_imu_data: torso IMU in [pos, quat(wxyz), accel, gyro] layout
         """
-        if self.input_shm is None:
-            return
         try:
             if base_imu_data is None:
                 base_imu_data = imu_data
 
             normalized_sample_seq = int(sample_seq) if sample_seq is not None else None
             write_time = time.monotonic()
-            self._latest_written_sample_seq = normalized_sample_seq
-            self._latest_written_sample_time = write_time
-            self._latest_written_sim_time_s = (
+            normalized_sim_time_s = (
                 float(sim_time_s) if sim_time_s is not None else None
             )
-            self._latest_written_reset_epoch = int(
-                getattr(self, "_reset_epoch", 0)
-            ) & 0xFFFFFFFF
-
+            # ``tolist`` detaches tensors/arrays; deepcopy also detaches plain
+            # Python lists and nested legacy IMU containers.  Once committed,
+            # this snapshot is immutable and may be read lock-free after the
+            # cache pointer/generation pair has been captured under the lock.
             state_data = {
-                "joint_positions": joint_positions.tolist() if hasattr(joint_positions, 'tolist') else joint_positions,
-                "joint_velocities": joint_velocities.tolist() if hasattr(joint_velocities, 'tolist') else joint_velocities,
-                "joint_torques": joint_torques.tolist() if hasattr(joint_torques, 'tolist') else joint_torques,
-                "base_imu_data": base_imu_data.tolist() if hasattr(base_imu_data, 'tolist') else base_imu_data,
-                "torso_imu_data": torso_imu_data.tolist() if hasattr(torso_imu_data, 'tolist') else torso_imu_data,
+                "joint_positions": self._detach_state_value(joint_positions),
+                "joint_velocities": self._detach_state_value(joint_velocities),
+                "joint_torques": self._detach_state_value(joint_torques),
+                "base_imu_data": self._detach_state_value(base_imu_data),
+                "torso_imu_data": self._detach_state_value(torso_imu_data),
                 "sample_time_monotonic": write_time,
                 "sample_seq": normalized_sample_seq,
-                "sim_time_s": float(sim_time_s) if sim_time_s is not None else None,
-                "reset_epoch": self._latest_written_reset_epoch,
+                "sim_time_s": normalized_sim_time_s,
             }
-            self.input_shm.write_data(state_data)
+            with self._robot_state_lock:
+                reset_epoch = int(getattr(self, "_reset_epoch", 0)) & 0xFFFFFFFF
+                state_data["reset_epoch"] = reset_epoch
+                self._latest_robot_state = state_data
+                self._robot_state_generation += 1
+                self._latest_written_sample_seq = normalized_sample_seq
+                self._latest_written_sample_time = write_time
+                self._latest_written_sim_time_s = normalized_sim_time_s
+                self._latest_written_reset_epoch = reset_epoch
+
+            # Keep SHM as a compatibility mirror.  The in-process cache was
+            # committed first, so a transient SHM failure cannot discard a
+            # valid PhysX generation or force the publisher back to stale SHM.
+            input_shm = getattr(self, "input_shm", None)
+            if input_shm is not None:
+                try:
+                    input_shm.write_data(state_data)
+                except Exception as exc:
+                    print(
+                        f"g1_robot_dds [{self.node_name}] "
+                        f"Error mirroring robot state to shared memory: {exc}"
+                    )
             # lock-step latency path: wake the publish loop so the fresh
             # sample leaves immediately instead of waiting for the next
             # scheduled slot (no-op unless enabled via the DDS manager)
@@ -560,3 +740,10 @@ class G1RobotDDS(DDSObject):
                 dds_manager.notify_fresh_sample(registered_name)
         except Exception as e:
             print(f"g1_robot_dds [{self.node_name}] Error writing robot state: {e}")
+
+    @staticmethod
+    def _detach_state_value(value):
+        """Return a cache-owned copy without double-copying tensor/array data."""
+        if hasattr(value, "tolist"):
+            return value.tolist()
+        return copy.deepcopy(value)

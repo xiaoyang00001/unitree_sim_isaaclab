@@ -372,9 +372,9 @@ class BeltBoxLayoutTest(unittest.TestCase):
             expected = _EI_MODULE.path_point(11.06 - 0.75 * index)
             expected_x = expected[0]
             if index == 0:
-                expected_x -= _LAYOUT_MODULE.BELT_BOX_FRONT_X_OFFSET
-            elif index == 1:
                 expected_x += _LAYOUT_MODULE.BELT_BOX_FRONT_X_OFFSET
+            elif index == 1:
+                expected_x -= _LAYOUT_MODULE.BELT_BOX_FRONT_X_OFFSET
             with self.subTest(index=index):
                 self.assertAlmostEqual(x, expected_x, places=9)
                 self.assertAlmostEqual(y, expected[1], places=9)
@@ -415,9 +415,9 @@ class BeltBoxLayoutTest(unittest.TestCase):
                 self.assertEqual(
                     layout.belt_box_positions,
                     (
-                        # 队首两箱偏西/偏东（BELT_BOX_FRONT_X_OFFSET=0.20），其余仍在中线。
-                        (-5.82, 15.20, 0.775),
-                        (-5.42, 15.95, 0.775),
+                        # 队首两箱分别靠近 robot_1/2（+X/-X），其余仍在中线。
+                        (-5.42, 15.20, 0.775),
+                        (-5.82, 15.95, 0.775),
                         (-5.62, 16.70, 0.775),
                         (-5.62, 17.45, 0.775),
                         (-5.62, 18.20, 0.775),
@@ -551,8 +551,8 @@ class BeltBoxLayoutTest(unittest.TestCase):
         self.assertEqual(layout.belt_box_count, 3)
         self.assertEqual(layout.belt_box_queue_gap, 0.1)
         # 队首在主线 y=16.0，向上游按路径距离 0.7 排——三个都还在主线段上。
-        # 队首两箱额外偏西/偏东（BELT_BOX_FRONT_X_OFFSET=0.20），第三箱仍在中线。
-        expected_x = (-5.82, -5.42, -5.62)
+        # 队首两箱分别向 robot_1/2 偏移（+X/-X），第三箱仍在中线。
+        expected_x = (-5.42, -5.82, -5.62)
         for index, (x, y, _z) in enumerate(layout.belt_box_positions):
             with self.subTest(index=index):
                 self.assertAlmostEqual(x, expected_x[index], places=9)
@@ -577,14 +577,14 @@ class BeltBoxLayoutTest(unittest.TestCase):
     def test_lane_x_override_only_applies_to_the_straight_fallback(self) -> None:
         environ = {"ISAACLAB_BELT_BOX_LANE_X": "-5.617", **_ENDLESS_OFF}
         layout = resolve_scene_layout(environ)
-        # 队首两箱在偏移的车道上同样偏西/偏东，其余箱子仍贴车道 x。
+        # 队首两箱在偏移车道上同样按 robot_1/2 的 +X/-X 归属错开。
         positions = layout.belt_box_positions
-        self.assertAlmostEqual(positions[0][0], -5.617 - 0.20, places=9)
-        self.assertAlmostEqual(positions[1][0], -5.617 + 0.20, places=9)
+        self.assertAlmostEqual(positions[0][0], -5.617 + 0.20, places=9)
+        self.assertAlmostEqual(positions[1][0], -5.617 - 0.20, places=9)
         self.assertTrue(all(pos[0] == -5.617 for pos in positions[2:]))
         # 弯道形态：x 由路径决定，LANE_X 静默不生效（README 有说明）。
         layout = resolve_scene_layout({"ISAACLAB_BELT_BOX_LANE_X": "-5.617"})
-        self.assertAlmostEqual(layout.belt_box_positions[0][0], -5.62 - 0.20, places=9)
+        self.assertAlmostEqual(layout.belt_box_positions[0][0], -5.62 + 0.20, places=9)
 
     def test_spacing_is_wide_enough_to_read_as_separate_boxes(self) -> None:
         """默认间距要让相邻箱子之间留出肉眼可辨的空隙（不是挨在一起）。"""

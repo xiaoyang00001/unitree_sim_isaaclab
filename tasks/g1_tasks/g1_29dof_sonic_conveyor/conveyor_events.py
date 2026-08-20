@@ -43,6 +43,9 @@ from .conveyor_drive import (
     DEFAULT_Y_RESPAWN,
 )
 
+
+_IDLE_WRITE_DIAGNOSTIC_INTERVAL_CALLS = 500
+
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv
 
@@ -232,6 +235,109 @@ def reset_scene_mirror_safe(env):
             rigid_object.write_root_velocity_to_sim(default_root[:, 7:], env_ids=env_ids)
 
 
+def _should_skip_idle_velocity_write(
+    drive_i: torch.Tensor,
+    *,
+    enabled: bool,
+) -> bool:
+    """Return whether an all-false CPU row may omit its no-op PhysX write.
+
+    The device check intentionally precedes ``any`` so CUDA tensors never
+    cross the host synchronization boundary.  With the flag disabled this is
+    also a strict short circuit, preserving the historical branch-free path.
+    """
+
+    return (
+        enabled
+        and drive_i.device.type == "cpu"
+        and not bool(drive_i.any())
+    )
+
+
+def _write_belt_box_velocities(
+    objects: list,
+    env_ids: torch.Tensor,
+    drive: torch.Tensor,
+    *,
+    velocity_y: float,
+    path_enabled: bool,
+    hx: torch.Tensor | None,
+    hy: torch.Tensor | None,
+    skip_idle_velocity_writes: bool,
+) -> tuple[int, int]:
+    """Write driven box velocities and return ``(writes, idle_skips)``.
+
+    A false drive row historically reads the current six-component velocity,
+    selects that same value with ``torch.where`` and writes it back.  On the
+    CPU pipeline, omitting that exact no-op preserves the box velocity while
+    avoiding one Python/PhysX tensor write.  Position/latch/queue computation
+    has already run, so a departure or reset resumes driving in the same tick.
+    """
+
+    if len(objects) != drive.shape[0]:
+        raise ValueError(
+            "objects 必须与 drive 第一维一一对应："
+            f"{len(objects)} vs {drive.shape[0]}"
+        )
+    if path_enabled and (hx is None or hy is None):
+        raise ValueError("path_enabled=True 时必须提供 hx/hy 路径航向")
+
+    speed = -velocity_y
+    cpu_skip_enabled = (
+        skip_idle_velocity_writes and drive.device.type == "cpu"
+    )
+
+    if not cpu_skip_enabled:
+        # Keep the flag-off and CUDA execution path byte-for-byte equivalent
+        # to the historical loop: no tensor reduction and no per-row counter.
+        for index, obj in enumerate(objects):
+            vel = obj.data.root_vel_w[env_ids].clone()
+            drive_i = drive[index]
+            if path_enabled:
+                assert hx is not None and hy is not None
+                vel[:, 0] = torch.where(drive_i, speed * hx[index], vel[:, 0])
+                vel[:, 1] = torch.where(drive_i, speed * hy[index], vel[:, 1])
+            else:
+                vel[:, 0] = torch.where(
+                    drive_i, torch.zeros_like(vel[:, 0]), vel[:, 0]
+                )
+                vel[:, 1] = torch.where(
+                    drive_i,
+                    torch.full_like(vel[:, 1], velocity_y),
+                    vel[:, 1],
+                )
+            obj.write_root_velocity_to_sim(vel, env_ids=env_ids)
+        return len(objects), 0
+
+    idle_skip_count = 0
+    for index, obj in enumerate(objects):
+        drive_i = drive[index]
+        if _should_skip_idle_velocity_write(
+            drive_i,
+            enabled=True,
+        ):
+            idle_skip_count += 1
+            continue
+
+        # 只覆写水平速度，Z 留给重力/接触——与 drive_totes_on_conveyor 一致，
+        # 避免把箱子按进碰撞板里。
+        vel = obj.data.root_vel_w[env_ids].clone()
+        if path_enabled:
+            assert hx is not None and hy is not None
+            vel[:, 0] = torch.where(drive_i, speed * hx[index], vel[:, 0])
+            vel[:, 1] = torch.where(drive_i, speed * hy[index], vel[:, 1])
+        else:
+            vel[:, 0] = torch.where(drive_i, torch.zeros_like(vel[:, 0]), vel[:, 0])
+            vel[:, 1] = torch.where(
+                drive_i,
+                torch.full_like(vel[:, 1], velocity_y),
+                vel[:, 1],
+            )
+        obj.write_root_velocity_to_sim(vel, env_ids=env_ids)
+
+    return len(objects) - idle_skip_count, idle_skip_count
+
+
 def drive_belt_boxes_on_conveyor(
     env: ManagerBasedEnv,
     env_ids: torch.Tensor | None,
@@ -263,7 +369,8 @@ def drive_belt_boxes_on_conveyor(
     release_settle_steps: int = 25,
     front_arrival_group_size: int = 1,
     restart_after_departure: bool = True,
-):
+    skip_idle_velocity_writes: bool = False,
+) -> tuple[int, int]:
     """把纸箱队列沿带面送到工位，并按场景策略保持停线或放行下一格。
 
     与 ``drive_totes_on_conveyor``（每个筐各自独立判断 ``y > y_stop``）的差别只在
@@ -311,13 +418,15 @@ def drive_belt_boxes_on_conveyor(
     （见 ``CONVEYOR_BELT_BOX_RECYCLE_ENABLED``）；两者拆开是因为回收要写位姿，
     而写位姿和逐步写速度混在一个函数里会让排队判据难以推理。
 
-    性能注意：与 ``drive_totes_on_conveyor`` 同一条铁律——本函数每个物理步都跑，
-    **不允许任何 GPU→CPU 同步**（``.item()`` / ``.any()`` / ``if tensor``）。
-    ``path_enabled`` 是 Python 布尔，分支不引入同步。
+    性能注意：与 ``drive_totes_on_conveyor`` 同一条铁律——本函数每个物理步都跑。
+    默认路径和 CUDA 路径仍**不允许任何 GPU→CPU 同步**。显式开启
+    ``skip_idle_velocity_writes`` 时，只在 ``drive_i.device.type == "cpu"`` 后读取
+    ``drive_i.any()``；CUDA 在短路前保持历史无分支写法。``path_enabled`` 是 Python
+    布尔，分支也不引入同步。
     """
 
     if not enabled or abs(velocity_y) < 1e-8 or not object_names:
-        return
+        return 0, 0
     if len(half_lengths) != len(object_names):
         raise ValueError(
             "half_lengths 必须与 object_names 一一对应："
@@ -327,7 +436,7 @@ def drive_belt_boxes_on_conveyor(
     if env_ids is None:
         env_ids = torch.arange(env.scene.num_envs, device=env.device, dtype=torch.long)
     if len(env_ids) == 0:
-        return
+        return 0, 0
 
     origins = env.scene.env_origins[env_ids]
     objects = [env.scene[name] for name in object_names]
@@ -418,8 +527,6 @@ def drive_belt_boxes_on_conveyor(
         )  # (E,)
     # (N, 1)：广播到 (N, E)。箱型通常只有十余个，每周期重建此小张量成本可忽略。
     half_len = pos_local.new_tensor(half_lengths).unsqueeze(-1)
-    speed = -velocity_y  # velocity_y 约定为负（-Y 方向）；沿路径恒速取其模。
-
     if path_enabled:
         drive = conveyor_queue.queue_drive_mask_along_path(
             ss,
@@ -441,18 +548,16 @@ def drive_belt_boxes_on_conveyor(
             completed=completed,
         )  # (N, E)
 
-    for index, obj in enumerate(objects):
-        # 只覆写水平速度，Z 留给重力/接触——与 drive_totes_on_conveyor 一致，
-        # 避免把箱子按进碰撞板里。
-        vel = obj.data.root_vel_w[env_ids].clone()
-        drive_i = drive[index]
-        if path_enabled:
-            vel[:, 0] = torch.where(drive_i, speed * hx[index], vel[:, 0])
-            vel[:, 1] = torch.where(drive_i, speed * hy[index], vel[:, 1])
-        else:
-            vel[:, 0] = torch.where(drive_i, torch.zeros_like(vel[:, 0]), vel[:, 0])
-            vel[:, 1] = torch.where(drive_i, torch.full_like(vel[:, 1], velocity_y), vel[:, 1])
-        obj.write_root_velocity_to_sim(vel, env_ids=env_ids)
+    return _write_belt_box_velocities(
+        objects,
+        env_ids,
+        drive,
+        velocity_y=velocity_y,
+        path_enabled=path_enabled,
+        hx=hx,
+        hy=hy,
+        skip_idle_velocity_writes=skip_idle_velocity_writes,
+    )
 
 
 class DriveBeltBoxesOnConveyor(ManagerTermBase):
@@ -473,6 +578,54 @@ class DriveBeltBoxesOnConveyor(ManagerTermBase):
             device=env.device,
             dtype=torch.int32,
         )
+        self._idle_write_skip_requested = bool(
+            cfg.params.get("skip_idle_velocity_writes", False)
+        ) and bool(cfg.params.get("enabled", True)) and num_objects > 0
+        self._idle_write_device = str(env.device)
+        self._reset_idle_write_diagnostics()
+        if self._idle_write_skip_requested:
+            effective = (
+                "CPU-only active"
+                if self._idle_write_device.split(":", 1)[0] == "cpu"
+                else "fail-closed (non-CPU)"
+            )
+            print(
+                "[conveyor_event] belt_box idle velocity-write skip requested: "
+                f"device={self._idle_write_device}, mode={effective}, "
+                f"report_every={_IDLE_WRITE_DIAGNOSTIC_INTERVAL_CALLS} calls"
+            )
+
+    def _reset_idle_write_diagnostics(self) -> None:
+        self._idle_write_diag_calls = 0
+        self._idle_write_diag_writes = 0
+        self._idle_write_diag_skips = 0
+
+    def _record_idle_write_diagnostics(
+        self,
+        write_count: int,
+        idle_skip_count: int,
+    ) -> None:
+        if not self._idle_write_skip_requested:
+            return
+        self._idle_write_diag_calls += 1
+        self._idle_write_diag_writes += int(write_count)
+        self._idle_write_diag_skips += int(idle_skip_count)
+        if self._idle_write_diag_calls < _IDLE_WRITE_DIAGNOSTIC_INTERVAL_CALLS:
+            return
+
+        total = self._idle_write_diag_writes + self._idle_write_diag_skips
+        skip_ratio = 100.0 * self._idle_write_diag_skips / total if total else 0.0
+        attempts_per_call = total / self._idle_write_diag_calls
+        skips_per_call = self._idle_write_diag_skips / self._idle_write_diag_calls
+        print(
+            "[conveyor_event] belt_box idle velocity-write stats: "
+            f"calls={self._idle_write_diag_calls}, objects={total}, "
+            f"skipped={self._idle_write_diag_skips}, "
+            f"writes={self._idle_write_diag_writes}, "
+            f"skipped_per_call={skips_per_call:.2f}/{attempts_per_call:.2f}, "
+            f"skip_ratio={skip_ratio:.1f}%"
+        )
+        self._reset_idle_write_diagnostics()
 
     def reset(self, env_ids=None) -> None:
         ids = slice(None) if env_ids is None else env_ids
@@ -480,6 +633,7 @@ class DriveBeltBoxesOnConveyor(ManagerTermBase):
         self._arrived[:, ids] = False
         self._lifted[:, ids] = False
         self._belt_dwell[:, ids] = 0
+        self._reset_idle_write_diagnostics()
 
     def __call__(
         self,
@@ -503,8 +657,9 @@ class DriveBeltBoxesOnConveyor(ManagerTermBase):
         release_settle_steps: int = 25,
         front_arrival_group_size: int = 1,
         restart_after_departure: bool = True,
+        skip_idle_velocity_writes: bool = False,
     ) -> None:
-        drive_belt_boxes_on_conveyor(
+        write_count, idle_skip_count = drive_belt_boxes_on_conveyor(
             env,
             env_ids,
             object_names=object_names,
@@ -529,7 +684,9 @@ class DriveBeltBoxesOnConveyor(ManagerTermBase):
             release_settle_steps=release_settle_steps,
             front_arrival_group_size=front_arrival_group_size,
             restart_after_departure=restart_after_departure,
+            skip_idle_velocity_writes=skip_idle_velocity_writes,
         )
+        self._record_idle_write_diagnostics(write_count, idle_skip_count)
 
 
 def drive_totes_on_conveyor(

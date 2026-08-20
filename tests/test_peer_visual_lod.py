@@ -191,7 +191,7 @@ class PeerVisualLodAssetTests(unittest.TestCase):
 
 
 class PeerVisualLodWiringTests(unittest.TestCase):
-    def test_scene_factory_uses_asset_base_and_wires_both_viewer_mirrors(self) -> None:
+    def test_scene_factory_uses_asset_base_and_wires_configured_viewer_mirrors(self) -> None:
         source = CONFIG_PATH.read_text(encoding="utf-8")
         visual_factory = source.split("def _make_peer_visual_lod_cfg(", 1)[1].split(
             "def _make_peer_scene_cfg", 1
@@ -200,9 +200,11 @@ class PeerVisualLodWiringTests(unittest.TestCase):
         self.assertIn("activate_contact_sensors=False", visual_factory)
         self.assertNotIn("ArticulationCfg(", visual_factory)
         self.assertNotIn("RigidBodyPropertiesCfg", visual_factory)
-        self.assertIn('"robot_1": "/World/envs/env_0/PeerRobot"', source)
-        self.assertIn('"robot_2": "/World/envs/env_0/PeerRobot2"', source)
-        self.assertIn("_make_second_peer_scene_cfg() if VIEWER_MODE", source)
+        self.assertIn("for spec in ACTIVE_SONIC_CHANNEL_SPECS", source)
+        self.assertIn('f"/World/envs/env_0/PeerRobot', source)
+        self.assertIn("def _make_additional_peer_scene_cfg(robot_id: int)", source)
+        for robot_id in range(2, 6):
+            self.assertIn(f"peer_robot_{robot_id}: ArticulationCfg | AssetBaseCfg | None", source)
 
     def test_conveyor_standby_robots_use_full_meshes_without_physics(self) -> None:
         source = CONFIG_PATH.read_text(encoding="utf-8")
@@ -223,9 +225,16 @@ class PeerVisualLodWiringTests(unittest.TestCase):
         self.assertNotIn("_make_peer_visual_lod_cfg(", factory)
         self.assertNotIn("ArticulationCfg(", factory)
         self.assertNotIn("RigidBodyPropertiesCfg", factory)
-        self.assertEqual(source.count("= _make_standby_robot_cfg("), 3)
+        for index in range(3):
+            self.assertIn(f"_make_standby_robot_cfg({index})", source)
         for name in ("StandbyRobot1", "StandbyRobot2", "StandbyRobot3"):
             self.assertIn(f'"{name}"', source)
+
+        # 五机 host/viewer 中相同站位改由 Robot3..5 / PeerRobot3..5 接管，
+        # 纯显示体必须条件关闭，不能叠出第六至第八台机器人。
+        self.assertIn("if ACTIVE_SONIC_ROBOT_COUNT < 3 else None", source)
+        self.assertIn("if ACTIVE_SONIC_ROBOT_COUNT < 4 else None", source)
+        self.assertIn("if ACTIVE_SONIC_ROBOT_COUNT < 5 else None", source)
 
         # 新增展示体不能改动原有两台的朝向契约。
         self.assertIn(

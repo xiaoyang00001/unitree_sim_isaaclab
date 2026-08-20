@@ -1,9 +1,10 @@
 # Copyright (c) 2025, Unitree Robotics Co., Ltd. All Rights Reserved.
 # License: Apache License, Version 2.0
 
-"""Isaac-G1-29DoF-Sonic-Conveyor 无头冒烟：流水线送箱 +（可选）双进程 ZMQ 同步。
+"""Isaac-G1-29DoF-Sonic-Conveyor 无头冒烟：流水线送箱 + 多机器人/同步场景。
 
-不走 DDS/deploy，直接以默认关节位姿 step 环境，验证场景与同步链路本身。
+不走 DDS/deploy，直接以默认关节位姿短步 step 环境，验证场景创建、动作维度以及
+机器人状态有限且未在短窗口内明显失稳；它不等价于 SONIC 闭环站立验收。
 
 默认布局是"看不到头的入料端"（endless intake，**西拐**，Δ=0.25 整体北移）：
 17 个箱/包以 pitch 0.75 沿入口弯道路径出生（队首在主线 y≈15.53，主线 5 +
@@ -20,6 +21,10 @@ ISAACLAB_CONVEYOR_ENDLESS=off 回退直线带头（旧行为，y 判定）。
   python tools/smoke_conveyor_scene.py --steps 1600
 
   # 单批次停线验收：第 1000 步仅抬高队首，保持 50 步，再横向移出并断言下一个不补位
+
+  # 五台全动力学 SONIC 真身：不等 DDS，做 10 步创建/维度/有限性/漂移门检查
+  python tools/smoke_conveyor_scene.py --sonic-robot-count 5 --scene-only --steps 10
+
   python tools/smoke_conveyor_scene.py --steps 1600 --pick-lead-at 1000 --depart-lead-after 50
 
   # PhysX Surface Velocity 实验 A/B（固定由 ID=1 驱动，默认 50 mm 容差）
@@ -42,6 +47,32 @@ parser.add_argument("--task", default="Isaac-G1-29DoF-Sonic-Conveyor")
 parser.add_argument("--steps", type=int, default=1600)
 parser.add_argument("--sync", default="0", choices=["0", "1"], help="ISAACLAB_SCENE_SYNC")
 parser.add_argument("--robot-id", type=int, default=None, choices=[0, 1, 2], help="1/2=对等端, 0=纯镜像 viewer")
+parser.add_argument(
+    "--sonic-robot-count",
+    type=int,
+    default=None,
+    choices=[2, 3, 4, 5],
+    help="启用 host 多机器人场景并创建指定数量的 SONIC 动力学真身",
+)
+parser.add_argument(
+    "--scene-only",
+    action="store_true",
+    help="短步验证场景、动作维度、状态有限性和根节点漂移，不代表 SONIC 闭环站立",
+)
+parser.add_argument(
+    "--max-robot-root-drift",
+    type=float,
+    default=0.10,
+    metavar="METERS",
+    help="--scene-only 允许的单台机器人根节点最大位移（默认 0.10 m）",
+)
+parser.add_argument(
+    "--max-robot-tilt-deg",
+    type=float,
+    default=20.0,
+    metavar="DEGREES",
+    help="--scene-only 允许的单台机器人相对初始姿态最大转角（默认 20 度）",
+)
 parser.add_argument("--device", default="cpu")
 parser.add_argument("--report-every", type=int, default=100)
 parser.add_argument(
@@ -92,6 +123,10 @@ parser.add_argument(
 args = parser.parse_args()
 if args.depart_lead_after < 0:
     parser.error("--depart-lead-after 不能为负数")
+if args.max_robot_root_drift <= 0 or args.max_robot_tilt_deg <= 0:
+    parser.error("机器人漂移与姿态阈值必须为正数")
+if args.sonic_robot_count is not None and args.robot_id not in (None, 1):
+    parser.error("--sonic-robot-count 是 ID=1 host 模式，不能与 --robot-id 0/2 共用")
 if args.pick_lead_at is not None and args.drive_mode != "legacy":
     parser.error("--pick-lead-at 的平面偏离门验收仅支持 legacy 后端")
 if (
@@ -103,6 +138,10 @@ if (
 # 环境变量必须在 import tasks 之前定型（env cfg 在 import 时读取）。
 os.environ["ISAACLAB_SCENE_SYNC"] = args.sync
 os.environ["ISAACLAB_CONVEYOR_DRIVE_MODE"] = args.drive_mode
+if args.sonic_robot_count is not None:
+    os.environ["ISAACLAB_HOST_BOTH_ROBOTS"] = "1"
+    os.environ["ISAACLAB_SONIC_ROBOT_COUNT"] = str(args.sonic_robot_count)
+    os.environ["ISAACLAB_LOCAL_ROBOT_ID"] = "1"
 if args.robot_id is not None:
     os.environ["ISAACLAB_LOCAL_ROBOT_ID"] = str(args.robot_id)
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -130,6 +169,7 @@ import torch  # noqa: E402
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg  # noqa: E402
 from tasks.g1_tasks.g1_29dof_sonic_conveyor import conveyor_env_cfg  # noqa: E402
 from tasks.g1_tasks.g1_29dof_sonic_conveyor import endless_intake  # noqa: E402
+from robots.sonic_multi_robot import sonic_robot_channel_specs  # noqa: E402
 
 # 弯道形态（endless intake）下位移/停位都换算成沿路径距离 s 来判——
 # 出生在支线/弧段上的箱子 y 几乎不变，用 y 位移判会误报 FAIL。
@@ -155,11 +195,39 @@ def main() -> int:
             else conveyor_env_cfg.CONVEYOR_Y_STOP
         )
 
-    robot = env.scene["robot"]
-    default_q = robot.data.default_joint_pos.clone()
-    zeros = torch.zeros_like(default_q)
-    # SONIC 动作张量 field-major：q 目标 + dq 目标 + 前馈 tau。
-    action = torch.cat([default_q, zeros, zeros], dim=-1)
+    requested_robot_count = args.sonic_robot_count or 1
+    robot_count = (
+        conveyor_env_cfg.ACTIVE_SONIC_ROBOT_COUNT
+        if args.sonic_robot_count is not None
+        else 1
+    )
+    if robot_count != requested_robot_count:
+        print(
+            f"[smoke] requested robots={requested_robot_count}, "
+            f"layout-effective robots={robot_count}",
+            flush=True,
+        )
+    robot_specs = sonic_robot_channel_specs(robot_count)
+    robots = {spec.asset_name: env.scene[spec.asset_name] for spec in robot_specs}
+    robot_initial_states = {
+        name: robot.data.root_state_w.clone() for name, robot in robots.items()
+    }
+    action_segments = []
+    for robot in robots.values():
+        default_q = robot.data.default_joint_pos.clone()
+        zeros = torch.zeros_like(default_q)
+        # 每台 SONIC 均按 q 目标 + dq 目标 + 前馈 tau 拼接，机器人顺序为 1..N。
+        action_segments.extend((default_q, zeros, zeros))
+    action = torch.cat(action_segments, dim=-1)
+    expected_action_dim = robot_count * 43 * 3
+    if action.shape[-1] != expected_action_dim:
+        raise RuntimeError(
+            f"SONIC action dimension mismatch: expected {expected_action_dim}, got {action.shape[-1]}"
+        )
+    print(
+        f"[smoke] SONIC robots={robot_count}, action_dim={action.shape[-1]}",
+        flush=True,
+    )
 
     # 监控清单跟着实际布局走：流水线布局是纸箱队列，推车布局仍是两塑料筐。
     watched_names = (
@@ -180,7 +248,20 @@ def main() -> int:
     # （不会挤到贴紧前车）。所以停位 = y_stop + 该箱相对队首的出生偏移。
     # 塑料筐没有队列语义，两个筐各自直接停在工位（偏移取 0 即退化成这种）。
     belt_box_mode = bool(conveyor_env_cfg.CONVEYOR_BELT_BOX_NAMES)
-    peer = env.scene["peer_robot"]
+    peer_names = []
+    if conveyor_env_cfg.VIEWER_MODE:
+        peer_names = ["peer_robot"] + [
+            f"peer_robot_{robot_id}"
+            for robot_id in range(2, conveyor_env_cfg.ACTIVE_SONIC_ROBOT_COUNT + 1)
+        ]
+    else:
+        try:
+            env.scene["peer_robot"]
+        except KeyError:
+            pass
+        else:
+            peer_names = ["peer_robot"]
+    peers = {name: env.scene[name] for name in peer_names}
 
     # 方案 b（主循环挂载）：apply_actions 是 no-op，宿主要自己 pump。
     # 本脚本没有 sim_main 主循环，就在每个 env.step 后代跑一轮（≈200Hz pump，
@@ -199,8 +280,15 @@ def main() -> int:
         for name, obj in watched.items():
             p = obj.data.root_pos_w[0]
             parts.append(f"{name} x={p[0]:.3f} y={p[1]:.3f} z={p[2]:.3f}")
-        pp = peer.data.root_pos_w[0]
-        parts.append(f"peer_robot x={pp[0]:.3f} y={pp[1]:.3f} z={pp[2]:.3f}")
+        for name, peer in peers.items():
+            pp = peer.data.root_pos_w[0]
+            parts.append(f"{name} x={pp[0]:.3f} y={pp[1]:.3f} z={pp[2]:.3f}")
+        if robot_count > 1:
+            positions = []
+            for name, obj in robots.items():
+                p = obj.data.root_pos_w[0]
+                positions.append(f"{name}=({p[0]:.2f},{p[1]:.2f},{p[2]:.2f})")
+            parts.append("robots " + ", ".join(positions))
         print(f"[smoke {tag}] " + " | ".join(parts), flush=True)
 
     def pick_lead_box() -> tuple[str, object] | None:
@@ -304,6 +392,50 @@ def main() -> int:
     end_z = {name: float(obj.data.root_pos_w[0, 2]) for name, obj in watched.items()}
     hz = args.steps / max(elapsed, 1e-6)
     print(f"[smoke] {args.steps} steps in {elapsed:.1f}s -> env_hz={hz:.1f}", flush=True)
+
+    if args.scene_only:
+        snapshot("final")
+        robot_failures = []
+        for name, robot in robots.items():
+            current = robot.data.root_state_w
+            initial = robot_initial_states[name]
+            if (
+                not torch.isfinite(current).all()
+                or not torch.isfinite(robot.data.joint_pos).all()
+                or not torch.isfinite(robot.data.joint_vel).all()
+            ):
+                robot_failures.append(f"{name}: state contains NaN/Inf")
+                continue
+            drift = float(torch.linalg.vector_norm(current[:, :3] - initial[:, :3], dim=-1).max())
+            quat_dot = torch.sum(current[:, 3:7] * initial[:, 3:7], dim=-1).abs().clamp(0.0, 1.0)
+            tilt_deg = float(torch.rad2deg(2.0 * torch.acos(quat_dot)).max())
+            print(
+                f"[smoke] {name}: root_drift={drift:.4f}m, "
+                f"rotation_delta={tilt_deg:.2f}deg",
+                flush=True,
+            )
+            if drift > args.max_robot_root_drift:
+                robot_failures.append(
+                    f"{name}: root drift {drift:.4f}m > {args.max_robot_root_drift:.4f}m"
+                )
+            if tilt_deg > args.max_robot_tilt_deg:
+                robot_failures.append(
+                    f"{name}: rotation delta {tilt_deg:.2f}deg > "
+                    f"{args.max_robot_tilt_deg:.2f}deg"
+                )
+        if robot_failures:
+            for failure in robot_failures:
+                print(f"[smoke] FAIL: {failure}", flush=True)
+            print("[smoke] RESULT: FAIL (scene-only stability gate)", flush=True)
+            env.close()
+            return 1
+        print(
+            f"[smoke] RESULT: PASS (scene-only short-step gate, robots={robot_count}, "
+            f"viewer_mirrors={len(peers)}, action_dim={action.shape[-1]})",
+            flush=True,
+        )
+        env.close()
+        return 0
 
     # 被取走的箱子已经横向偏出流水线并完成锁存，退出带面评分；剩下的按队列重新
     # 编号，于是“偏离后下一个补位到工位”落在 graded_names[0] 的槽位断言里。

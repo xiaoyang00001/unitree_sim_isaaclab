@@ -1,7 +1,7 @@
 # Copyright (c) 2022-2026, The Isaac Lab Project Developers.
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""SONIC G1 + warehouse 流水线场景 + ZMQ 双机同步。
+"""SONIC G1 + warehouse 流水线场景 + ZMQ 多机器人 host/viewer 同步。
 
 场景与流水线驱动移植自 IsaacLab 分叉 feat/conveyor-loop-totes-wip 的
 ``pick_place/locomanipulation_g1_env_cfg.py``（tip 17e71c0a0），机器人与
@@ -15,6 +15,10 @@ DDS/XR 链路沿用本工程 ``g1_29dof_dex3_sonic`` 的 SONIC 底座。
 * 场景物体的物理权威固定在 ID=1：ID=2 侧物体 spawn 成 kinematic 纯跟随；
 * 流水线驱动事件只在物体权威端生效；
 * 已知限制：只有 ID=1 侧机器人能与物体发生物理交互（镜像体无碰撞）。
+
+host/viewer 形态保留同一场景身份协议：ID=1 host 通过
+``ISAACLAB_SONIC_ROBOT_COUNT=2..5`` 创建并发布多台 SONIC 动力学真身，ID=0 viewer
+创建同数量镜像；额外三台沿用流水线原纯显示站位。原 ID=1/2 对等模式不扩展场景 ID。
 
 配置读取是**单轨制**：进程环境变量永远优先；``configs/scene_sync.env``
 （或 ``ISAACLAB_SCENE_SYNC_ENV_FILE`` 指定的文件）里的值在 import 时
@@ -40,6 +44,9 @@ from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import NVIDIA_NUCLEUS_DIR
 
+from robots.g1_joint_order import G1_29DOF_DDS_JOINT_ORDER
+from robots.g1_sonic_urdf import DEX3_HAND_JOINT_NAMES
+from robots.sonic_multi_robot import sonic_robot_channel_spec, sonic_robot_channel_specs
 from tasks.common_observations.dex3_state import get_robot_dex3_joint_states
 from tasks.common_observations.g1_29dof_state import get_robot_boy_joint_states
 
@@ -59,13 +66,21 @@ from tasks.g1_tasks.g1_29dof_dex3_sonic.g1_29dof_dex3_sonic_env_cfg import (
 )
 
 from . import conveyor_events
+from .actuator_merge import (
+    maybe_merge_implicit_actuator_groups,
+    merge_implicit_actuator_groups,
+    validate_sonic_runtime_actuators,
+)
 from .asset_variants import (
     VISUAL_ONLY_BACKGROUND_USD,
     WORKCELL_LITE_VISUAL_ONLY_BACKGROUND_USD,
     resolve_conveyor_background_usd,
 )
 from .background_assets import resolve_background_asset
-from .contact_modes import resolve_contact_report_mode
+from .contact_modes import (
+    resolve_contact_history_length,
+    resolve_contact_report_mode,
+)
 from .contact_spawners import configure_robot_contact_reports
 from .conveyor_drive import (
     BELT_COLLIDER_THICKNESS,
@@ -96,11 +111,18 @@ _ASSETS_DIR = Path(__file__).resolve().parent / "scene_assets"
 # 身份。曾经的双源判定（sim_main 字面比较进程 env vs 本文件 env 文件+int 解析）会在
 # 「ID 写在 env 文件」或 "00" 这类写法下裂脑——一侧按 viewer 建场景、另一侧仍按对等端
 # 选 sonic_dds/domain 1。详见 sync_identity 模块 docstring。
-from .sync_identity import load_scene_sync_env, resolve_host_both_robots, resolve_local_robot_id
+from .sync_identity import (
+    load_scene_sync_env,
+    resolve_active_sonic_robot_count,
+    resolve_host_both_robots,
+    resolve_local_robot_id,
+    resolve_sonic_robot_count,
+)
 
 load_scene_sync_env(verbose_tag="[conveyor_env_cfg]")
 
 CONTACT_REPORT_MODE = resolve_contact_report_mode(os.environ)
+CONTACT_HISTORY_LENGTH = resolve_contact_history_length(os.environ)
 TOTE_COLLIDER_MODE, TOTE_USD_PATH = resolve_tote_asset(_ASSETS_DIR / "props", os.environ)
 
 
@@ -176,14 +198,36 @@ ENDLESS_INTAKE = resolve_endless_intake(
 
 # 身份解析走 sync_identity 单一真源（env 文件在文件头已加载过，这里不再重复加载）。
 LOCAL_ROBOT_ID = resolve_local_robot_id(verbose_tag="[conveyor_env_cfg]", load_env=False)
-# viewer 模式（ID=0）：本机不发布任何状态，把 robot_1/robot_2 与物体全部作为镜像应用。
+# viewer 模式（ID=0）：本机不发布状态，把 host 机器人与物体全部作为镜像应用。
 # 本机 "robot" 资产退化为停在场外的 ghost（无碰撞/无重力/合并执行器），只为满足
 # SONIC EnvCfg 的 action/observation 挂载，不参与画面构图。
 VIEWER_MODE = LOCAL_ROBOT_ID == 0
-# host 双机器人模式（工作包 B）：ID=1 + ISAACLAB_HOST_BOTH_ROBOTS=1——robot_1 与
-# robot_2 都是本机全动力学 SONIC 机器人（各一套 deploy，第二套走 rt/r2/* 话题），
-# 场景里没有镜像体，sync 双发 robot_1+robot_2+物体、只发不收。
+# host 多机器人模式（工作包 B）：历史开关 ISAACLAB_HOST_BOTH_ROBOTS=1 继续负责
+# 激活 host；实际数量由 ISAACLAB_SONIC_ROBOT_COUNT=2..5 决定。每台各有一套 deploy
+# 与 rt[/rN]/* DDS 通道，场景里没有镜像体，sync 单向发布全部真身与物体。
 HOST_MODE = resolve_host_both_robots(verbose_tag="[conveyor_env_cfg]", load_env=False)
+SONIC_ROBOT_COUNT = resolve_sonic_robot_count(
+    verbose_tag="[conveyor_env_cfg]", load_env=False
+)
+# 三个额外站位只存在于流水线布局。对等端仍固定为历史双机拓扑；host/viewer 共用
+# active resolver，在推车布局把共享默认值自动压回 2，保证 EnvCfg、DDS 与 provider
+# 永远使用同一个有效数量。
+ACTIVE_SONIC_ROBOT_COUNT = (
+    resolve_active_sonic_robot_count(
+        verbose_tag="[conveyor_env_cfg]", load_env=False
+    )
+    if (HOST_MODE or VIEWER_MODE)
+    else 2
+)
+ACTIVE_SONIC_CHANNEL_SPECS = sonic_robot_channel_specs(ACTIVE_SONIC_ROBOT_COUNT)
+# 主动力学执行器合并只作为显式 A/B 候选；默认仍保留已验过的原始六组。
+SONIC_MERGE_ACTUATORS = _env_bool("ISAACLAB_SONIC_MERGE_ACTUATORS", False)
+# 真实 actuator tensor 校验会触发 GPU→CPU 同步，只允许显式 A/B 启用。
+SONIC_VALIDATE_ACTUATORS = _env_bool("ISAACLAB_SONIC_VALIDATE_ACTUATORS", False)
+_HOST_SONIC_ASSET_NAMES = (
+    "robot",
+    *(f"robot_{robot_id}" for robot_id in range(2, ACTIVE_SONIC_ROBOT_COUNT + 1)),
+)
 # viewer 的上游固定是权威端 ID=1（连它的 PUB 端口）；对等模式保持 3-ID 互指。
 PEER_ROBOT_ID = 1 if VIEWER_MODE else 3 - LOCAL_ROBOT_ID
 LOCAL_ROBOT_GLOBAL_NAME = "viewer" if VIEWER_MODE else f"robot_{LOCAL_ROBOT_ID}"
@@ -247,9 +291,8 @@ SCENE_SYNC_MAINLOOP = _env_bool("ISAACLAB_SCENE_SYNC_MAINLOOP", True)
 def _scene_state_sync_cfg() -> ZmqSceneStateSyncActionCfg:
     """对等场景同步：各发布本机机器人；物体只有权威端发布、镜像端应用。
 
-    viewer 模式（ID=0）：发布方向整体关闭，apply 挂 robot_1/robot_2 两个镜像体。
-    在权威端只发 robot_1 的过渡期，robot_2 缺席由接收侧容缺跳过（见
-    ``_parse_robot_states``），等 host 侧双机器人落地后自动补齐。
+    viewer 模式（ID=0）：发布方向整体关闭，apply 挂配置数量的机器人镜像体。
+    apply 清单允许是发布端的超集；缺席机器人由接收侧容缺跳过并保持出生姿态。
     """
 
     if not SCENE_SYNC_ENABLED:
@@ -261,15 +304,22 @@ def _scene_state_sync_cfg() -> ZmqSceneStateSyncActionCfg:
         if PEER_VISUAL_LOD:
             apply_robots = {}
             apply_visual_robots = {
-                "robot_1": "/World/envs/env_0/PeerRobot",
-                "robot_2": "/World/envs/env_0/PeerRobot2",
+                spec.global_name: f"/World/envs/env_0/PeerRobot{spec.robot_id if spec.robot_id > 1 else ''}"
+                for spec in ACTIVE_SONIC_CHANNEL_SPECS
             }
         else:
-            apply_robots = {"robot_1": "peer_robot", "robot_2": "peer_robot_2"}
+            apply_robots = {
+                spec.global_name: (
+                    "peer_robot" if spec.robot_id == 1 else f"peer_robot_{spec.robot_id}"
+                )
+                for spec in ACTIVE_SONIC_CHANNEL_SPECS
+            }
     elif HOST_MODE:
-        # host 只发不收：双机器人 + 物体全部单向广播，viewer 的容缺 apply 自动补上
-        # robot_2。connect 置空让接收方向干净失能（不建 SUB socket、不刷 stale）。
-        publish_robots = {"robot_1": "robot", "robot_2": "robot_2"}
+        # host 只发不收：全部真身 + 物体单向广播。connect 置空让接收方向干净
+        # 失能（不建 SUB socket、不刷 stale）。
+        publish_robots = {
+            spec.global_name: spec.asset_name for spec in ACTIVE_SONIC_CHANNEL_SPECS
+        }
         apply_robots = {}
         connect_endpoint = ""
     else:
@@ -411,9 +461,25 @@ PEER_ROBOT_POS = (
     else (ROBOT_2_X, ROBOT_2_WORKSTATION_Y, 0.76)
 )
 PEER_ROBOT_ROT = _ROBOT_1_ROT if PEER_ROBOT_ID == 1 else _ROBOT_2_ROT
-# viewer 的第二镜像体：robot_2 的工位。对等模式不用（保持 None，场景里不生成）。
-PEER2_ROBOT_POS = (ROBOT_2_X, ROBOT_2_WORKSTATION_Y, 0.76)
-PEER2_ROBOT_ROT = _ROBOT_2_ROT
+
+
+def _scene_robot_pose(
+    robot_id: int,
+) -> tuple[tuple[float, float, float], tuple[float, float, float, float]]:
+    """Return the existing conveyor pose assigned to global robot ``robot_id``."""
+
+    if robot_id == 1:
+        return (ROBOT_1_X, ROBOT_WORKSTATION_Y, 0.76), _ROBOT_1_ROT
+    if robot_id == 2:
+        return (ROBOT_2_X, ROBOT_2_WORKSTATION_Y, 0.76), _ROBOT_2_ROT
+    pose_index = robot_id - 3
+    if not 0 <= pose_index < len(STANDBY_ROBOT_POSES):
+        raise ValueError(
+            f"robot_{robot_id} has no conveyor standby pose; "
+            "ISAACLAB_SONIC_ROBOT_COUNT>2 requires ISAACLAB_TOTES_ON_CONVEYOR=1"
+        )
+    pose = STANDBY_ROBOT_POSES[pose_index]
+    return pose.pos, pose.rot
 
 # ==================================================================
 # 流水线驱动参数。默认 legacy 保持历史行为；显式设置
@@ -458,6 +524,12 @@ CONVEYOR_LEGACY_ENABLED = CONVEYOR_DRIVE.legacy_enabled
 CONVEYOR_SURFACE_VELOCITY_ENABLED = CONVEYOR_DRIVE.surface_velocity_enabled
 CONVEYOR_SURFACE_RECYCLE_ENABLED = CONVEYOR_DRIVE.surface_recycle_enabled
 CONVEYOR_ENABLED = CONVEYOR_LEGACY_ENABLED or CONVEYOR_SURFACE_VELOCITY_ENABLED
+# Opt-in fast path for the legacy belt-box event.  The implementation is
+# deliberately CPU-only: scene sync already requires the production host to
+# use the CPU pipeline, while CUDA keeps the historical branch-free writes.
+CONVEYOR_SKIP_IDLE_VELOCITY_WRITES = _env_bool(
+    "ISAACLAB_CONVEYOR_SKIP_IDLE_VELOCITY_WRITES", False
+)
 
 # 循环模式（ISAACLAB_CONVEYOR_Y_STOP<=0 ⇒ y_stop=None）下纸箱同样需要回收。
 # 塑料筐的 legacy 驱动自带 loop 分支会把筐传回入料端，但纸箱走的是
@@ -690,11 +762,14 @@ def _log_scene_layout() -> None:
 
     tag = "[conveyor_env_cfg]"
     if VIEWER_MODE:
-        print(f"{tag} 本机身份: viewer（纯镜像观看端，只收不发；apply=robot_1+robot_2+物体）")
+        print(
+            f"{tag} 本机身份: viewer（纯镜像观看端，只收不发；"
+            f"apply=robot_1..{ACTIVE_SONIC_ROBOT_COUNT}+物体）"
+        )
     elif HOST_MODE:
         print(
-            f"{tag} 本机身份: host（双机器人权威端，只发不收；"
-            "publish=robot_1+robot_2+物体，robot_2 走 rt/r2/* 话题）"
+            f"{tag} 本机身份: host（{ACTIVE_SONIC_ROBOT_COUNT} 机器人权威端，只发不收；"
+            f"publish=robot_1..{ACTIVE_SONIC_ROBOT_COUNT}+物体）"
         )
     else:
         print(
@@ -711,6 +786,20 @@ def _log_scene_layout() -> None:
     print(f"{tag} 背景资产: {BACKGROUND_MODE} ({BACKGROUND_USD_PATH.name})")
     print(f"{tag} 料筐碰撞: {TOTE_COLLIDER_MODE} ({TOTE_USD_PATH.name})")
     print(f"{tag} ContactReport: {CONTACT_REPORT_MODE}")
+    if CONTACT_REPORT_MODE == "off":
+        print(f"{tag} ContactSensor effective history: off")
+    else:
+        history_mode = "current-only lazy" if CONTACT_HISTORY_LENGTH == 0 else "rolling"
+        print(
+            f"{tag} ContactSensor effective history: "
+            f"{CONTACT_HISTORY_LENGTH} ({history_mode})"
+        )
+    if not VIEWER_MODE:
+        print(
+            f"{tag} SONIC 真身执行器: "
+            f"{'43 关节单组' if SONIC_MERGE_ACTUATORS else '原始 6 组'} "
+            f"[ISAACLAB_SONIC_MERGE_ACTUATORS={int(SONIC_MERGE_ACTUATORS)}]"
+        )
     if TOTES_ON_CONVEYOR:
         print(
             f"{tag} 场景布局: 流水线（{len(BELT_BOX_NAMES)} 个纸箱排在工位上游、首批到位停线）"
@@ -732,14 +821,28 @@ def _log_scene_layout() -> None:
         "（支线越过货架排 B 所需；wrapper 组变换/装饰/地贴同 Δ）"
     )
     if STANDBY_ROBOT_POSES:
-        _standby_xy = " / ".join(
+        _active_extra_count = (
+            max(0, ACTIVE_SONIC_ROBOT_COUNT - 2) if (HOST_MODE or VIEWER_MODE) else 0
+        )
+        _active_extra_xy = " / ".join(
             f"({pose.pos[0]:.2f},{pose.pos[1]:.2f})"
-            for pose in STANDBY_ROBOT_POSES
+            for pose in STANDBY_ROBOT_POSES[:_active_extra_count]
         )
-        print(
-            f"{tag}   纯显示站位机器人 ×{len(STANDBY_ROBOT_POSES)}: "
-            f"{_standby_xy}（沿流水线分散、非面对面、无物理）"
-        )
+        if _active_extra_count:
+            _active_role = "SONIC 动力学真身" if HOST_MODE else "scene_state 镜像"
+            print(
+                f"{tag}   新增活动机器人 ×{_active_extra_count}: {_active_extra_xy}"
+                f"（{_active_role}，沿流水线分散、非面对面）"
+            )
+        _static_poses = STANDBY_ROBOT_POSES[_active_extra_count:]
+        if _static_poses:
+            _static_xy = " / ".join(
+                f"({pose.pos[0]:.2f},{pose.pos[1]:.2f})" for pose in _static_poses
+            )
+            print(
+                f"{tag}   纯显示站位机器人 ×{len(_static_poses)}: "
+                f"{_static_xy}（无 articulation/物理）"
+            )
     if CONVEYOR_TOTE_NAMES and TOTES_ON_CONVEYOR:
         print(
             f"{tag}   筐出生/复位落点 y: tote1={CART2_TOTE1_POS[1]:.3f} tote2={CART2_TOTE2_POS[1]:.3f}"
@@ -1026,6 +1129,42 @@ def _make_belt_box_cfg(index: int) -> RigidObjectCfg | None:
 # ==================================================================
 
 
+_SONIC_JOINT_NAMES = (*G1_29DOF_DDS_JOINT_ORDER, *DEX3_HAND_JOINT_NAMES)
+# SONIC 合成 URDF 没有 joint dynamics 标签，转换后的 PhysxJointAPI 也没有覆写这三项；
+# 因而原六组中 hands 以外各组的 USD 回退值均为 PhysX 默认 0。单组合并时必须显式
+# 补齐这些关节，不能依赖 Isaac Lab 的 partial-dict 行为（未命中的关节会直接写 0）。
+_SONIC_PARTIAL_USD_DEFAULTS = {
+    "friction": 0.0,
+    "dynamic_friction": 0.0,
+    "viscous_friction": 0.0,
+}
+
+
+def _merge_sonic_actuator_groups(actuators: dict, *, merged_name: str) -> dict:
+    """Collapse SONIC's six implicit groups after strict 43-joint resolution."""
+
+    return merge_implicit_actuator_groups(
+        actuators,
+        _SONIC_JOINT_NAMES,
+        merged_name=merged_name,
+        actuator_cfg_type=ImplicitActuatorCfg,
+        partial_usd_defaults=_SONIC_PARTIAL_USD_DEFAULTS,
+    )
+
+
+def _maybe_merge_local_sonic_actuator_groups(actuators: dict) -> dict:
+    """Keep the legacy mapping unless the conveyor-only A/B flag is enabled."""
+
+    return maybe_merge_implicit_actuator_groups(
+        actuators,
+        _SONIC_JOINT_NAMES,
+        enabled=SONIC_MERGE_ACTUATORS,
+        merged_name="sonic_all",
+        actuator_cfg_type=ImplicitActuatorCfg,
+        partial_usd_defaults=_SONIC_PARTIAL_USD_DEFAULTS,
+    )
+
+
 def _make_local_robot_cfg() -> ArticulationCfg:
     if VIEWER_MODE:
         # viewer 的 ghost：复用无碰撞镜像体（无重力/合并执行器/solver 1/1），
@@ -1042,23 +1181,28 @@ def _make_local_robot_cfg() -> ArticulationCfg:
         cfg.spawn.visible = False
         return cfg
     cfg = make_sonic_robot_cfg()
+    cfg.actuators = _maybe_merge_local_sonic_actuator_groups(cfg.actuators)
     cfg.init_state.pos = LOCAL_ROBOT_POS
     cfg.init_state.rot = LOCAL_ROBOT_ROT
     configure_robot_contact_reports(cfg.spawn, CONTACT_REPORT_MODE)
     return cfg
 
 
-def _make_second_local_robot_cfg() -> ArticulationCfg:
-    """host 专用：robot_2 的全动力学本体（与 robot 同款 SONIC 底座，站 robot_2 工位）。
+def _make_additional_local_robot_cfg(robot_id: int) -> ArticulationCfg:
+    """Create host robot_2..5 with the same full SONIC dynamics as robot_1.
 
-    ⚠️ 不得套用 _merge_peer_actuator_groups——执行器合并只允许用于镜像体；
-    主动力学机器人的执行器组划分是 SONIC 动力学对齐红线（预算吃紧也不能动这刀，
-    除非先过 SONIC 跟踪回归）。
+    主动力学默认仍保持原六组；显式 A/B 开关开启时与 robot_1 一起走严格的 43 关节
+    单组合并，机器人数量门控与 DDS 通道拓扑不变。
     """
+    if robot_id < 2:
+        raise ValueError("additional local robot id must be >= 2")
+    spec = sonic_robot_channel_spec(robot_id)
+    pos, rot = _scene_robot_pose(robot_id)
     cfg = make_sonic_robot_cfg()
-    cfg.prim_path = "{ENV_REGEX_NS}/Robot2"
-    cfg.init_state.pos = (ROBOT_2_X, ROBOT_2_WORKSTATION_Y, 0.76)
-    cfg.init_state.rot = _ROBOT_2_ROT
+    cfg.actuators = _maybe_merge_local_sonic_actuator_groups(cfg.actuators)
+    cfg.prim_path = f"{{ENV_REGEX_NS}}/{spec.prim_name}"
+    cfg.init_state.pos = pos
+    cfg.init_state.rot = rot
     configure_robot_contact_reports(cfg.spawn, CONTACT_REPORT_MODE)
     return cfg
 
@@ -1086,33 +1230,11 @@ def _merge_peer_actuator_groups(actuators: dict) -> dict:
     Isaac Lab 对每组执行器在**每个物理子步**都有一轮 Python 张量记账
     （articulation._apply_actuator_model），组数直接乘在 CPU 开销上——py-spy 实测
     该记账占主线程 39%（两台机器人合计 ~7.6ms/圈，win2 headless，2026-07-31）。
-    镜像体关节每帧被 scene_state 直写，PD 只在两帧间兜底；合并时逐关节参数原样
-    并入 dict，每个关节的驱动参数不变，纯减组数 6→1。
-    ⚠️ 只用于镜像体；主机器人的组划分随 SONIC 动力学对齐验证走，不动。
+    镜像体关节每帧被 scene_state 直写，PD 只在两帧间兜底；与真身 A/B 候选共用
+    严格解析器，把 43 个关节逐名展开且要求恰好覆盖一次，纯减组数 6→1。
     """
 
-    fields = (
-        "effort_limit", "velocity_limit", "effort_limit_sim", "velocity_limit_sim",
-        "stiffness", "damping", "armature", "friction", "dynamic_friction",
-        "viscous_friction",
-    )
-    exprs: list[str] = []
-    merged: dict[str, dict] = {f: {} for f in fields}
-    for group in actuators.values():
-        exprs.extend(group.joint_names_expr)
-        for f in fields:
-            value = getattr(group, f, None)
-            if value is None:
-                continue
-            if isinstance(value, dict):
-                merged[f].update(value)
-            else:
-                for expr in group.joint_names_expr:
-                    merged[f][expr] = value
-    # 只设真正出现过的字段；某字段只有部分组设置时（如 hands 的摩擦三项），
-    # 未匹配的关节由 Isaac Lab 参数解析回落到 USD 默认值——与原多组行为一致。
-    kwargs = {f: v for f, v in merged.items() if v}
-    return {"peer_all": ImplicitActuatorCfg(joint_names_expr=exprs, **kwargs)}
+    return _merge_sonic_actuator_groups(actuators, merged_name="peer_all")
 
 
 def _make_peer_robot_cfg() -> ArticulationCfg:
@@ -1157,12 +1279,16 @@ def _make_peer_robot_cfg() -> ArticulationCfg:
     return cfg
 
 
-def _make_second_peer_robot_cfg() -> ArticulationCfg:
-    """viewer 专用：robot_2 的镜像体（与 peer_robot 同一份无碰撞产物）。"""
+def _make_additional_peer_robot_cfg(robot_id: int) -> ArticulationCfg:
+    """Create a full-fidelity, physics-light viewer mirror for robot_2..5."""
+
+    if robot_id < 2:
+        raise ValueError("additional peer robot id must be >= 2")
+    pos, rot = _scene_robot_pose(robot_id)
     cfg = _make_peer_robot_cfg()
-    cfg.prim_path = "{ENV_REGEX_NS}/PeerRobot2"
-    cfg.init_state.pos = PEER2_ROBOT_POS
-    cfg.init_state.rot = PEER2_ROBOT_ROT
+    cfg.prim_path = f"{{ENV_REGEX_NS}}/PeerRobot{robot_id}"
+    cfg.init_state.pos = pos
+    cfg.init_state.rot = rot
     return cfg
 
 
@@ -1173,7 +1299,7 @@ def _make_foot_contact_sensor(prim_name: str) -> ContactSensorCfg | None:
         return None
     return ContactSensorCfg(
         prim_path=f"{{ENV_REGEX_NS}}/{prim_name}/.*_ankle_roll_link",
-        history_length=4,
+        history_length=CONTACT_HISTORY_LENGTH,
         track_air_time=True,
         force_threshold=5.0,
         debug_vis=False,
@@ -1204,14 +1330,15 @@ def _make_peer_scene_cfg() -> ArticulationCfg | AssetBaseCfg:
     return _make_peer_robot_cfg()
 
 
-def _make_second_peer_scene_cfg() -> ArticulationCfg | AssetBaseCfg:
+def _make_additional_peer_scene_cfg(robot_id: int) -> ArticulationCfg | AssetBaseCfg:
+    pos, rot = _scene_robot_pose(robot_id)
     if PEER_VISUAL_LOD:
         return _make_peer_visual_lod_cfg(
-            prim_path="{ENV_REGEX_NS}/PeerRobot2",
-            pos=PEER2_ROBOT_POS,
-            rot=PEER2_ROBOT_ROT,
+            prim_path=f"{{ENV_REGEX_NS}}/PeerRobot{robot_id}",
+            pos=pos,
+            rot=rot,
         )
-    return _make_second_peer_robot_cfg()
+    return _make_additional_peer_robot_cfg(robot_id)
 
 
 _STANDBY_ROBOT_PRIM_NAMES = (
@@ -1589,21 +1716,75 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
     # host 模式下两台都是真身，不需要镜像体。
     peer_robot: ArticulationCfg | AssetBaseCfg | None = None if HOST_MODE else _make_peer_scene_cfg()
 
-    # viewer 专用第二镜像体（robot_2）。对等/host 模式为 None，场景里不生成。
-    peer_robot_2: ArticulationCfg | AssetBaseCfg | None = _make_second_peer_scene_cfg() if VIEWER_MODE else None
+    # viewer 镜像体。robot_2 始终保留；robot_3..5 仅在配置数量覆盖对应站位时生成。
+    peer_robot_2: ArticulationCfg | AssetBaseCfg | None = (
+        _make_additional_peer_scene_cfg(2) if VIEWER_MODE else None
+    )
+    peer_robot_3: ArticulationCfg | AssetBaseCfg | None = (
+        _make_additional_peer_scene_cfg(3)
+        if VIEWER_MODE and ACTIVE_SONIC_ROBOT_COUNT >= 3
+        else None
+    )
+    peer_robot_4: ArticulationCfg | AssetBaseCfg | None = (
+        _make_additional_peer_scene_cfg(4)
+        if VIEWER_MODE and ACTIVE_SONIC_ROBOT_COUNT >= 4
+        else None
+    )
+    peer_robot_5: ArticulationCfg | AssetBaseCfg | None = (
+        _make_additional_peer_scene_cfg(5)
+        if VIEWER_MODE and ACTIVE_SONIC_ROBOT_COUNT >= 5
+        else None
+    )
 
-    # host 专用：robot_2 全动力学本体 + 它的足底接触诊断（参数照抄底座 foot_contact）。
-    robot_2: ArticulationCfg | None = _make_second_local_robot_cfg() if HOST_MODE else None
+    # host 真身 robot_2..5：全部复用同一 43-DoF SONIC 动力学配置，仅 prim 与出生位不同。
+    robot_2: ArticulationCfg | None = (
+        _make_additional_local_robot_cfg(2) if HOST_MODE else None
+    )
+    robot_3: ArticulationCfg | None = (
+        _make_additional_local_robot_cfg(3)
+        if HOST_MODE and ACTIVE_SONIC_ROBOT_COUNT >= 3
+        else None
+    )
+    robot_4: ArticulationCfg | None = (
+        _make_additional_local_robot_cfg(4)
+        if HOST_MODE and ACTIVE_SONIC_ROBOT_COUNT >= 4
+        else None
+    )
+    robot_5: ArticulationCfg | None = (
+        _make_additional_local_robot_cfg(5)
+        if HOST_MODE and ACTIVE_SONIC_ROBOT_COUNT >= 5
+        else None
+    )
     foot_contact_2: ContactSensorCfg | None = (
         _make_foot_contact_sensor("Robot2") if HOST_MODE else None
     )
+    foot_contact_3: ContactSensorCfg | None = (
+        _make_foot_contact_sensor("Robot3")
+        if HOST_MODE and ACTIVE_SONIC_ROBOT_COUNT >= 3
+        else None
+    )
+    foot_contact_4: ContactSensorCfg | None = (
+        _make_foot_contact_sensor("Robot4")
+        if HOST_MODE and ACTIVE_SONIC_ROBOT_COUNT >= 4
+        else None
+    )
+    foot_contact_5: ContactSensorCfg | None = (
+        _make_foot_contact_sensor("Robot5")
+        if HOST_MODE and ACTIVE_SONIC_ROBOT_COUNT >= 5
+        else None
+    )
 
-    # 仅流水线布局（TOTES_ON_CONVEYOR=1）生成：三台完整外观 G1 在支线队尾、主线和支线中段
-    # 分散站立，各自朝向明确且不组成面对面队列。它们没有 articulation、刚体、
-    # 碰撞、执行器或传感器，也不进入 scene_state 同步；现有两台机器人配置不变。
-    standby_robot_1: AssetBaseCfg | None = _make_standby_robot_cfg(0)
-    standby_robot_2: AssetBaseCfg | None = _make_standby_robot_cfg(1)
-    standby_robot_3: AssetBaseCfg | None = _make_standby_robot_cfg(2)
+    # 未被 SONIC 数量覆盖的额外站位继续用原纯显示资产；覆盖后由上面的 RobotN 真身
+    # 或 PeerRobotN 镜像取代，避免同一位置叠出两台机器人。
+    standby_robot_1: AssetBaseCfg | None = (
+        _make_standby_robot_cfg(0) if ACTIVE_SONIC_ROBOT_COUNT < 3 else None
+    )
+    standby_robot_2: AssetBaseCfg | None = (
+        _make_standby_robot_cfg(1) if ACTIVE_SONIC_ROBOT_COUNT < 4 else None
+    )
+    standby_robot_3: AssetBaseCfg | None = (
+        _make_standby_robot_cfg(2) if ACTIVE_SONIC_ROBOT_COUNT < 5 else None
+    )
 
     # 方向光制造明暗面，避免 DomeLight 均匀照明导致的"塑料感"。
     sun = AssetBaseCfg(
@@ -1628,11 +1809,11 @@ class ConveyorActionsCfg(SonicActionsCfg):
 
 @configclass
 class HostConveyorActionsCfg(SonicActionsCfg):
-    """host 双机器人：robot_1 三段（继承）+ robot_2 三段 + 两个零维同步 term。
+    """host 2..5 机器人：每台 q/dq/tau 三段 + 两个零维同步 term。
 
     configclass 的继承字段序决定 action_manager 切片序：
-    [r1_q(43), r1_dq(43), r1_tau(43), r2_q(43), r2_dq(43), r2_tau(43)] = 258 维，
-    与 SonicDDSHostActionProvider 的拼接顺序逐段对应。
+    [r1_q, r1_dq, r1_tau, ..., rN_q, rN_dq, rN_tau]，五机 = 645 维，
+    与 SonicDDSHostActionProvider 的 robot-major 拼接顺序逐段对应。
     """
 
     joint_pos_2 = mdp.JointPositionActionCfg(
@@ -1655,16 +1836,103 @@ class HostConveyorActionsCfg(SonicActionsCfg):
         scale=1.0,
         preserve_order=True,
     )
+    joint_pos_3 = (
+        mdp.JointPositionActionCfg(
+            asset_name="robot_3",
+            joint_names=[".*"],
+            scale=1.0,
+            use_default_offset=False,
+            preserve_order=True,
+        )
+        if ACTIVE_SONIC_ROBOT_COUNT >= 3
+        else None
+    )
+    joint_vel_3 = (
+        mdp.JointVelocityActionCfg(
+            asset_name="robot_3",
+            joint_names=[".*"],
+            scale=1.0,
+            use_default_offset=False,
+            preserve_order=True,
+        )
+        if ACTIVE_SONIC_ROBOT_COUNT >= 3
+        else None
+    )
+    joint_effort_3 = (
+        mdp.JointEffortActionCfg(
+            asset_name="robot_3", joint_names=[".*"], scale=1.0, preserve_order=True
+        )
+        if ACTIVE_SONIC_ROBOT_COUNT >= 3
+        else None
+    )
+    joint_pos_4 = (
+        mdp.JointPositionActionCfg(
+            asset_name="robot_4",
+            joint_names=[".*"],
+            scale=1.0,
+            use_default_offset=False,
+            preserve_order=True,
+        )
+        if ACTIVE_SONIC_ROBOT_COUNT >= 4
+        else None
+    )
+    joint_vel_4 = (
+        mdp.JointVelocityActionCfg(
+            asset_name="robot_4",
+            joint_names=[".*"],
+            scale=1.0,
+            use_default_offset=False,
+            preserve_order=True,
+        )
+        if ACTIVE_SONIC_ROBOT_COUNT >= 4
+        else None
+    )
+    joint_effort_4 = (
+        mdp.JointEffortActionCfg(
+            asset_name="robot_4", joint_names=[".*"], scale=1.0, preserve_order=True
+        )
+        if ACTIVE_SONIC_ROBOT_COUNT >= 4
+        else None
+    )
+    joint_pos_5 = (
+        mdp.JointPositionActionCfg(
+            asset_name="robot_5",
+            joint_names=[".*"],
+            scale=1.0,
+            use_default_offset=False,
+            preserve_order=True,
+        )
+        if ACTIVE_SONIC_ROBOT_COUNT >= 5
+        else None
+    )
+    joint_vel_5 = (
+        mdp.JointVelocityActionCfg(
+            asset_name="robot_5",
+            joint_names=[".*"],
+            scale=1.0,
+            use_default_offset=False,
+            preserve_order=True,
+        )
+        if ACTIVE_SONIC_ROBOT_COUNT >= 5
+        else None
+    )
+    joint_effort_5 = (
+        mdp.JointEffortActionCfg(
+            asset_name="robot_5", joint_names=[".*"], scale=1.0, preserve_order=True
+        )
+        if ACTIVE_SONIC_ROBOT_COUNT >= 5
+        else None
+    )
     scene_state_sync = _scene_state_sync_cfg()
     env_reset_sync = _env_reset_sync_cfg()
 
 
 @configclass
 class HostObservationsCfg:
-    """host 双机器人观测组：每台机器人各一对 DDS 副作用 ObsTerm。
+    """host 多机器人观测组：每台机器人各一对 DDS 副作用 ObsTerm。
 
-    ⚠️ 这些"观测"是 rt/lowstate 与 rt/dex3/*/state（及 rt/r2/* 对应话题）的发布
-    载体——删掉任何一个，对应 deploy 就收不到状态、锁步永远握不上手。
+    ⚠️ 这些"观测"是 rt[/rN]/lowstate 与 Dex3 state 的发布载体——删掉任何一个，
+    对应 deploy 就收不到状态、锁步永远握不上手。
     """
 
     @configclass
@@ -1693,6 +1961,78 @@ class HostObservationsCfg:
                 "dds_object_name": "dex3_r2",
             },
         )
+        robot3_body_state = (
+            ObsTerm(
+                func=get_robot_boy_joint_states,
+                params={
+                    "dds_min_interval_ms": 0.0,
+                    "asset_name": "robot_3",
+                    "dds_object_name": "g129_r3",
+                },
+            )
+            if ACTIVE_SONIC_ROBOT_COUNT >= 3
+            else None
+        )
+        robot3_dex3_state = (
+            ObsTerm(
+                func=get_robot_dex3_joint_states,
+                params={
+                    "dds_min_interval_ms": 0.0,
+                    "asset_name": "robot_3",
+                    "dds_object_name": "dex3_r3",
+                },
+            )
+            if ACTIVE_SONIC_ROBOT_COUNT >= 3
+            else None
+        )
+        robot4_body_state = (
+            ObsTerm(
+                func=get_robot_boy_joint_states,
+                params={
+                    "dds_min_interval_ms": 0.0,
+                    "asset_name": "robot_4",
+                    "dds_object_name": "g129_r4",
+                },
+            )
+            if ACTIVE_SONIC_ROBOT_COUNT >= 4
+            else None
+        )
+        robot4_dex3_state = (
+            ObsTerm(
+                func=get_robot_dex3_joint_states,
+                params={
+                    "dds_min_interval_ms": 0.0,
+                    "asset_name": "robot_4",
+                    "dds_object_name": "dex3_r4",
+                },
+            )
+            if ACTIVE_SONIC_ROBOT_COUNT >= 4
+            else None
+        )
+        robot5_body_state = (
+            ObsTerm(
+                func=get_robot_boy_joint_states,
+                params={
+                    "dds_min_interval_ms": 0.0,
+                    "asset_name": "robot_5",
+                    "dds_object_name": "g129_r5",
+                },
+            )
+            if ACTIVE_SONIC_ROBOT_COUNT >= 5
+            else None
+        )
+        robot5_dex3_state = (
+            ObsTerm(
+                func=get_robot_dex3_joint_states,
+                params={
+                    "dds_min_interval_ms": 0.0,
+                    "asset_name": "robot_5",
+                    "dds_object_name": "dex3_r5",
+                },
+            )
+            if ACTIVE_SONIC_ROBOT_COUNT >= 5
+            else None
+        )
 
         def __post_init__(self):
             self.enable_corruption = False
@@ -1704,6 +2044,20 @@ class HostObservationsCfg:
 @configclass
 class ConveyorEventsCfg:
     """背景锁定 + 互斥的 legacy / Surface Velocity 流水线事件。"""
+
+    validate_sonic_actuators = (
+        EventTerm(
+            func=validate_sonic_runtime_actuators,
+            mode="startup",
+            params={
+                "asset_names": _HOST_SONIC_ASSET_NAMES,
+                "require_merged": SONIC_MERGE_ACTUATORS,
+                "expected_merged_joint_names": _SONIC_JOINT_NAMES,
+            },
+        )
+        if SONIC_VALIDATE_ACTUATORS and HOST_MODE
+        else None
+    )
 
     lock_sorting_bins = EventTerm(
         func=conveyor_events.lock_background_rigid_bodies,
@@ -1768,6 +2122,7 @@ class ConveyorEventsCfg:
             "front_arrival_group_size": 2,
             # 双机器人同时抱取首批双箱，本轮没有后续输送节拍；仅场景复位重新开带。
             "restart_after_departure": False,
+            "skip_idle_velocity_writes": CONVEYOR_SKIP_IDLE_VELOCITY_WRITES,
         },
     )
 
@@ -1836,8 +2191,8 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
     actions: ConveyorActionsCfg | HostConveyorActionsCfg = (
         HostConveyorActionsCfg() if HOST_MODE else ConveyorActionsCfg()
     )
-    # host 模式换成双机器人观测组（robot_2 的两个 DDS 副作用 ObsTerm 是 rt/r2/* 状态
-    # 话题的发布载体）；其余模式沿用底座观测组。
+    # host 模式换成多机器人观测组（每台的两个 DDS 副作用 ObsTerm 是各自 body/Dex3
+    # 状态话题的发布载体）；其余模式沿用底座观测组。
     observations: SonicObservationsCfg | HostObservationsCfg = (
         HostObservationsCfg() if HOST_MODE else SonicObservationsCfg()
     )
@@ -1845,6 +2200,19 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
 
     def __post_init__(self):
         super().__post_init__()
+        # history=0 是 current-only 性能候选：当 ContactSensor 实际存在时，
+        # 它依赖 InteractiveScene 的 lazy 语义在真正读取 sensor.data 时才重算
+        # 当前帧。若强制每步刷新，既失去限流收益，又违背运行语义，
+        # 因此直接失败；ContactReport=off 不创建 sensor，无需此门禁。
+        if (
+            CONTACT_REPORT_MODE != "off"
+            and CONTACT_HISTORY_LENGTH == 0
+            and self.scene.lazy_sensor_update is not True
+        ):
+            raise RuntimeError(
+                "ISAACLAB_CONVEYOR_CONTACT_HISTORY_LENGTH=0 仅支持 "
+                "scene.lazy_sensor_update=True（current-only lazy）"
+            )
         # 只把实际后端注册进 interval manager。Surface 停止模式完全依靠 PhysX
         # 接触，不需要逐步事件；循环模式仅保留回收事件，绝不保留 legacy 速度覆写。
         if not CONVEYOR_LEGACY_ENABLED:
@@ -1874,7 +2242,14 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
         if _PERF_AB:
             print(f"[conveyor_env_cfg] ⚠️ 性能 A/B 诊断开关生效: {sorted(_PERF_AB)}")
             if "no_peer" in _PERF_AB:
-                self.scene.peer_robot = None
+                for _peer_name in (
+                    "peer_robot",
+                    "peer_robot_2",
+                    "peer_robot_3",
+                    "peer_robot_4",
+                    "peer_robot_5",
+                ):
+                    setattr(self.scene, _peer_name, None)
             if "no_props" in _PERF_AB:
                 for _name in _PROP_NAMES:
                     setattr(self.scene, _name, None)
@@ -1914,12 +2289,20 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
                 f"缺少纯显示镜像机器人资产 {_PEER_VISUAL_LOD_USD}\n"
                 "先运行: python tools/build_peer_visual_lod_usd.py"
             )
-        if STANDBY_ROBOT_POSES and not _STANDBY_ROBOT_USD.exists():
+        if (
+            STANDBY_ROBOT_POSES
+            and ACTIVE_SONIC_ROBOT_COUNT < 5
+            and not _STANDBY_ROBOT_USD.exists()
+        ):
             raise RuntimeError(
                 f"流水线布局缺少完整 G1 纯显示站位资产 {_STANDBY_ROBOT_USD}\n"
                 "先运行: python tools/build_standby_robot_visual_only_usd.py"
             )
-        if STANDBY_ROBOT_POSES and not _PEER_ROBOT_USD.exists():
+        if (
+            STANDBY_ROBOT_POSES
+            and ACTIVE_SONIC_ROBOT_COUNT < 5
+            and not _PEER_ROBOT_USD.exists()
+        ):
             raise RuntimeError(
                 f"纯显示站位资产缺少同源完整 G1 引用 {_PEER_ROBOT_USD}\n"
                 "先运行: python tools/build_peer_robot_usd.py"
@@ -1945,15 +2328,26 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
                     setattr(_xr, _k, _v)
             print(f"[conveyor_env_cfg] XR 锚定 -> {prim_name}（{tag}，含 {len(targets)} 份 xr_cfg）")
 
-        # host 模式可选：XR 锚定切到 robot_2（默认锚 robot_1，即父类写的 Robot prim 路径）。
-        if HOST_MODE and _env_str("ISAACLAB_XR_ANCHOR_ROBOT_ID", "1") == "2":
-            _apply_xr_anchor("Robot2", "host")
+        # host 模式可选：XR 锚定切到任一活动真身（默认 robot_1，即父类 Robot）。
+        _xr_anchor_robot_id = _env_int("ISAACLAB_XR_ANCHOR_ROBOT_ID", 1)
+        if HOST_MODE and 2 <= _xr_anchor_robot_id <= ACTIVE_SONIC_ROBOT_COUNT:
+            _apply_xr_anchor(f"Robot{_xr_anchor_robot_id}", "host")
         # viewer 模式（工作包 C）：本机 Robot 是场外 ghost（不可见），父类默认锚会把
         # AR 视角带到空地上。改挂镜像体：ISAACLAB_XR_ANCHOR_ROBOT_ID=1 → PeerRobot
-        # （robot_1 镜像，默认），=2 → PeerRobot2（robot_2 镜像）。镜像 USD 与本体同一
+        # （robot_1 镜像，默认），=N → PeerRobotN。镜像 USD 与本体同一
         # URDF 转换，torso_link/head_link 与 pelvis 的层级一致。
         if VIEWER_MODE:
-            _anchor_prim = "PeerRobot2" if _env_str("ISAACLAB_XR_ANCHOR_ROBOT_ID", "1") == "2" else "PeerRobot"
+            if not 1 <= _xr_anchor_robot_id <= ACTIVE_SONIC_ROBOT_COUNT:
+                print(
+                    "[conveyor_env_cfg] ⚠️ ISAACLAB_XR_ANCHOR_ROBOT_ID="
+                    f"{_xr_anchor_robot_id} 超出活动机器人 1..{ACTIVE_SONIC_ROBOT_COUNT}；使用 1"
+                )
+                _xr_anchor_robot_id = 1
+            _anchor_prim = (
+                "PeerRobot"
+                if _xr_anchor_robot_id == 1
+                else f"PeerRobot{_xr_anchor_robot_id}"
+            )
             # 镜像体是被同步帧离散传送的（非连续物理），锚定位置裸写会以应用频率抖动
             # ——viewer 打开位置平滑（本体动力学路径保持 0=裸写不受影响）。
             # 旋转：默认 FIXED——视角旋转只听操作者自己的头，不跟机器人转身

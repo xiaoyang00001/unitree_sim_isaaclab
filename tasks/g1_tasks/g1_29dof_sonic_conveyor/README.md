@@ -1,6 +1,11 @@
 # Isaac-G1-29DoF-Sonic-Conveyor
 
-SONIC DDS 控制的 G1 + warehouse 流水线场景 + ZMQ 双机场景同步。
+SONIC DDS 控制的 2..5 台 G1 + warehouse 流水线场景 + ZMQ host/viewer 场景同步。
+生产默认启用 `robot_1..3` 三路 SONIC，`robot_4/5` 保持原始 visual-only standby；
+四/五路仍可显式启用。
+
+完整五路能力的通道表、启动方式、GR00T deploy 陷阱和验收入口见
+[流水线多机器人 SONIC 控制](../../../doc/pipeline_five_robot_sonic_zh.md)。
 
 场景物理、USD 轻量化、资源选型、分阶段施工顺序和验收指标统一记录在
 [Isaac G1 双机器人流水线场景优化路线与验收基线](../../../doc/conveyor_scene_optimization_roadmap_zh.md)。
@@ -43,7 +48,7 @@ ISAACLAB_PEER_ROBOT_MODE=visual_lod
 ```
 
 该模式按 `scene_state` 的 base pose + 43 关节角执行 USD Xform/FK，ID=0 viewer 的
-`PeerRobot`、`PeerRobot2` 均支持；不是静态模型或隐藏 articulation。实现、协议兼容、
+`PeerRobot`、`PeerRobot2..5` 均支持；不是静态模型或隐藏 articulation。实现、协议兼容、
 资产统计和后置动态验收清单见
 [流水线镜像机器人纯显示 LOD](../../../doc/conveyor_peer_visual_lod_zh.md)。删除变量或设为
 `articulation` 即回退。
@@ -54,16 +59,21 @@ ISAACLAB_PEER_ROBOT_MODE=visual_lod
 
 | 值 | 布局 | 关键世界坐标 |
 |---|---|---|
-| `1`（默认） | 17 个箱/包沿**西拐入口弯道路径**以 pitch 0.75 排在工位上游；第二机器人及其西侧工作台、分拣箱沿 `+Y` 错开 `0.75 m`，队首两箱成组到位后供两机器人同时抱取，流水线持续停住且不再补位；另有 3 台纯显示 G1 分散站位 | 第一/第二机器人工位分别为 `y=14.398 / 15.148`（`x=-4.54 / -6.7`）；新增站位 `(-12.70,18.9534)` 位于最后一个物体南侧偏东 1 m 并朝西北正对它、`(-6.70,17.95)` 朝 `+X`、`(-9.50,21.15)` 朝 `-Y`；出生槽位 s=`11.06 − 0.75k (k=0..16)`；`y_stop=14.398` |
+| `1`（默认） | 17 个箱/包沿**西拐入口弯道路径**以 pitch 0.75 排在工位上游；前两箱成组到位后供 robot_1/2 同时抱取，流水线持续停住且不再补位；生产默认前三个站位是 SONIC 动力学真身，robot_4/5 是纯显示 standby | 第一/第二机器人工位分别为 `y=14.398 / 15.148`（`x=-4.54 / -6.7`）；robot_3 位于 `(-12.70,18.9534)` 并朝西北正对末位物体；其余站位 `(-6.70,17.95)` 朝 `+X`、`(-9.50,21.15)` 朝 `-Y`；出生槽位 s=`11.06 − 0.75k (k=0..16)`；`y_stop=14.398` |
 | `0` | 两个原尺寸塑料筐叠放在入料口推车上；机器人面对面站在推车两侧 | 作业组 `(-5.62, 19.0)`（机器人 `x=-4.82 / -6.42`）；`y_stop=11.75` |
 
 例如：`ISAACLAB_TOTES_ON_CONVEYOR=0 python sim_main.py ...`。
 
-流水线布局新增的三台站位机器人使用 `g1_43dof_standby_visual_only.usda`：它引用原两台
-同源的完整 G1 网格，烘焙相同的 SONIC 默认关节姿态，并复用同一套白/黑分区和 Logo
-涂装；资产的 `Physics/Robot/Sensor` 三组 variant 全部选为 `None`。因此组合后外形与
-原机一致，但没有 articulation、关节、刚体、碰撞、执行器或接触传感器，也不参与
-`scene_state` 同步。切到 `ISAACLAB_TOTES_ON_CONVEYOR=0` 时不会生成这三台。
+流水线布局中的三个新增站位由 `ISAACLAB_SONIC_ROBOT_COUNT` 决定形态：host/viewer
+数量覆盖到该站位时，分别生成 SONIC 动力学真身或 `scene_state` 镜像；未覆盖的站位才使用
+`g1_43dof_standby_visual_only.usda`。该回退资产引用同源完整 G1 网格并烘焙默认姿态，
+`Physics/Robot/Sensor` 三组 variant 全关，不含 articulation、关节、刚体、碰撞、执行器或
+传感器。`ISAACLAB_TOTES_ON_CONVEYOR=0` 没有额外三个站位；共享配置仍请求 `3..5` 时，
+EnvCfg、DDS 和 provider 会一致自动回退为双机。
+
+共享配置和一键 bringup 当前默认数量为 `3`。需要恢复四/五路能力时显式传
+`PIPELINE_SONIC_ROBOT_COUNT=4|5`；手动 host 使用对应的
+`ISAACLAB_SONIC_ROBOT_COUNT=4|5`。该切换会重建场景与 deploy，不是运行期热更新。
 
 默认的 `ISAACLAB_CONVEYOR_PROPS=layout` 会真正不生成当前布局用不到的道具：
 
@@ -346,7 +356,46 @@ Dex3 对 C 型 0.5 m 大箱的实抓验收。
 | 整环境复位 | ID=1 | 广播 reset_id，ID=2 跟随；ID=2 本地复位不回传 |
 
 端口：ID=1 绑 `15555`、ID=2 绑 `15556`（base+id-1），双方互连对方端口。
-发布节流默认每 4 个物理步一帧（50 Hz）。
+发布节流默认每 4 个物理步一帧（按 200 Hz 物理时钟计算的名义 50 Hz）；
+wall-clock 发布频率仍受实际物理步速度限制。
+
+## 多机器人 host 形态
+
+`ISAACLAB_LOCAL_ROBOT_ID=1` + `ISAACLAB_HOST_BOTH_ROBOTS=1` 启用单进程 host；再用
+`ISAACLAB_SONIC_ROBOT_COUNT=2..5` 选择动力学真身数量。每台机器人拥有独立的
+`rt[/rN]/*` 身体与 Dex3 命令/状态、观测缓存和足底传感器。动作按机器人顺序拼成
+`N × 129` 维，所有已配置通道的 LowCmd ack 都匹配后才推进环境。完整启动与端口表见
+[多机器人 SONIC 手册](../../../doc/pipeline_five_robot_sonic_zh.md)。
+
+生产 bringup 当前选择三台真身；第 4、5 个站位继续使用原始
+`g1_43dof_standby_visual_only.usda`，不创建对应 DDS/deploy。四/五机仅在显式
+`PIPELINE_SONIC_ROBOT_COUNT=4|5` 时启用。
+
+核心的 `ISAACLAB_SONIC_MERGE_ACTUATORS` 与 `ISAACLAB_SONIC_VALIDATE_ACTUATORS` 都默认
+关闭，通用/对等启动保持原行为；生产一键脚本显式采用
+`PIPELINE_SONIC_MERGE_ACTUATORS=1`、`PIPELINE_SONIC_VALIDATE_ACTUATORS=0`。手动 host
+要显式传 `ISAACLAB_SONIC_MERGE_ACTUATORS=1` 才与一键一致；`validate=1` 只用于首次或
+升级后的单次运行时 tensor 契约验收。合并不是热切换：回滚必须完整停止并以
+`ISAACLAB_SONIC_MERGE_ACTUATORS=0 ISAACLAB_SONIC_VALIDATE_ACTUATORS=0` 重启，恢复
+每台原始 6 个执行器组。
+
+四机 clean-load 同负载 A/B 中，原始 6 组的 21.049131 Hz 提升到单组的
+24.299376 Hz（+15.44%），四台的 43 关节运行时属性 hash 在合并前后完全一致；健康门禁
+与末 60 条 A/E/R/T 详见上述手册。这组数据不能与不同负载的 HandCmd/LowState 数据累计，
+也不能外推为五机结果。
+
+后续 clean-load 收敛测试中，四机完整 velocity 写入基线为
+`2705 / 120.28 = 22.489192 Hz`；空闲纸箱写入跳过候选为
+`2732 / 120.21 = 22.726895 Hz`，仅提升 1.057%，未达到 5% 采用门槛，因此核心
+`ISAACLAB_CONVEYOR_SKIP_IDLE_VELOCITY_WRITES` 仍默认 `0`。三机生产配置达到
+`3929 / 120.15 = 32.700791 Hz`，比该四机基线提升 45.41%；三路 timeout、stale、
+`sync_waits` 均为 0 且姿态健康。足底 ContactSensor 的
+`ISAACLAB_CONVEYOR_CONTACT_HISTORY_LENGTH` 默认也仍为 `4`，`0` 只作为实验候选。
+
+LowState 对新 PhysX 样本使用事件唤醒立即发布，无新样本时按多机默认 55 Hz
+做周期保活；该数字不是 topic 硬上限。同一状态 generation 的重复保活会复用
+已构造的 IDL/CRC，不会重读共享内存和重建全部状态字段。10 Hz 和 20 Hz
+下探候选均在延长窗口出现 stale variant，所以未采用；完整 A/B 口径仍见上述手册。
 
 ## Dex3 夹爪控制数据流
 
@@ -355,6 +404,9 @@ Dex3 对 C 型 0.5 m 大箱的实抓验收。
 通过 `scene_state` 同步过去的 43 关节机器人状态。
 
 ### 双机器人链路
+
+下图描述双 Pico/前两台机器人的 VR 路径；生产默认的 robot_3 使用相同 DDS 链并由独立
+keyboard deploy 控制。显式四/五机时，robot_4/5 也采用同样的隔离 keyboard 链。
 
 ```text
 Pico 左右控制器 trigger
@@ -402,25 +454,28 @@ manager 读取左右控制器的 `trigger` 和 `grip`，但当前 `generate_fing
 
 manager 把左右手目标编码为 ZMQ `pose`/`planner` 消息中的
 `left_hand_joints: f32[7]` 和 `right_hand_joints: f32[7]`。deploy 解码后绕过身体策略，
-直接写入 `Dex3Hands` 命令缓存；500 Hz command writer 随 `LowCmd` 同频重发两手
-`HandCmd`。每个 HandCmd 的 7 个 motor slot 都包含 `mode/q/dq/tau/kp/kd`，当前目标
+直接写入 `Dex3Hands` 命令缓存。LowCmd writer 仍保持 500 Hz；外仓 standalone Isaac
+的 HandCmd 默认也是 500 Hz，但流水线一键启动会显式将 HandCmd 设为 100 Hz，
+两者不再同频。每个 HandCmd 的 7 个 motor slot 都包含 `mode/q/dq/tau/kp/kd`，当前目标
 主要使用 `q`，默认 `dq=0`、`tau=0`、`kp=1.5`、`kd=0.1`。
 
 `Dex3Hands` 根据 Isaac 回传的实际手指位置，把每次发布的目标差限制到 `±0.25 rad`，
 并应用最大闭合比例。Isaac 的 [`Dex3DDS`](../../../dds/dex3_dds.py) 订阅左右手命令，
 [`SonicDDSActionProvider`](../../../action_provider/action_provider_sonic_dds.py) 在每个
-50 Hz 环境步读取最新快照，按关节名映射到 43 关节 articulation：
+名义 50 Hz 环境步读取最新快照，按关节名映射到 43 关节 articulation：
 
 - `q/dq/tau` 进入 position、velocity、effort 三个 ActionTerm；
 - `kp/kd` 由 provider 直接写入 PhysX stiffness/damping；
-- 新目标在一个 20 ms 环境步内保持 4 个 5 ms PhysX 子步，驱动求解仍为 200 Hz；
+- 新目标在一个名义 20 ms 仿真步内保持 4 个 5 ms PhysX 子步，仿真时间的驱动求解仍为
+  200 Hz；wall-clock 闭环频率必须以 `[Performance]` 实测值为准；
 - 每步结束后，[`dex3_state.py`](../../common_observations/dex3_state.py) 按相同顺序采集
   实际 `q/dq/applied_torque`，经 `HandState` DDS 回传 deploy，形成闭环。
 
 Isaac 会拒绝长度不是 7、NaN/Inf、负 `kp/kd`、错误 motor ID 或越界的命令。
 HandCmd 默认超时为 `0.20 s`；超时后保持最后安全的 `q/kp/kd`、清除 `dq/tau`，
-但不会暂停身体的 LowState/LowCmd 锁步控制。131 host 模式最终把两台机器人的
-`[q(43), dq(43), tau(43)]` 拼成 258 维动作，两个身体 LowCmd ack 都匹配后才推进环境。
+但不会暂停身体的 LowState/LowCmd 锁步控制。host 模式最终把 N 台机器人的
+`[q(43), dq(43), tau(43)]` 拼成 `N × 129` 维动作（五机为 645），N 路身体 LowCmd ack
+全部匹配后才推进环境。
 
 ### 当前已知断点
 
@@ -445,8 +500,8 @@ HandCmd 默认超时为 `0.20 s`；超时后保持最后安全的 `q/kp/kd`、�
   0.3 m/s，且会缓慢自转（源分支已知）。
 - **17 箱队列的物理成本**（2026-08-10 改版）：动态刚体从 5 → 17。按既有实测口径
   （每箱边际 ~0.22ms/步，碰撞形状主导而非箱数线性外推的观测），预估 env.step 的
-  E 增量 ~2.6ms；headless smoke 实测 env_hz 见提交信息，**GUI 50Hz 帧率账本待用户
-  实测复核**（conveyor 本就贴着 20ms 预算跑，S 余量可能被吃掉）。
+  E 增量 ~2.6ms。该早期单箱边际估算不能外推为当前多机 SONIC 闭环帧率；
+  多机 GUI 成本仍需在同负载条件下独立实测。
 - 停位有 0.06~10 mm 的散布（越线后驱动关闭、靠摩擦停住，各箱摩擦略有差异），smoke 容差
   取 50 mm；整带节拍下这个误差不累计，队列间距长期维持在出生值附近（实测 0.748~0.760，
   出生 0.75），但**不要指望它精确恒定**。
@@ -454,11 +509,17 @@ HandCmd 默认超时为 `0.20 s`；超时后保持最后安全的 `q/kp/kd`、�
   代价——带面上游总长固定 4.07 m，间距、行程、数量三者只能三选二。
 - **纸箱队列尚未做机器人实抓验收**：`--pick-lead-at` 是把队首原地抬高、等待后再
   横向移出通道来模拟取放，验的是"首批到位后持续停线、XY 偏出后仍不补位"，不等于 Dex3
-  真能抓起并投放箱子。队首固定的 `d01`/`d02` 为 0.25×0.38 m / 0.1 kg，
-  本轮首批固定为 `d01`/`d02`（0.25×0.38 m / 0.1 kg），后续随机池中的
+  真能抓起并投放箱子。本轮首批固定为 `d01`/`d02`（0.25×0.38 m / 0.1 kg），后续随机池中的
   `c01`/`c02` 虽为 0.50×0.50 m / 1.5 kg，但终止停线后不会继续补到工位；实抓验收
   只需覆盖两件首批箱，不能把 headless 输送 smoke 视为 Dex3 抱取通过。
-- 流水线布局的 robot_2 仍是偏展示的站位，离带面较远，实际可达性尚未完全收口。
+- 五个站位沿用原布局坐标；升级为动力学真身不等于完成抓取可达性验收，robot_2..5
+  与各自目标物的 IK、碰撞和实抓闭环仍需逐台验证。
+- 五台场景已通过 645 维动作的 headless 10 步创建/状态有限性/根节点漂移门；该检查不带
+  真实 provider 的启动 Root pin，不能外推为闭环站立。五套真实 deploy 已同时进入 CONTROL
+  且五路锁步能够持续推进，但优化前现场仅约 0.85 Hz；五路倒地复位、动作矩阵，以及
+  LowCmd 重复包快路、HandState 组合优化、HandCmd 100 Hz、LowState generation cache 和
+  真身执行器 6→1 全部生效后的五机性能仍需同口径复验。四机优化收益不能外推到五机，
+  也不能把配置步频当成五机实测值。
 - 原布局（`ISAACLAB_TOTES_ON_CONVEYOR=0`）的作业闭环在源分支就未实跑过。
 - `surface_velocity` 后端下纸箱队列靠"后车撞前车"物理涌现，没有走
   `queue_drive_mask`，也不支持本节的 XY 偏离放行门；该组合尚未实测，上游带面会持续挤压

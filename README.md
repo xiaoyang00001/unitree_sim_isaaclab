@@ -241,6 +241,10 @@ bash deploy.sh \
 
 See the [Chinese SONIC G1 29-DoF phase-1 handoff](doc/sonic_g1_29dof_phase1_handoff_zh.md) for the complete implementation, runbook, metric definitions, and current validation status.
 
+The conveyor task can run 2–5 independent SONIC-controlled G1 robots in one authoritative
+host process. See the [five-robot SONIC conveyor runbook](doc/pipeline_five_robot_sonic_zh.md)
+for DDS namespaces, startup commands, viewer synchronization, and validation.
+
 **Note 1:** For general tasks, use `send_commands_8bit.py` or `send_commands_keyboard.py` to publish movement commands. Tasks marked `Wholebody` are normally the mobile tasks; `Isaac-G1-29DoF-Sonic` is a dedicated exception whose whole body is owned by the external SONIC policy.
 
 **Note 2:** The Isaac Sim WebRTC Streaming Client is a tool provided by NVIDIA Isaac Sim for viewing the Sim window remotely. For installation and usage details, please refer to the 
