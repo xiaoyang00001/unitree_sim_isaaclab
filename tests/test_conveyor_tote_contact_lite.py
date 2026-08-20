@@ -128,5 +128,70 @@ class ContactReportModeTest(unittest.TestCase):
         self.assertIn("cfg.spawn.activate_contact_sensors = False", fallback)
 
 
+class ContactHistoryLengthTest(unittest.TestCase):
+    def test_history_four_is_default_and_zero_is_explicit_candidate(self) -> None:
+        self.assertEqual(_CONTACT.resolve_contact_history_length({}), 4)
+        for length in (0, 4):
+            self.assertEqual(
+                _CONTACT.resolve_contact_history_length(
+                    {_CONTACT.CONTACT_HISTORY_LENGTH_ENV: f" {length} "}
+                ),
+                length,
+            )
+
+    def test_noncanonical_or_unsupported_history_fails_fast(self) -> None:
+        for value in ("", "-1", "1", "2", "3", "5", "4.0", "true"):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                ValueError, "可选值: 0, 4"
+            ):
+                _CONTACT.resolve_contact_history_length(
+                    {_CONTACT.CONTACT_HISTORY_LENGTH_ENV: value}
+                )
+
+    def test_scene_wires_history_without_weakening_contact_contract(self) -> None:
+        source = (_TASK_DIR / "conveyor_env_cfg.py").read_text(encoding="utf-8")
+        sensor_factory = source.split(
+            "def _make_foot_contact_sensor", maxsplit=1
+        )[1].split("def _make_peer_visual_lod_cfg", maxsplit=1)[0]
+        self.assertIn("history_length=CONTACT_HISTORY_LENGTH", sensor_factory)
+        self.assertIn("track_air_time=True", sensor_factory)
+        self.assertIn("force_threshold=5.0", sensor_factory)
+        self.assertIn("debug_vis=False", sensor_factory)
+
+        env_post_init = source.split(
+            "class G129SonicConveyorEnvCfg", maxsplit=1
+        )[1].split("# EOF", maxsplit=1)[0]
+        self.assertIn(
+            'CONTACT_REPORT_MODE != "off"',
+            env_post_init,
+        )
+        self.assertIn("CONTACT_HISTORY_LENGTH == 0", env_post_init)
+        self.assertIn("self.scene.lazy_sensor_update is not True", env_post_init)
+        self.assertIn("ContactSensor effective history", source)
+
+    def test_off_mode_bypasses_lazy_history_gate_and_all_hosts_share_factory(self) -> None:
+        source = (_TASK_DIR / "conveyor_env_cfg.py").read_text(encoding="utf-8")
+        env_post_init = source.split(
+            "class G129SonicConveyorEnvCfg", maxsplit=1
+        )[1].split("# EOF", maxsplit=1)[0]
+        gate = re.search(
+            r"if \(\s*CONTACT_REPORT_MODE != \"off\"\s*"
+            r"and CONTACT_HISTORY_LENGTH == 0\s*"
+            r"and self\.scene\.lazy_sensor_update is not True\s*\):",
+            env_post_init,
+        )
+        self.assertIsNotNone(gate)
+
+        scene_cfg = source.split(
+            "class G129SonicConveyorSceneCfg", maxsplit=1
+        )[1].split("# MDP", maxsplit=1)[0]
+        for suffix in ("", "2", "3", "4", "5"):
+            with self.subTest(robot=suffix or "1"):
+                self.assertIn(
+                    f'_make_foot_contact_sensor("Robot{suffix}")', scene_cfg
+                )
+        self.assertEqual(scene_cfg.count("_make_foot_contact_sensor("), 5)
+
+
 if __name__ == "__main__":
     unittest.main()

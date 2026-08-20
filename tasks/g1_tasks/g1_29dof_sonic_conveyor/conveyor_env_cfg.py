@@ -77,7 +77,10 @@ from .asset_variants import (
     resolve_conveyor_background_usd,
 )
 from .background_assets import resolve_background_asset
-from .contact_modes import resolve_contact_report_mode
+from .contact_modes import (
+    resolve_contact_history_length,
+    resolve_contact_report_mode,
+)
 from .contact_spawners import configure_robot_contact_reports
 from .conveyor_drive import (
     BELT_COLLIDER_THICKNESS,
@@ -119,6 +122,7 @@ from .sync_identity import (
 load_scene_sync_env(verbose_tag="[conveyor_env_cfg]")
 
 CONTACT_REPORT_MODE = resolve_contact_report_mode(os.environ)
+CONTACT_HISTORY_LENGTH = resolve_contact_history_length(os.environ)
 TOTE_COLLIDER_MODE, TOTE_USD_PATH = resolve_tote_asset(_ASSETS_DIR / "props", os.environ)
 
 
@@ -758,6 +762,14 @@ def _log_scene_layout() -> None:
     print(f"{tag} 背景资产: {BACKGROUND_MODE} ({BACKGROUND_USD_PATH.name})")
     print(f"{tag} 料筐碰撞: {TOTE_COLLIDER_MODE} ({TOTE_USD_PATH.name})")
     print(f"{tag} ContactReport: {CONTACT_REPORT_MODE}")
+    if CONTACT_REPORT_MODE == "off":
+        print(f"{tag} ContactSensor effective history: off")
+    else:
+        history_mode = "current-only lazy" if CONTACT_HISTORY_LENGTH == 0 else "rolling"
+        print(
+            f"{tag} ContactSensor effective history: "
+            f"{CONTACT_HISTORY_LENGTH} ({history_mode})"
+        )
     if not VIEWER_MODE:
         print(
             f"{tag} SONIC 真身执行器: "
@@ -1255,7 +1267,7 @@ def _make_foot_contact_sensor(prim_name: str) -> ContactSensorCfg | None:
         return None
     return ContactSensorCfg(
         prim_path=f"{{ENV_REGEX_NS}}/{prim_name}/.*_ankle_roll_link",
-        history_length=4,
+        history_length=CONTACT_HISTORY_LENGTH,
         track_air_time=True,
         force_threshold=5.0,
         debug_vis=False,
@@ -2145,6 +2157,19 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
 
     def __post_init__(self):
         super().__post_init__()
+        # history=0 是 current-only 性能候选：当 ContactSensor 实际存在时，
+        # 它依赖 InteractiveScene 的 lazy 语义在真正读取 sensor.data 时才重算
+        # 当前帧。若强制每步刷新，既失去限流收益，又违背运行语义，
+        # 因此直接失败；ContactReport=off 不创建 sensor，无需此门禁。
+        if (
+            CONTACT_REPORT_MODE != "off"
+            and CONTACT_HISTORY_LENGTH == 0
+            and self.scene.lazy_sensor_update is not True
+        ):
+            raise RuntimeError(
+                "ISAACLAB_CONVEYOR_CONTACT_HISTORY_LENGTH=0 仅支持 "
+                "scene.lazy_sensor_update=True（current-only lazy）"
+            )
         # 只把实际后端注册进 interval manager。Surface 停止模式完全依靠 PhysX
         # 接触，不需要逐步事件；循环模式仅保留回收事件，绝不保留 legacy 速度覆写。
         if not CONVEYOR_LEGACY_ENABLED:
