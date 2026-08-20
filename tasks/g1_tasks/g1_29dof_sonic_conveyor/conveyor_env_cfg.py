@@ -176,13 +176,13 @@ ENDLESS_INTAKE = resolve_endless_intake(
 
 # 身份解析走 sync_identity 单一真源（env 文件在文件头已加载过，这里不再重复加载）。
 LOCAL_ROBOT_ID = resolve_local_robot_id(verbose_tag="[conveyor_env_cfg]", load_env=False)
-# viewer 模式（ID=0）：本机不发布任何状态，把 robot_1/robot_2 与物体全部作为镜像应用。
+# viewer 模式（ID=0）：本机不发布任何状态，把三台机器人与物体全部作为镜像应用。
 # 本机 "robot" 资产退化为停在场外的 ghost（无碰撞/无重力/合并执行器），只为满足
 # SONIC EnvCfg 的 action/observation 挂载，不参与画面构图。
 VIEWER_MODE = LOCAL_ROBOT_ID == 0
-# host 双机器人模式（工作包 B）：ID=1 + ISAACLAB_HOST_BOTH_ROBOTS=1——robot_1 与
-# robot_2 都是本机全动力学 SONIC 机器人（各一套 deploy，第二套走 rt/r2/* 话题），
-# 场景里没有镜像体，sync 双发 robot_1+robot_2+物体、只发不收。
+# host 三机器人模式（工作包 B）：沿用历史开关 ISAACLAB_HOST_BOTH_ROBOTS=1；robot_1、
+# robot_2、robot_3 都是本机全动力学 SONIC 机器人，各走 rt/*、rt/r2/*、rt/r3/*。
+# 场景里没有镜像体，sync 单向发布三台真身与物体。
 HOST_MODE = resolve_host_both_robots(verbose_tag="[conveyor_env_cfg]", load_env=False)
 # viewer 的上游固定是权威端 ID=1（连它的 PUB 端口）；对等模式保持 3-ID 互指。
 PEER_ROBOT_ID = 1 if VIEWER_MODE else 3 - LOCAL_ROBOT_ID
@@ -247,9 +247,8 @@ SCENE_SYNC_MAINLOOP = _env_bool("ISAACLAB_SCENE_SYNC_MAINLOOP", True)
 def _scene_state_sync_cfg() -> ZmqSceneStateSyncActionCfg:
     """对等场景同步：各发布本机机器人；物体只有权威端发布、镜像端应用。
 
-    viewer 模式（ID=0）：发布方向整体关闭，apply 挂 robot_1/robot_2 两个镜像体。
-    在权威端只发 robot_1 的过渡期，robot_2 缺席由接收侧容缺跳过（见
-    ``_parse_robot_states``），等 host 侧双机器人落地后自动补齐。
+    viewer 模式（ID=0）：发布方向整体关闭，apply 挂三台机器人镜像体。
+    apply 清单允许是发布端的超集；缺席机器人由接收侧容缺跳过并保持出生姿态。
     """
 
     if not SCENE_SYNC_ENABLED:
@@ -263,13 +262,22 @@ def _scene_state_sync_cfg() -> ZmqSceneStateSyncActionCfg:
             apply_visual_robots = {
                 "robot_1": "/World/envs/env_0/PeerRobot",
                 "robot_2": "/World/envs/env_0/PeerRobot2",
+                "robot_3": "/World/envs/env_0/PeerRobot3",
             }
         else:
-            apply_robots = {"robot_1": "peer_robot", "robot_2": "peer_robot_2"}
+            apply_robots = {
+                "robot_1": "peer_robot",
+                "robot_2": "peer_robot_2",
+                "robot_3": "peer_robot_3",
+            }
     elif HOST_MODE:
-        # host 只发不收：双机器人 + 物体全部单向广播，viewer 的容缺 apply 自动补上
-        # robot_2。connect 置空让接收方向干净失能（不建 SUB socket、不刷 stale）。
-        publish_robots = {"robot_1": "robot", "robot_2": "robot_2"}
+        # host 只发不收：三台机器人 + 物体全部单向广播。connect 置空让接收方向
+        # 干净失能（不建 SUB socket、不刷 stale）。
+        publish_robots = {
+            "robot_1": "robot",
+            "robot_2": "robot_2",
+            "robot_3": "robot_3",
+        }
         apply_robots = {}
         connect_endpoint = ""
     else:
@@ -393,6 +401,18 @@ BELT_BOX_ROT = [1.0, 0.0, 0.0, 0.0]
 _ROBOT_YAW_IDENTITY = _env_bool("ISAACLAB_ROBOT_YAW_IDENTITY", False)
 _ROBOT_1_ROT = (1.0, 0.0, 0.0, 0.0) if _ROBOT_YAW_IDENTITY else (0.0, 0.0, 0.0, 1.0)
 _ROBOT_2_ROT = (1.0, 0.0, 0.0, 0.0)
+# 第三台机器人接管流水线布局的第一台纯显示待机位。推车布局没有该站位，
+# 三机 host/viewer 必须直接失败，避免场景实体与 387 维 DDS 动作契约裂脑。
+if (HOST_MODE or VIEWER_MODE) and not STANDBY_ROBOT_POSES:
+    raise ValueError(
+        "three-robot SONIC host/viewer requires ISAACLAB_TOTES_ON_CONVEYOR=1"
+    )
+_ROBOT_3_POS = (
+    STANDBY_ROBOT_POSES[0].pos if STANDBY_ROBOT_POSES else (0.0, -30.0, 0.76)
+)
+_ROBOT_3_ROT = (
+    STANDBY_ROBOT_POSES[0].rot if STANDBY_ROBOT_POSES else (1.0, 0.0, 0.0, 0.0)
+)
 
 LOCAL_ROBOT_POS = (
     (ROBOT_1_X, ROBOT_WORKSTATION_Y, 0.76)
@@ -414,6 +434,9 @@ PEER_ROBOT_ROT = _ROBOT_1_ROT if PEER_ROBOT_ID == 1 else _ROBOT_2_ROT
 # viewer 的第二镜像体：robot_2 的工位。对等模式不用（保持 None，场景里不生成）。
 PEER2_ROBOT_POS = (ROBOT_2_X, ROBOT_2_WORKSTATION_Y, 0.76)
 PEER2_ROBOT_ROT = _ROBOT_2_ROT
+# viewer 的第三镜像体与 host Robot3 共用原第一待机位。
+PEER3_ROBOT_POS = _ROBOT_3_POS
+PEER3_ROBOT_ROT = _ROBOT_3_ROT
 
 # ==================================================================
 # 流水线驱动参数。默认 legacy 保持历史行为；显式设置
@@ -690,11 +713,11 @@ def _log_scene_layout() -> None:
 
     tag = "[conveyor_env_cfg]"
     if VIEWER_MODE:
-        print(f"{tag} 本机身份: viewer（纯镜像观看端，只收不发；apply=robot_1+robot_2+物体）")
+        print(f"{tag} 本机身份: viewer（纯镜像观看端，只收不发；apply=robot_1+robot_2+robot_3+物体）")
     elif HOST_MODE:
         print(
-            f"{tag} 本机身份: host（双机器人权威端，只发不收；"
-            "publish=robot_1+robot_2+物体，robot_2 走 rt/r2/* 话题）"
+            f"{tag} 本机身份: host（三机器人权威端，只发不收；"
+            "publish=robot_1+robot_2+robot_3+物体，额外通道 rt/r2/*、rt/r3/*）"
         )
     else:
         print(
@@ -732,14 +755,22 @@ def _log_scene_layout() -> None:
         "（支线越过货架排 B 所需；wrapper 组变换/装饰/地贴同 Δ）"
     )
     if STANDBY_ROBOT_POSES:
+        _remaining_standby_poses = STANDBY_ROBOT_POSES
+        if HOST_MODE or VIEWER_MODE:
+            print(
+                f"{tag}   robot_3={'SONIC 真身' if HOST_MODE else 'scene_state 镜像'}: "
+                f"({_ROBOT_3_POS[0]:.2f},{_ROBOT_3_POS[1]:.2f})"
+            )
+            _remaining_standby_poses = STANDBY_ROBOT_POSES[1:]
         _standby_xy = " / ".join(
             f"({pose.pos[0]:.2f},{pose.pos[1]:.2f})"
-            for pose in STANDBY_ROBOT_POSES
+            for pose in _remaining_standby_poses
         )
-        print(
-            f"{tag}   纯显示站位机器人 ×{len(STANDBY_ROBOT_POSES)}: "
-            f"{_standby_xy}（沿流水线分散、非面对面、无物理）"
-        )
+        if _remaining_standby_poses:
+            print(
+                f"{tag}   纯显示站位机器人 ×{len(_remaining_standby_poses)}: "
+                f"{_standby_xy}（沿流水线分散、非面对面、无物理）"
+            )
     if CONVEYOR_TOTE_NAMES and TOTES_ON_CONVEYOR:
         print(
             f"{tag}   筐出生/复位落点 y: tote1={CART2_TOTE1_POS[1]:.3f} tote2={CART2_TOTE2_POS[1]:.3f}"
@@ -1063,6 +1094,17 @@ def _make_second_local_robot_cfg() -> ArticulationCfg:
     return cfg
 
 
+def _make_third_local_robot_cfg() -> ArticulationCfg:
+    """host 专用：第三台全动力学 SONIC 本体，接管原第一待机位。"""
+
+    cfg = make_sonic_robot_cfg()
+    cfg.prim_path = "{ENV_REGEX_NS}/Robot3"
+    cfg.init_state.pos = _ROBOT_3_POS
+    cfg.init_state.rot = _ROBOT_3_ROT
+    configure_robot_contact_reports(cfg.spawn, CONTACT_REPORT_MODE)
+    return cfg
+
+
 _PEER_ROBOT_USD = _ASSETS_DIR / "peer_robot" / "g1_43dof_peer.usd"
 _PEER_VISUAL_LOD_USD = _ASSETS_DIR / "peer_robot" / "g1_43dof_visual_lod.usda"
 _STANDBY_ROBOT_USD = _ASSETS_DIR / "peer_robot" / "g1_43dof_standby_visual_only.usda"
@@ -1166,6 +1208,16 @@ def _make_second_peer_robot_cfg() -> ArticulationCfg:
     return cfg
 
 
+def _make_third_peer_robot_cfg() -> ArticulationCfg:
+    """viewer 专用：robot_3 的镜像体（与 host Robot3 共用待机位）。"""
+
+    cfg = _make_peer_robot_cfg()
+    cfg.prim_path = "{ENV_REGEX_NS}/PeerRobot3"
+    cfg.init_state.pos = PEER3_ROBOT_POS
+    cfg.init_state.rot = PEER3_ROBOT_ROT
+    return cfg
+
+
 def _make_foot_contact_sensor(prim_name: str) -> ContactSensorCfg | None:
     """Create the two-ankle diagnostic sensor unless production selected off."""
 
@@ -1212,6 +1264,16 @@ def _make_second_peer_scene_cfg() -> ArticulationCfg | AssetBaseCfg:
             rot=PEER2_ROBOT_ROT,
         )
     return _make_second_peer_robot_cfg()
+
+
+def _make_third_peer_scene_cfg() -> ArticulationCfg | AssetBaseCfg:
+    if PEER_VISUAL_LOD:
+        return _make_peer_visual_lod_cfg(
+            prim_path="{ENV_REGEX_NS}/PeerRobot3",
+            pos=PEER3_ROBOT_POS,
+            rot=PEER3_ROBOT_ROT,
+        )
+    return _make_third_peer_robot_cfg()
 
 
 _STANDBY_ROBOT_PRIM_NAMES = (
@@ -1586,22 +1648,28 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
     robot: ArticulationCfg = _make_local_robot_cfg()
 
     # 对端 G1 镜像体：由 scene_state 帧驱动。viewer 模式下它镜像 robot_1；
-    # host 模式下两台都是真身，不需要镜像体。
+    # host 模式下三台都是真身，不需要镜像体。
     peer_robot: ArticulationCfg | AssetBaseCfg | None = None if HOST_MODE else _make_peer_scene_cfg()
 
-    # viewer 专用第二镜像体（robot_2）。对等/host 模式为 None，场景里不生成。
+    # viewer 专用 robot_2 / robot_3 镜像体。对等/host 模式为 None。
     peer_robot_2: ArticulationCfg | AssetBaseCfg | None = _make_second_peer_scene_cfg() if VIEWER_MODE else None
+    peer_robot_3: ArticulationCfg | AssetBaseCfg | None = _make_third_peer_scene_cfg() if VIEWER_MODE else None
 
-    # host 专用：robot_2 全动力学本体 + 它的足底接触诊断（参数照抄底座 foot_contact）。
+    # host 专用：robot_2 / robot_3 全动力学本体及各自的足底接触诊断。
     robot_2: ArticulationCfg | None = _make_second_local_robot_cfg() if HOST_MODE else None
+    robot_3: ArticulationCfg | None = _make_third_local_robot_cfg() if HOST_MODE else None
     foot_contact_2: ContactSensorCfg | None = (
         _make_foot_contact_sensor("Robot2") if HOST_MODE else None
     )
+    foot_contact_3: ContactSensorCfg | None = (
+        _make_foot_contact_sensor("Robot3") if HOST_MODE else None
+    )
 
-    # 仅流水线布局（TOTES_ON_CONVEYOR=1）生成：三台完整外观 G1 在支线队尾、主线和支线中段
-    # 分散站立，各自朝向明确且不组成面对面队列。它们没有 articulation、刚体、
-    # 碰撞、执行器或传感器，也不进入 scene_state 同步；现有两台机器人配置不变。
-    standby_robot_1: AssetBaseCfg | None = _make_standby_robot_cfg(0)
+    # 第一个待机位已由 Robot3 真身（host）或 PeerRobot3 镜像（viewer）接管，避免同位
+    # 叠模；旧对等双机模式继续保留原纯显示体。其余两个待机位不变。
+    standby_robot_1: AssetBaseCfg | None = (
+        None if (HOST_MODE or VIEWER_MODE) else _make_standby_robot_cfg(0)
+    )
     standby_robot_2: AssetBaseCfg | None = _make_standby_robot_cfg(1)
     standby_robot_3: AssetBaseCfg | None = _make_standby_robot_cfg(2)
 
@@ -1628,10 +1696,10 @@ class ConveyorActionsCfg(SonicActionsCfg):
 
 @configclass
 class HostConveyorActionsCfg(SonicActionsCfg):
-    """host 双机器人：robot_1 三段（继承）+ robot_2 三段 + 两个零维同步 term。
+    """host 三机器人：每台 q/dq/tau 三段 + 两个零维同步 term。
 
     configclass 的继承字段序决定 action_manager 切片序：
-    [r1_q(43), r1_dq(43), r1_tau(43), r2_q(43), r2_dq(43), r2_tau(43)] = 258 维，
+    [r1_q, r1_dq, r1_tau, r2_q, r2_dq, r2_tau, r3_q, r3_dq, r3_tau] = 387 维，
     与 SonicDDSHostActionProvider 的拼接顺序逐段对应。
     """
 
@@ -1655,16 +1723,36 @@ class HostConveyorActionsCfg(SonicActionsCfg):
         scale=1.0,
         preserve_order=True,
     )
+    joint_pos_3 = mdp.JointPositionActionCfg(
+        asset_name="robot_3",
+        joint_names=[".*"],
+        scale=1.0,
+        use_default_offset=False,
+        preserve_order=True,
+    )
+    joint_vel_3 = mdp.JointVelocityActionCfg(
+        asset_name="robot_3",
+        joint_names=[".*"],
+        scale=1.0,
+        use_default_offset=False,
+        preserve_order=True,
+    )
+    joint_effort_3 = mdp.JointEffortActionCfg(
+        asset_name="robot_3",
+        joint_names=[".*"],
+        scale=1.0,
+        preserve_order=True,
+    )
     scene_state_sync = _scene_state_sync_cfg()
     env_reset_sync = _env_reset_sync_cfg()
 
 
 @configclass
 class HostObservationsCfg:
-    """host 双机器人观测组：每台机器人各一对 DDS 副作用 ObsTerm。
+    """host 三机器人观测组：每台机器人各一对 DDS 副作用 ObsTerm。
 
-    ⚠️ 这些"观测"是 rt/lowstate 与 rt/dex3/*/state（及 rt/r2/* 对应话题）的发布
-    载体——删掉任何一个，对应 deploy 就收不到状态、锁步永远握不上手。
+    ⚠️ 这些"观测"是三套 body / Dex3 state 话题的发布载体——删掉任何一个，
+    对应 deploy 就收不到状态、锁步永远握不上手。
     """
 
     @configclass
@@ -1691,6 +1779,22 @@ class HostObservationsCfg:
                 "dds_min_interval_ms": 0.0,
                 "asset_name": "robot_2",
                 "dds_object_name": "dex3_r2",
+            },
+        )
+        robot3_body_state = ObsTerm(
+            func=get_robot_boy_joint_states,
+            params={
+                "dds_min_interval_ms": 0.0,
+                "asset_name": "robot_3",
+                "dds_object_name": "g129_r3",
+            },
+        )
+        robot3_dex3_state = ObsTerm(
+            func=get_robot_dex3_joint_states,
+            params={
+                "dds_min_interval_ms": 0.0,
+                "asset_name": "robot_3",
+                "dds_object_name": "dex3_r3",
             },
         )
 
@@ -1836,8 +1940,7 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
     actions: ConveyorActionsCfg | HostConveyorActionsCfg = (
         HostConveyorActionsCfg() if HOST_MODE else ConveyorActionsCfg()
     )
-    # host 模式换成双机器人观测组（robot_2 的两个 DDS 副作用 ObsTerm 是 rt/r2/* 状态
-    # 话题的发布载体）；其余模式沿用底座观测组。
+    # host 模式换成三机器人观测组；其余模式沿用底座观测组。
     observations: SonicObservationsCfg | HostObservationsCfg = (
         HostObservationsCfg() if HOST_MODE else SonicObservationsCfg()
     )
@@ -1945,15 +2048,20 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
                     setattr(_xr, _k, _v)
             print(f"[conveyor_env_cfg] XR 锚定 -> {prim_name}（{tag}，含 {len(targets)} 份 xr_cfg）")
 
-        # host 模式可选：XR 锚定切到 robot_2（默认锚 robot_1，即父类写的 Robot prim 路径）。
-        if HOST_MODE and _env_str("ISAACLAB_XR_ANCHOR_ROBOT_ID", "1") == "2":
-            _apply_xr_anchor("Robot2", "host")
+        # host 模式可选：XR 锚定切到 robot_2/3（默认锚 robot_1）。
+        _xr_anchor_robot_id = _env_str("ISAACLAB_XR_ANCHOR_ROBOT_ID", "1")
+        if HOST_MODE and _xr_anchor_robot_id in {"2", "3"}:
+            _apply_xr_anchor(f"Robot{_xr_anchor_robot_id}", "host")
         # viewer 模式（工作包 C）：本机 Robot 是场外 ghost（不可见），父类默认锚会把
         # AR 视角带到空地上。改挂镜像体：ISAACLAB_XR_ANCHOR_ROBOT_ID=1 → PeerRobot
-        # （robot_1 镜像，默认），=2 → PeerRobot2（robot_2 镜像）。镜像 USD 与本体同一
+        # （robot_1 镜像，默认），=2/3 → PeerRobot2/3。镜像 USD 与本体同一
         # URDF 转换，torso_link/head_link 与 pelvis 的层级一致。
         if VIEWER_MODE:
-            _anchor_prim = "PeerRobot2" if _env_str("ISAACLAB_XR_ANCHOR_ROBOT_ID", "1") == "2" else "PeerRobot"
+            _anchor_prim = (
+                f"PeerRobot{_xr_anchor_robot_id}"
+                if _xr_anchor_robot_id in {"2", "3"}
+                else "PeerRobot"
+            )
             # 镜像体是被同步帧离散传送的（非连续物理），锚定位置裸写会以应用频率抖动
             # ——viewer 打开位置平滑（本体动力学路径保持 0=裸写不受影响）。
             # 旋转：默认 FIXED——视角旋转只听操作者自己的头，不跟机器人转身

@@ -525,7 +525,7 @@ if args_cli.task == "Isaac-G1-29DoF-Sonic-Conveyor":
     _sync_identity = _sync_ilu.module_from_spec(_sync_spec)
     _sync_spec.loader.exec_module(_sync_identity)
     is_scene_sync_viewer = _sync_identity.resolve_local_robot_id(verbose_tag="[sync_identity]") == 0
-    # host 双机器人（工作包 B）：ID=1 + ISAACLAB_HOST_BOTH_ROBOTS=1，与 cfg 同源判定。
+    # host 三机器人（工作包 B）：沿用历史开关，与 cfg 同源判定。
     is_scene_sync_host = _sync_identity.resolve_host_both_robots(
         verbose_tag="[sync_identity]", load_env=False
     )
@@ -534,9 +534,13 @@ else:
 if is_scene_sync_viewer:
     print("[viewer] Pure-mirror viewer mode (ISAACLAB_LOCAL_ROBOT_ID=0)")
 if is_scene_sync_host:
-    print("[host] Dual-robot host mode (ISAACLAB_HOST_BOTH_ROBOTS=1): robot_2 <- rt/r2/*")
-# host 需要第二套 G1/Dex3 DDS 通道（create_dds_objects 按此标志注册 g129_r2/dex3_r2）。
+    print(
+        "[host] Three-robot host mode (ISAACLAB_HOST_BOTH_ROBOTS=1): "
+        "robot_2 <- rt/r2/*, robot_3 <- rt/r3/*"
+    )
+# host 需要第二、三套 G1/Dex3 DDS 通道。
 args_cli.enable_second_robot_dds = is_scene_sync_host
+args_cli.enable_third_robot_dds = is_scene_sync_host
 
 if args_cli.teleop_device == "motion_controllers":
     if args_cli.task not in sonic_dex3_task_names:
@@ -1208,20 +1212,22 @@ def main():
                     )
                 if args_cli.task == "Isaac-G1-29DoF-Sonic-Conveyor":
                     if is_scene_sync_host:
-                        # host 的第二台真身机器人
+                        # host 的第二、三台真身机器人
                         apply_g1_sonic_visual_materials("/World/envs/env_0/Robot2")
+                        apply_g1_sonic_visual_materials("/World/envs/env_0/Robot3")
                     elif os.environ.get("ISAACLAB_PEER_ROBOT_MODE", "articulation").strip().lower() == "visual_lod":
                         # 分析几何 LOD 自带三份共享 PreviewSurface；它没有 URDF
                         # converter 的 ``visuals`` 层级，不能走本体网格材质重绑器。
                         print("[g1_materials] peer visual_lod 使用资产内置轻量材质")
                     else:
-                        # 对端镜像 G1 也上涂装，避免双机时看到通体白模误判机型
+                        # 对端镜像 G1 也上涂装，避免看到通体白模误判机型
                         apply_g1_sonic_visual_materials("/World/envs/env_0/PeerRobot")
                         if is_scene_sync_viewer:
-                            # viewer 有第二个镜像体（robot_2 工位）
+                            # viewer 有 robot_2 / robot_3 两个额外镜像体
                             apply_g1_sonic_visual_materials("/World/envs/env_0/PeerRobot2")
+                            apply_g1_sonic_visual_materials("/World/envs/env_0/PeerRobot3")
                     # 以 InteractiveScene 实际生成的 extras 为真源，不再重复解析布局
-                    # 环境变量，也不写死数量。=0 时列表自然为空；=1 默认找到三台。
+                    # 环境变量，也不写死数量；host/viewer 下第一待机位已由 Robot3 接管。
                     standby_prim_paths = [
                         prim_path
                         for asset_name, view in env.scene.extras.items()
@@ -1589,7 +1595,7 @@ def main():
         # 平均白等 5ms(最坏 10ms),直接吃掉每帧 ack 往返预算。SONIC 锁步改为
         # "新样本即发"(事件唤醒发布线程),保活重发节奏保持 100Hz 不变——
         # 单纯拉高发布频率会让序列化抢 GIL,省下的等待又亏在 env.step 里。
-        robot_dds_names = ["g129", "g129_r2"] if is_scene_sync_host else ["g129"]
+        robot_dds_names = ["g129", "g129_r2", "g129_r3"] if is_scene_sync_host else ["g129"]
         if args_cli.lowstate_pub_hz:
             for _dds_name in robot_dds_names:
                 try:
@@ -1600,7 +1606,7 @@ def main():
                 except Exception as e:
                     print(f"[sim] failed to set lowstate publish rate ({_dds_name}): {e}")
         if is_sonic_task and args_cli.sonic_sync_with_lowstate:
-            # 锁步"新样本即发"：host 模式对两条通道都要开，否则第二套 deploy 的
+            # 锁步"新样本即发"：host 模式对三条通道都要开，否则漏掉的 deploy
             # ack 往返每圈多等一个发布调度周期（5-10ms）。
             for _dds_name in robot_dds_names:
                 try:
@@ -1625,8 +1631,8 @@ def main():
                 )
                 print("[sonic_dds] Initial PhysX state seeded for LowState lock-step")
                 if is_scene_sync_host:
-                    # 第二套锁步同样需要首个真实 PhysX 样本，漏掉即死锁：
-                    # g129_r2 的 sample_seq 恒为 None → ack 永不匹配 → env 永不 step。
+                    # 额外两套锁步都需要首个真实 PhysX 样本；漏掉任一路都会让
+                    # 对应 sample_seq 恒为 None，三路 AND 门永远不放行。
                     get_robot_boy_joint_states(
                         env,
                         enable_dds=True,
@@ -1635,6 +1641,14 @@ def main():
                         dds_object_name="g129_r2",
                     )
                     print("[sonic_dds:r2] Initial PhysX state seeded for LowState lock-step")
+                    get_robot_boy_joint_states(
+                        env,
+                        enable_dds=True,
+                        dds_min_interval_ms=0.0,
+                        asset_name="robot_3",
+                        dds_object_name="g129_r3",
+                    )
+                    print("[sonic_dds:r3] Initial PhysX state seeded for LowState lock-step")
                 if args_cli.task in sonic_dex3_task_names:
                     from tasks.common_observations.dex3_state import (
                         get_robot_dex3_joint_states,
@@ -1655,6 +1669,14 @@ def main():
                             dds_object_name="dex3_r2",
                         )
                         print("[sonic_dds:r2] Initial PhysX Dex3 state seeded")
+                        get_robot_dex3_joint_states(
+                            env,
+                            enable_dds=True,
+                            dds_min_interval_ms=0.0,
+                            asset_name="robot_3",
+                            dds_object_name="dex3_r3",
+                        )
+                        print("[sonic_dds:r3] Initial PhysX Dex3 state seeded")
             except Exception as e:
                 print(f"Failed to seed initial SONIC LowState: {e}")
                 return
@@ -1682,7 +1704,7 @@ def main():
             print("[viewer] Selecting the hold action source (no deploy, no DDS lock-step)")
             args_cli.action_source = "hold"
         elif is_scene_sync_host and args_cli.action_source in ("dds", "sonic_dds"):
-            print("[host] Selecting the dual-robot SONIC action source (two lock-step channels)")
+            print("[host] Selecting the three-robot SONIC action source (three lock-step channels)")
             args_cli.action_source = "sonic_dds_host"
         elif is_sonic_task and args_cli.action_source == "dds":
             print("[sonic_dds] Selecting the dedicated 29-DoF SONIC action source for this task")
@@ -1729,7 +1751,7 @@ def main():
         sonic_env_ids = torch.arange(env.num_envs, dtype=torch.int64, device=env.device)
         provider_channels = getattr(action_provider, "channels", None)
         if provider_channels:
-            # host 双机器人：每台机器人独立监控（未进 CONTROL 的通道 root 被 pin，
+            # host 三机器人：每台机器人独立监控（未进 CONTROL 的通道 root 被 pin，
             # 不可能真倒，按通道门控防误触发）；任一台确认倒地=整场景复位。
             for _asset_index, (_asset_name, _channel) in enumerate(provider_channels.items()):
                 _monitor = fall_reset_monitor if _asset_index == 0 else _make_fall_monitor()
@@ -1797,9 +1819,9 @@ def main():
             broadcast_sync_reset()
             return False
 
-        # host 双机器人：两套 DDS 通道都要推 reset epoch + grace 窗口——漏掉任一套，
+        # host 三机器人：三套 DDS 通道都要推 reset epoch + grace 窗口——漏掉任一套，
         # 对应 deploy 会把复位瞬移的 dq 当真实速度触发 35rad/s 安全限。
-        reset_dds_names = ["g129", "g129_r2"] if is_scene_sync_host else ["g129"]
+        reset_dds_names = ["g129", "g129_r2", "g129_r3"] if is_scene_sync_host else ["g129"]
         reset_robot_dds_list = [
             _dds for _dds in (dds_manager.get_object(_name) for _name in reset_dds_names)
             if _dds is not None

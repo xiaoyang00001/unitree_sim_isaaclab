@@ -191,7 +191,7 @@ class PeerVisualLodAssetTests(unittest.TestCase):
 
 
 class PeerVisualLodWiringTests(unittest.TestCase):
-    def test_scene_factory_uses_asset_base_and_wires_both_viewer_mirrors(self) -> None:
+    def test_scene_factory_uses_asset_base_and_wires_three_viewer_mirrors(self) -> None:
         source = CONFIG_PATH.read_text(encoding="utf-8")
         visual_factory = source.split("def _make_peer_visual_lod_cfg(", 1)[1].split(
             "def _make_peer_scene_cfg", 1
@@ -202,7 +202,9 @@ class PeerVisualLodWiringTests(unittest.TestCase):
         self.assertNotIn("RigidBodyPropertiesCfg", visual_factory)
         self.assertIn('"robot_1": "/World/envs/env_0/PeerRobot"', source)
         self.assertIn('"robot_2": "/World/envs/env_0/PeerRobot2"', source)
+        self.assertIn('"robot_3": "/World/envs/env_0/PeerRobot3"', source)
         self.assertIn("_make_second_peer_scene_cfg() if VIEWER_MODE", source)
+        self.assertIn("_make_third_peer_scene_cfg() if VIEWER_MODE", source)
 
     def test_conveyor_standby_robots_use_full_meshes_without_physics(self) -> None:
         source = CONFIG_PATH.read_text(encoding="utf-8")
@@ -223,9 +225,10 @@ class PeerVisualLodWiringTests(unittest.TestCase):
         self.assertNotIn("_make_peer_visual_lod_cfg(", factory)
         self.assertNotIn("ArticulationCfg(", factory)
         self.assertNotIn("RigidBodyPropertiesCfg", factory)
-        self.assertEqual(source.count("= _make_standby_robot_cfg("), 3)
+        self.assertEqual(source.count("= _make_standby_robot_cfg("), 2)
         for name in ("StandbyRobot1", "StandbyRobot2", "StandbyRobot3"):
             self.assertIn(f'"{name}"', source)
+        self.assertIn("None if (HOST_MODE or VIEWER_MODE) else _make_standby_robot_cfg(0)", source)
 
         # 新增展示体不能改动原有两台的朝向契约。
         self.assertIn(

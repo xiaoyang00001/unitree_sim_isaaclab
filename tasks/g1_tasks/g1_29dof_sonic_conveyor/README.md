@@ -43,7 +43,7 @@ ISAACLAB_PEER_ROBOT_MODE=visual_lod
 ```
 
 该模式按 `scene_state` 的 base pose + 43 关节角执行 USD Xform/FK，ID=0 viewer 的
-`PeerRobot`、`PeerRobot2` 均支持；不是静态模型或隐藏 articulation。实现、协议兼容、
+`PeerRobot`、`PeerRobot2`、`PeerRobot3` 均支持；不是静态模型或隐藏 articulation。实现、协议兼容、
 资产统计和后置动态验收清单见
 [流水线镜像机器人纯显示 LOD](../../../doc/conveyor_peer_visual_lod_zh.md)。删除变量或设为
 `articulation` 即回退。
@@ -54,16 +54,17 @@ ISAACLAB_PEER_ROBOT_MODE=visual_lod
 
 | 值 | 布局 | 关键世界坐标 |
 |---|---|---|
-| `1`（默认） | 17 个箱/包沿**西拐入口弯道路径**以 pitch 0.75 排在工位上游；第二机器人及其西侧工作台、分拣箱沿 `+Y` 错开 `0.75 m`，队首两箱成组到位后供两机器人同时抱取，流水线持续停住且不再补位；另有 3 台纯显示 G1 分散站位 | 第一/第二机器人工位分别为 `y=14.398 / 15.148`（`x=-4.54 / -6.7`）；新增站位 `(-12.70,18.9534)` 位于最后一个物体南侧偏东 1 m 并朝西北正对它、`(-6.70,17.95)` 朝 `+X`、`(-9.50,21.15)` 朝 `-Y`；出生槽位 s=`11.06 − 0.75k (k=0..16)`；`y_stop=14.398` |
+| `1`（默认） | 17 个箱/包沿**西拐入口弯道路径**以 pitch 0.75 排在工位上游；第二机器人及其西侧工作台、分拣箱沿 `+Y` 错开 `0.75 m`，队首两箱成组到位后供两机器人同时抱取，流水线持续停住且不再补位；三机 host/viewer 下 Robot3/PeerRobot3 接管第一个待机位，另有 2 台纯显示 G1 | 第一/第二机器人工位分别为 `y=14.398 / 15.148`（`x=-4.54 / -6.7`）；Robot3 站位 `(-12.70,18.9534)` 位于最后一个物体南侧偏东 1 m 并朝西北正对它，纯显示站位 `(-6.70,17.95)` 朝 `+X`、`(-9.50,21.15)` 朝 `-Y`；出生槽位 s=`11.06 − 0.75k (k=0..16)`；`y_stop=14.398` |
 | `0` | 两个原尺寸塑料筐叠放在入料口推车上；机器人面对面站在推车两侧 | 作业组 `(-5.62, 19.0)`（机器人 `x=-4.82 / -6.42`）；`y_stop=11.75` |
 
 例如：`ISAACLAB_TOTES_ON_CONVEYOR=0 python sim_main.py ...`。
 
-流水线布局新增的三台站位机器人使用 `g1_43dof_standby_visual_only.usda`：它引用原两台
+流水线布局的纯显示站位机器人使用 `g1_43dof_standby_visual_only.usda`：它引用原两台
 同源的完整 G1 网格，烘焙相同的 SONIC 默认关节姿态，并复用同一套白/黑分区和 Logo
 涂装；资产的 `Physics/Robot/Sensor` 三组 variant 全部选为 `None`。因此组合后外形与
 原机一致，但没有 articulation、关节、刚体、碰撞、执行器或接触传感器，也不参与
-`scene_state` 同步。切到 `ISAACLAB_TOTES_ON_CONVEYOR=0` 时不会生成这三台。
+`scene_state` 同步。旧双机模式生成三台；三机 host/viewer 的第一站位由 Robot3/PeerRobot3
+接管，只生成余下两台。三机模式要求 `ISAACLAB_TOTES_ON_CONVEYOR=1`。
 
 默认的 `ISAACLAB_CONVEYOR_PROPS=layout` 会真正不生成当前布局用不到的道具：
 
@@ -354,30 +355,31 @@ Dex3 对 C 型 0.5 m 大箱的实抓验收。
 左右控制器，不使用 Pico 手部骨骼追踪，也不经过 129/130 Viewer：Viewer 只显示 131
 通过 `scene_state` 同步过去的 43 关节机器人状态。
 
-### 双机器人链路
+### 三机器人链路
 
 ```text
 Pico 左右控制器 trigger
   ├─ robot_1: UDP :63901 → manager ZMQ PUB :5556 → deploy#1 → DDS rt/dex3/*
-  └─ robot_2: UDP :63902 → manager ZMQ PUB :5566 → deploy#2 → DDS rt/r2/dex3/*
+  ├─ robot_2: UDP :63902 → manager ZMQ PUB :5566 → deploy#2 → DDS rt/r2/dex3/*
+  └─ robot_3: stdin keyboard → deploy#3（隔离端口 5576）→ DDS rt/r3/dex3/*
                                                                ↓
                     Isaac Dex3DDS → SonicDDSActionProvider → Dex3 PhysX 执行器
                                                                ↓
                               HandState（实际 q/dq/tau）DDS 回传 deploy
 ```
 
-两套 manager 均以 `--manager --no_auto_pose` 启动；两套 deploy 均使用
-`--input-type zmq_manager`。robot_1 的 `G1_LOCAL_ROBOT_ID=1`、DDS 前缀为 `rt`；
-robot_2 的 `G1_LOCAL_ROBOT_ID=2`、DDS 前缀为 `rt/r2`，命令、状态和共享内存完全隔离。
+前两套 manager 均以 `--manager --no_auto_pose` 启动；robot_3 当前是独立 keyboard
+调试通道。robot_1 的 DDS 前缀为 `rt`，robot_2 为 `rt/r2`；robot_3 必须显式设置
+`SONIC_DDS_TOPIC_PREFIX=rt/r3`，三套命令、状态和共享内存完全隔离。
 
-| 项目 | robot_1 | robot_2 |
-|---|---|---|
-| Pico UDP | `63901` | `63902` |
-| manager → deploy ZMQ | `5556` | `5566` |
-| 左手命令 | `rt/dex3/left/cmd` | `rt/r2/dex3/left/cmd` |
-| 右手命令 | `rt/dex3/right/cmd` | `rt/r2/dex3/right/cmd` |
-| 左手状态 | `rt/dex3/left/state` | `rt/r2/dex3/left/state` |
-| 右手状态 | `rt/dex3/right/state` | `rt/r2/dex3/right/state` |
+| 项目 | robot_1 | robot_2 | robot_3 |
+|---|---|---|---|
+| 控制输入 | Pico UDP `63901` | Pico UDP `63902` | stdin keyboard（隔离端口 `5576`） |
+| manager → deploy ZMQ | `5556` | `5566` | — |
+| 左手命令 | `rt/dex3/left/cmd` | `rt/r2/dex3/left/cmd` | `rt/r3/dex3/left/cmd` |
+| 右手命令 | `rt/dex3/right/cmd` | `rt/r2/dex3/right/cmd` | `rt/r3/dex3/right/cmd` |
+| 左手状态 | `rt/dex3/left/state` | `rt/r2/dex3/left/state` | `rt/r3/dex3/left/state` |
+| 右手状态 | `rt/dex3/right/state` | `rt/r2/dex3/right/state` | `rt/r3/dex3/right/state` |
 
 ### 手柄输入与模式
 
@@ -419,8 +421,8 @@ manager 把左右手目标编码为 ZMQ `pose`/`planner` 消息中的
 
 Isaac 会拒绝长度不是 7、NaN/Inf、负 `kp/kd`、错误 motor ID 或越界的命令。
 HandCmd 默认超时为 `0.20 s`；超时后保持最后安全的 `q/kp/kd`、清除 `dq/tau`，
-但不会暂停身体的 LowState/LowCmd 锁步控制。131 host 模式最终把两台机器人的
-`[q(43), dq(43), tau(43)]` 拼成 258 维动作，两个身体 LowCmd ack 都匹配后才推进环境。
+但不会暂停身体的 LowState/LowCmd 锁步控制。host 模式最终把三台机器人的
+`[q(43), dq(43), tau(43)]` 拼成 387 维动作，三路身体 LowCmd ack 全部匹配后才推进环境。
 
 ### 当前已知断点
 
@@ -510,9 +512,9 @@ HandCmd 默认超时为 `0.20 s`；超时后保持最后安全的 `q/kp/kd`、�
 | conveyor_workcell_lite.usd | `tools/build_conveyor_workcell_lite.py` 生成的 ASCII USD 薄层 | opt-in 背景；白名单引用 63 个 v61 根 Prim，当前静态审计为 27,802→1,052 active Prim、1,818→13 used layer |
 | conveyor_workcell_lite.manifest.json | 本仓库可复现生成清单 | 锁定源哈希、保留规则、必须存在/缺席的 Prim 和组合降幅门槛 |
 | ConveyorBelt02.usd (46.7MB) | 分叉工作区拷入（**已入本仓库 git**） | 被 warehouse USD 以 `./ConveyorBelt02.usd` 相对引用，必须与 warehouse 层保持可解析的相对路径；后续 visual-only 派生层不直接重写这个二进制源资产 |
-| peer_robot/g1_43dof_peer.usd | `tools/build_peer_robot_usd.py` 生成（已入 git） | 默认 articulation 模式的无碰撞镜像机器人；流水线布局的三台站位机器人也复用其完整网格；缺失时任务启动 fail-fast |
+| peer_robot/g1_43dof_peer.usd | `tools/build_peer_robot_usd.py` 生成（已入 git） | 默认 articulation 模式的无碰撞镜像机器人；流水线布局的纯显示站位机器人也复用其完整网格；缺失时任务启动 fail-fast |
 | peer_robot/g1_43dof_visual_lod.usda | `tools/build_peer_visual_lod_usd.py` 生成（入 git） | 43-DoF 纯显示镜像；47 个解析 Gprim、3 份共享材质、无 PhysX schema |
-| peer_robot/g1_43dof_standby_visual_only.usda | `tools/build_standby_robot_visual_only_usd.py` 生成（入 git） | 静态站位机器人专用；引用完整 G1 网格、烘焙 SONIC 默认姿态，三组物理 variant 全关，无活动 Physics schema |
+| peer_robot/g1_43dof_standby_visual_only.usda | `tools/build_standby_robot_visual_only_usd.py` 生成（入 git） | 静态站位机器人专用；旧双机模式生成三台，三机 host/viewer 生成两台；引用完整 G1 网格、烘焙 SONIC 默认姿态，三组物理 variant 全关，无活动 Physics schema |
 | nolo_label.png | 分叉 git | warehouse USD 相对引用的地面贴花 |
 | props/pushcart_physics.usda | 分叉工作区手拷（未入 git） | 引用 Nucleus 5.1 SM_PushcartA_02 |
 | props/cart_box_d05_physics.usda | 分叉 git-LFS tip 版 | D05 平底刚体封装，已含关 CCD 修复（ae9118a2e）；现已注册到默认随机池 |

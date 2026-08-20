@@ -155,11 +155,15 @@ def main() -> int:
             else conveyor_env_cfg.CONVEYOR_Y_STOP
         )
 
-    robot = env.scene["robot"]
-    default_q = robot.data.default_joint_pos.clone()
-    zeros = torch.zeros_like(default_q)
-    # SONIC 动作张量 field-major：q 目标 + dq 目标 + 前馈 tau。
-    action = torch.cat([default_q, zeros, zeros], dim=-1)
+    # SONIC 动作张量按机器人依次拼接，每台内部 field-major：q + dq + tau。
+    # host 模式固定三台；其余历史模式仍只有本机 robot 一段。
+    action_segments = []
+    robot_names = ("robot", "robot_2", "robot_3") if conveyor_env_cfg.HOST_MODE else ("robot",)
+    for robot_name in robot_names:
+        default_q = env.scene[robot_name].data.default_joint_pos.clone()
+        zeros = torch.zeros_like(default_q)
+        action_segments.append(torch.cat([default_q, zeros, zeros], dim=-1))
+    action = torch.cat(action_segments, dim=-1)
 
     # 监控清单跟着实际布局走：流水线布局是纸箱队列，推车布局仍是两塑料筐。
     watched_names = (
@@ -180,7 +184,7 @@ def main() -> int:
     # （不会挤到贴紧前车）。所以停位 = y_stop + 该箱相对队首的出生偏移。
     # 塑料筐没有队列语义，两个筐各自直接停在工位（偏移取 0 即退化成这种）。
     belt_box_mode = bool(conveyor_env_cfg.CONVEYOR_BELT_BOX_NAMES)
-    peer = env.scene["peer_robot"]
+    peer = None if conveyor_env_cfg.HOST_MODE else env.scene["peer_robot"]
 
     # 方案 b（主循环挂载）：apply_actions 是 no-op，宿主要自己 pump。
     # 本脚本没有 sim_main 主循环，就在每个 env.step 后代跑一轮（≈200Hz pump，
@@ -199,8 +203,9 @@ def main() -> int:
         for name, obj in watched.items():
             p = obj.data.root_pos_w[0]
             parts.append(f"{name} x={p[0]:.3f} y={p[1]:.3f} z={p[2]:.3f}")
-        pp = peer.data.root_pos_w[0]
-        parts.append(f"peer_robot x={pp[0]:.3f} y={pp[1]:.3f} z={pp[2]:.3f}")
+        if peer is not None:
+            pp = peer.data.root_pos_w[0]
+            parts.append(f"peer_robot x={pp[0]:.3f} y={pp[1]:.3f} z={pp[2]:.3f}")
         print(f"[smoke {tag}] " + " | ".join(parts), flush=True)
 
     def pick_lead_box() -> tuple[str, object] | None:

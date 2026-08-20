@@ -43,6 +43,19 @@ def create_dds_objects(args_cli,env):
         dds_manager.register_object("dex3_r2", dex3_r2)
         publish_names.append("dex3_r2")
         subscribe_names.append("dex3_r2")
+    # 第三台 SONIC 机器人使用固定的 r3 通道。仅显式增加这一套实例，不引入
+    # 2..5 台泛化；topic 与共享内存后缀必须同时隔离，避免与前两台串台。
+    if getattr(args_cli, "enable_third_robot_dds", False):
+        from dds.g1_robot_dds import G1RobotDDS
+        from dds.dex3_dds import Dex3DDS
+        g1_robot_r3 = G1RobotDDS(node_name="g1_robot_r3", topic_prefix="rt/r3", shm_suffix="_r3")
+        dds_manager.register_object("g129_r3", g1_robot_r3)
+        publish_names.append("g129_r3")
+        subscribe_names.append("g129_r3")
+        dex3_r3 = Dex3DDS(node_name="dex3_r3", topic_prefix="rt/r3", shm_suffix="_r3")
+        dds_manager.register_object("dex3_r3", dex3_r3)
+        publish_names.append("dex3_r3")
+        subscribe_names.append("dex3_r3")
     if "Wholebody" in args_cli.task or args_cli.enable_wholebody_dds:
         from dds.commands_dds import RunCommandDDS
         run_command_dds = RunCommandDDS()

@@ -1,8 +1,9 @@
 #!/bin/bash
-# Pico VR 控制 bring-up（pipeline 双机器人，工作包 Pico-①/②）：
-#   sim(HOST_MODE 双机器人) + deploy#1(--input-type zmq_manager ← Pico manager)
+# Pico VR 控制 bring-up（pipeline 三机器人，工作包 Pico-①/②）：
+#   sim(HOST_MODE 三机器人) + deploy#1(--input-type zmq_manager ← Pico manager)
 #   + 默认 deploy#2(keyboard 调试通道)，或 PIPELINE_DUAL_PICO=1 时：
 #     deploy#2(--input-type zmq_manager ← Pico manager#2)
+#   + deploy#3 固定使用独立 keyboard 调试通道与 rt/r3/* DDS 前缀。
 #
 # 与 keyboard 版编排的差异：
 #   - deploy#1 的输入从 stdin keyboard 换成 ZMQ(localhost:5556)，发车不再靠 ']'，
@@ -16,7 +17,7 @@
 #   - 整场景复位权威固定在 manager#1：左手 X 单键、摇杆回中后持续 2s，
 #     manager#1 经 domain=1/lo 发 rt/reset_pose/cmd。manager#2 不创建复位 publisher，
 #     防止两个操作者同时触发全局 reset。Ubuntu Kit 窗口 F12 是同一入口的备用键。
-#   - 锁步注意：双 ack AND 门下 deploy#1/#2 仍必须并行启动（串行会自锁）；
+#   - 锁步注意：三路 ack AND 门下 deploy#1/#2/#3 必须并行启动（串行会自锁）；
 #     ack 在 Init 后即持续回，(操作者未发车时机器人保持默认站姿，物理照常推进)。
 #
 # 操作者手册（头显侧）：
@@ -94,12 +95,12 @@ sleep 5
 pkill -9 -f "g1_deploy_onnx_re[f]" 2>/dev/null
 pkill -9 -f "deploy.s[h]" 2>/dev/null
 pkill -9 -f "pico_manager_thread_serve[r]" 2>/dev/null
-pkill -f "tail -f.*dk_r[12]" 2>/dev/null
+pkill -f "tail -f.*dk_r[123]" 2>/dev/null
 sleep 4
 pgrep -f "sim_mai[n]|g1_deploy_onnx_re[f]" >/dev/null && { pkill -9 -f "sim_mai[n]|g1_deploy_onnx_re[f]"; sleep 3; }
 echo "residual deploys: $(pgrep -c -f 'g1_deploy_onnx_re[f]' 2>/dev/null || echo 0)"
 
-echo "== start host sim (dual robot) =="
+echo "== start host sim (three robots) =="
 cd "$SIM_DIR" || exit 1
 env DISPLAY="$DISPLAY_TARGET" GR00T_WBC_ROOT="$GR00T_ROOT" \
     UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo \
@@ -127,7 +128,7 @@ if ! kill -0 "$SIM_PID" 2>/dev/null; then
   exit 1
 fi
 
-# 双 ack AND 门：两个 deploy 必须并行启动（.trt 缓存只读共享，build 用 20s 错峰）。
+# 三路 ack AND 门：三个 deploy 必须并行启动（.trt 缓存只读共享，build 用 20s 错峰）。
 echo "== start deploy#1 (rt/*, input=zmq_manager) =="
 echo "" > "$LOG_DIR/dk_r1"
 ( cd "$DEPLOY_DIR" && tail -f "$LOG_DIR/dk_r1" | bash deploy.sh --disable-crc-check \
@@ -149,6 +150,17 @@ else
   ( cd "$DEPLOY_DIR" && tail -f "$LOG_DIR/dk_r2" | env G1_LOCAL_ROBOT_ID=2 bash deploy.sh \
       --disable-crc-check --input-type keyboard isaac > "$LOG_DIR/deploy_r2.log" 2>&1 ) &
 fi
+
+# 外部 deploy.sh 只对 ID=2 有内置 topic 特判；ID=3 必须显式传 rt/r3，
+# 同时隔离输入与 debug 输出端口，否则会回落到 rt/* 或与第一路端口冲突。
+echo "== start deploy#3 (rt/r3/*, input=keyboard) =="
+echo "" > "$LOG_DIR/dk_r3"
+( cd "$DEPLOY_DIR" && tail -f "$LOG_DIR/dk_r3" | \
+    env G1_LOCAL_ROBOT_ID=3 SONIC_DDS_TOPIC_PREFIX="rt/r3" bash deploy.sh \
+      --disable-crc-check --input-type keyboard --zmq-port 5576 \
+      --zmq-out-port 5577 --zmq-out-topic g1_3_debug \
+      --udp-out-port 5577 --udp-out-topic g1_3_debug \
+      isaac > "$LOG_DIR/deploy_r3.log" 2>&1 ) &
 
 # manager 拿到第一帧头显数据后才 bind ZMQ PUB；deploy 的 SUB 是 connect 语义，
 # command 有 1Hz keepalive 兜 slow-joiner，所以 manager/deploy 谁先启动都能接上。
@@ -194,8 +206,10 @@ fi
 
 wait_for "Init Done" "$LOG_DIR/deploy_r1.log" 300 "deploy#1 Init Done" || exit 1
 wait_for "Init Done" "$LOG_DIR/deploy_r2.log" 300 "deploy#2 Init Done" || exit 1
+wait_for "Init Done" "$LOG_DIR/deploy_r3.log" 300 "deploy#3 Init Done" || exit 1
 grep -m1 "DDS topics" "$LOG_DIR/deploy_r1.log" || true
 grep -m1 "DDS topics" "$LOG_DIR/deploy_r2.log" || true
+grep -m1 "DDS topics" "$LOG_DIR/deploy_r3.log" || true
 
 if [ "$DUAL_PICO" = "1" ]; then
   echo "== wait sim STARTUP HOLD (dual Pico: wait for operators) =="
@@ -206,18 +220,27 @@ wait_for "STARTUP HOLD" "$LOG_DIR/host_dual.log" 300 "sim STARTUP HOLD" || exit 
 if [ "$DUAL_PICO" = "0" ]; then
   sleep 2
   printf ']' >> "$LOG_DIR/dk_r2"
-  wait_for "CONTROL marker received" "$LOG_DIR/host_dual.log" 60 "channel#2 CONTROL" || exit 1
+  wait_for "sonic_dds:r2.*CONTROL marker received" "$LOG_DIR/host_dual.log" 60 \
+    "channel#2 CONTROL" || exit 1
 fi
-# 帧率三件套之三：提优先级（sim + 双 deploy）
+# 第三路固定为 keyboard 调试通道，独立发车并预激活 planner。
+sleep 2
+printf ']' >> "$LOG_DIR/dk_r3"
+wait_for "sonic_dds:r3.*CONTROL marker received" "$LOG_DIR/host_dual.log" 60 \
+  "channel#3 CONTROL" || exit 1
+sleep 3; printf '\n' >> "$LOG_DIR/dk_r3"
+sleep 3; printf '2' >> "$LOG_DIR/dk_r3"
+
+# 帧率三件套之三：提优先级（sim + 三个 deploy）
 sudo -n renice -n -10 -p $(pgrep -f "sim_mai[n].py" | head -1) \
     $(pgrep -f "g1_deploy_onnx_re[f]" | tr '\n' ' ') 2>/dev/null || true
 if [ "$DUAL_PICO" = "1" ]; then
-  echo "BRINGUP_DONE (dual Pico: robot#1/#2 均等各自操作者 A+B+X+Y 发车)"
-  echo "logs: $LOG_DIR/{host_dual,deploy_r1,deploy_r2,pico_manager,pico_manager_r2}.log"
+  echo "BRINGUP_DONE (dual Pico: robot#1/#2 等操作者发车，robot#3 已开 keyboard)"
+  echo "logs: $LOG_DIR/{host_dual,deploy_r1,deploy_r2,deploy_r3,pico_manager,pico_manager_r2}.log"
 else
   # 通道 #2 planner 预激活（行走靠往 dk_r2 里发 w/s/a/d）
   sleep 3; printf '\n' >> "$LOG_DIR/dk_r2"
   sleep 3; printf '2' >> "$LOG_DIR/dk_r2"
   echo "BRINGUP_DONE (robot#1 等操作者头显发车: A+B+X+Y)"
-  echo "logs: $LOG_DIR/{host_dual,deploy_r1,deploy_r2,pico_manager}.log"
+  echo "logs: $LOG_DIR/{host_dual,deploy_r1,deploy_r2,deploy_r3,pico_manager}.log"
 fi
