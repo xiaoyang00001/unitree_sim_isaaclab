@@ -169,7 +169,9 @@ class G129SonicApartmentSceneCfg(G129SonicOpenSpaceSceneCfg):
 
     background = _make_complete_scene_cfg("apartment", "Apartment")
     robot: ArticulationCfg = make_sonic_robot_cfg()
-    robot.init_state.pos = (0.0, 0.0, 0.76)
+    # (0, 0) is occupied by the kitchen island in scene_04.usd; use the
+    # carpeted living-room floor so the robot stands on the actual ground.
+    robot.init_state.pos = (-2.1, -0.15, 0.76)
 
 
 @configclass
@@ -282,8 +284,11 @@ class G129SonicApartmentEnvCfg(G129SonicEnvCfg):
 
     def __post_init__(self):
         super().__post_init__()
-        self.viewer.eye = (9.0, -11.0, 6.0)
-        self.viewer.lookat = (0.0, 0.0, 1.0)
+        # The apartment asset has a solid roof/upper shell.  Use an interior
+        # eye point so the viewport sees the room and the robot instead of the
+        # exterior roof from the inherited high-angle view.
+        self.viewer.eye = (-4.0, -0.8, 2.2)
+        self.viewer.lookat = (-2.1, -0.15, 0.95)
 
 
 @configclass
