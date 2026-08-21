@@ -541,6 +541,10 @@ conveyor_scene_task_names = {
     "Isaac-G1-29DoF-Sonic-Conveyor-Staircase",
     "Isaac-G1-29DoF-Sonic-Conveyor-Office",
 }
+office_visual_task_names = {
+    "Isaac-G1-29DoF-Sonic-Office",
+    "Isaac-G1-29DoF-Sonic-Conveyor-Office",
+}
 conveyor_or_cafe_task_names = conveyor_scene_task_names | {"Isaac-G1-29DoF-Sonic-Cafe"}
 is_sonic_task = args_cli.task in sonic_task_names
 
@@ -1232,7 +1236,10 @@ def main():
         env.seed(args_cli.seed)
         if is_sonic_task and not args_cli.no_render:
             try:
-                material_report = apply_g1_sonic_visual_materials()
+                office_dark_material_boost = args_cli.task in office_visual_task_names
+                material_report = apply_g1_sonic_visual_materials(
+                    brighten_dark_material=office_dark_material_boost
+                )
                 print(
                     "[g1_materials] reference appearance applied: "
                     f"white={material_report.white_links}, "
@@ -1249,17 +1256,26 @@ def main():
                     standby_prim_paths = []
                     if is_scene_sync_host:
                         # host 的第二台真身机器人
-                        apply_g1_sonic_visual_materials("/World/envs/env_0/Robot2")
+                        apply_g1_sonic_visual_materials(
+                            "/World/envs/env_0/Robot2",
+                            brighten_dark_material=office_dark_material_boost,
+                        )
                     elif os.environ.get("ISAACLAB_PEER_ROBOT_MODE", "articulation").strip().lower() == "visual_lod":
                         # 分析几何 LOD 自带三份共享 PreviewSurface；它没有 URDF
                         # converter 的 ``visuals`` 层级，不能走本体网格材质重绑器。
                         print("[g1_materials] peer visual_lod 使用资产内置轻量材质")
                     else:
                         # 对端镜像 G1 也上涂装，避免双机时看到通体白模误判机型
-                        apply_g1_sonic_visual_materials("/World/envs/env_0/PeerRobot")
+                        apply_g1_sonic_visual_materials(
+                            "/World/envs/env_0/PeerRobot",
+                            brighten_dark_material=office_dark_material_boost,
+                        )
                         if is_scene_sync_viewer:
                             # viewer 有第二个镜像体（robot_2 工位）
-                            apply_g1_sonic_visual_materials("/World/envs/env_0/PeerRobot2")
+                            apply_g1_sonic_visual_materials(
+                                "/World/envs/env_0/PeerRobot2",
+                                brighten_dark_material=office_dark_material_boost,
+                            )
                     # 以 InteractiveScene 实际生成的 extras 为真源，不再重复解析布局
                     # 环境变量，也不写死数量。=0 时列表自然为空；=1 默认找到三台。
                     if args_cli.task in conveyor_scene_task_names:
@@ -1270,7 +1286,14 @@ def main():
                             for prim_path in view.prim_paths
                         ]
                     for standby_prim_path in standby_prim_paths:
-                        apply_g1_sonic_visual_materials(standby_prim_path)
+                        if office_dark_material_boost:
+                            apply_g1_sonic_visual_materials(
+                                standby_prim_path,
+                                brighten_dark_material=True,
+                            )
+                        else:
+                            # Keep the established non-Office wiring contract.
+                            apply_g1_sonic_visual_materials(standby_prim_path)
                     if standby_prim_paths:
                         print(
                             "[g1_materials] full-fidelity standby robots "

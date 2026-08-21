@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from pxr import Sdf, Usd, UsdGeom, UsdShade
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
 
 
 _REFERENCE_ASSET = (
@@ -195,6 +195,44 @@ def _create_reference_materials(stage: Usd.Stage) -> dict[str, UsdShade.Material
     }
 
 
+def _brighten_dark_material(material: UsdShade.Material) -> None:
+    """Lift the dark G1 coating without changing any physical asset data.
+
+    The reference dark coating is authored for a well-lit product render and
+    has a very low diffuse constant.  In a real room this makes the hands,
+    head, and lower legs collapse into a silhouette.  The override is written
+    only to the composed visual material shader; collision prims, articulation
+    properties, and the referenced source USD remain untouched.
+    """
+
+    surface_output = material.GetOutput("mdl:surface")
+    connected = surface_output.GetConnectedSource()
+    if not connected:
+        raise RuntimeError(
+            f"dark material has no mdl surface shader: {material.GetPath()}"
+        )
+    shader = UsdShade.Shader(connected[0].GetPrim())
+    if not shader:
+        raise RuntimeError(
+            f"dark material source is not a shader: {material.GetPath()}"
+        )
+
+    # Keep the robot visibly charcoal rather than turning it gray/white.  These
+    # are visual-only MDL inputs and are intentionally modest so highlights
+    # remain physically plausible under the Office lights.
+    values = {
+        "diffuse_color_constant": Gf.Vec3f(0.12, 0.14, 0.13),
+        "diffuse_tint": Gf.Vec3f(0.24, 0.22, 0.21),
+        "metallic_constant": 0.32,
+    }
+    for input_name, value in values.items():
+        shader_input = shader.GetInput(input_name)
+        if not shader_input or not shader_input.Set(value):
+            raise RuntimeError(
+                f"failed to tune dark material input {input_name}: {material.GetPath()}"
+            )
+
+
 def _bind_visual_prim(
     prim: Usd.Prim,
     material: UsdShade.Material,
@@ -265,6 +303,7 @@ def apply_g1_sonic_visual_materials(
     robot_prim_path: str = "/World/envs/env_0/Robot",
     *,
     stage: Usd.Stage | None = None,
+    brighten_dark_material: bool = False,
 ) -> G1SonicVisualMaterialReport:
     """Apply the reference G1 materials to one spawned SONIC robot.
 
@@ -272,7 +311,8 @@ def apply_g1_sonic_visual_materials(
     binding. The torso and two wrist roots contain fixed children with another
     material kind, so only those three visual-only instances are expanded and
     rebound per render mesh. The sibling ``collisions`` hierarchy is never
-    traversed or modified.
+    traversed or modified. ``brighten_dark_material`` only tunes the composed
+    dark visual shader and is intended for dim room previews.
     """
 
     stage = _get_current_stage() if stage is None else stage
@@ -281,6 +321,8 @@ def apply_g1_sonic_visual_materials(
         raise ValueError(f"G1 robot prim does not exist: {robot_prim_path}")
 
     materials = _create_reference_materials(stage)
+    if brighten_dark_material:
+        _brighten_dark_material(materials["dark"])
     bound_link_names = {"white": set(), "dark": set(), "logo": set()}
     unmapped_visual_links: set[str] = set()
 

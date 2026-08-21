@@ -183,10 +183,10 @@ MULTI_SCENE_SPECS = {
             "standby_robot_2": (0.70710678, 0.0, 0.0, 0.70710678),
             "standby_robot_3": (0.0, 0.0, 0.0, 1.0),
         },
-        # 相机位于前台南侧约 3m、略高于机器人胸口，朝北平视，避免从
-        # 建筑外墙方向取景；画面中心同时包含 robot_1 与前台接待台。
-        camera_eye=(-4.5, -9.0, 2.1),
-        camera_lookat=(-4.5, -5.5, 1.0),
+        # 相机从 robot_1 的 +X 侧斜向取景：G1 默认朝 +X，避免正南视角
+        # 只看到黑色侧面/背光轮廓，同时保留前台和机器人在同一画面。
+        camera_eye=(-2.5, -8.5, 1.9),
+        camera_lookat=(-4.5, -5.5, 1.05),
     ),
 }
 
@@ -331,16 +331,16 @@ def _make_scene_cfg_class(class_name: str, spec: MultiRobotSceneSpec):
         "__module__": __name__,
         "__doc__": f"{spec.key} complete scene with Conveyor-compatible multi-robot assets.",
         "ground": None,
-        "light": None,
         # Complete room/building USDs carry their own lighting. Office gets a
-        # moderate global ambient lift, a broad overhead room fill, and a
-        # warm outdoor/key contribution; no light is robot-local.
+        # moderate global ambient lift, a broad overhead room fill, a camera-
+        # side disk key, and a warm outdoor/key contribution. The added lights
+        # cover the reception area; none is a robot-local point light.
         "light": (
             AssetBaseCfg(
                 prim_path="/World/OfficeGlobalAmbient",
                 spawn=sim_utils.DomeLightCfg(
                     color=(1.0, 1.0, 1.0),
-                    intensity=3000.0,
+                    intensity=2400.0,
                     visible_in_primary_ray=False,
                 ),
             )
@@ -351,13 +351,32 @@ def _make_scene_cfg_class(class_name: str, spec: MultiRobotSceneSpec):
             AssetBaseCfg(
                 prim_path="/World/OfficeReceptionRoomFill",
                 init_state=AssetBaseCfg.InitialStateCfg(
-                    pos=(-4.5, -0.5, 3.2)
+                    pos=(-4.5, -0.5, 4.0)
                 ),
                 spawn=sim_utils.SphereLightCfg(
                     color=(1.0, 0.97, 0.92),
-                    intensity=12000.0,
-                    radius=3.0,
-                    treat_as_point=True,
+                    intensity=7500.0,
+                    radius=5.0,
+                    treat_as_point=False,
+                ),
+            )
+            if office_lighting
+            else None
+        ),
+        "reception_camera_key": (
+            AssetBaseCfg(
+                prim_path="/World/OfficeReceptionCameraKey",
+                init_state=AssetBaseCfg.InitialStateCfg(
+                    # DiskLight emits along local -Z. This quaternion aims the
+                    # broad source from the camera side toward robot_1.
+                    pos=(-2.5, -8.0, 3.0),
+                    rot=(0.8745893, 0.3786155, 0.3028924, 0.0),
+                ),
+                spawn=sim_utils.DiskLightCfg(
+                    color=(0.93, 0.96, 1.0),
+                    intensity=9000.0,
+                    radius=2.5,
+                    normalize=True,
                 ),
             )
             if office_lighting
@@ -367,10 +386,12 @@ def _make_scene_cfg_class(class_name: str, spec: MultiRobotSceneSpec):
             AssetBaseCfg(
                 prim_path="/World/OfficeReceptionKey",
                 init_state=AssetBaseCfg.InitialStateCfg(
-                    rot=(0.9238795, 0.3826834, 0.0, 0.0)
+                    # Soft diagonal rays toward the reception area, rather
+                    # than a background-only contribution.
+                    rot=(0.9270327, 0.3499865, -0.1346102, 0.0)
                 ),
                 spawn=sim_utils.DistantLightCfg(
-                    color=(1.0, 0.96, 0.90), intensity=2600.0, angle=0.8
+                    color=(1.0, 0.96, 0.90), intensity=2600.0, angle=1.0
                 ),
             )
             if office_lighting
