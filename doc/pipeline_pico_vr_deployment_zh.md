@@ -152,6 +152,124 @@ Dex3 HandCmd；LowCmd、锁步 ACK、Control 和 Planner 仍保持 500 Hz，外�
 Isaac 默认及非 Isaac/实机路径也仍为 500 Hz。`PIPELINE_ISAAC_HANDCMD_HZ` 只在启动时
 读取；回滚到 500 Hz 必须重启完整 bringup。
 
+### 2.1 当前生产默认的五终端手工命令
+
+下面是当前分支生产默认的手工等价命令（2026-08-21 核对）：三台 SONIC 真身中，
+`robot_1` 由 Pico 控制，`robot_2/3` 使用各自隔离的 keyboard deploy。五个终端依次为
+`host sim + deploy#1 + deploy#2 + deploy#3 + manager#1`。不要把历史“双机器人五终端”
+与这套拓扑混用；三路 LowCmd ACK 是 AND 门，少启动任意一个 deploy 都会卡住整场景物理步。
+
+**终端 1：三机器人 host sim**
+
+```bash
+cd /home/nolovr/Documents/unitree_sim_isaaclab
+
+env DISPLAY=:1 \
+  GR00T_WBC_ROOT=/home/nolovr/GR00T-WholeBodyControl \
+  UNITREE_DDS_DOMAIN=1 \
+  UNITREE_DDS_INTERFACE=lo \
+  ISAACLAB_LOCAL_ROBOT_ID=1 \
+  ISAACLAB_HOST_BOTH_ROBOTS=1 \
+  ISAACLAB_SONIC_ROBOT_COUNT=3 \
+  ISAACLAB_SONIC_MERGE_ACTUATORS=1 \
+  ISAACLAB_TOTES_ON_CONVEYOR=1 \
+  ISAACLAB_SCENE_SYNC_PEER_IP=127.0.0.1 \
+  UNITREE_SKIP_LOWSTATE_CRC=1 \
+  UNITREE_LOWCMD_CRC_SAMPLE_INTERVAL=50 \
+  /home/nolovr/miniconda3/envs/env_isaaclab/bin/python \
+  sim_main.py \
+  --task Isaac-G1-29DoF-Sonic-Conveyor \
+  --robot_type g129 \
+  --action_source sonic_dds \
+  --device cpu \
+  --hide_ui \
+  --stats_interval 10 \
+  --profile_interval 25 \
+  --sim-state-export-hz 0 \
+  --lowstate-pub-hz 55 \
+  --handstate-pub-hz 10
+```
+
+需要同步到远端 Viewer 时，把 `ISAACLAB_SCENE_SYNC_PEER_IP=127.0.0.1` 改成 Viewer IP；
+纯 SSH、没有可用 X 桌面时，去掉 `DISPLAY=:1` 并把 `--hide_ui` 换成 `--no_render`。
+上述命令显式写出流水线布局、机器人数量和执行器合并开关，不依赖
+`configs/scene_sync.env` 中对应项目或核心默认值。
+
+**终端 2：deploy#1（Pico / `rt/*`）**
+
+```bash
+cd /home/nolovr/GR00T-WholeBodyControl/gear_sonic_deploy
+
+G1_LOCAL_ROBOT_ID=1 bash deploy.sh \
+  --disable-crc-check \
+  --input-type zmq_manager \
+  --zmq-port 5556 \
+  --isaac-handcmd-hz 100 \
+  isaac
+```
+
+**终端 3：deploy#2（keyboard / `rt/r2/*`）**
+
+```bash
+cd /home/nolovr/GR00T-WholeBodyControl/gear_sonic_deploy
+
+G1_LOCAL_ROBOT_ID=2 bash deploy.sh \
+  --disable-crc-check \
+  --input-type keyboard \
+  --isaac-handcmd-hz 100 \
+  isaac
+```
+
+**终端 4：deploy#3（keyboard / `rt/r3/*`）**
+
+```bash
+cd /home/nolovr/GR00T-WholeBodyControl/gear_sonic_deploy
+
+G1_LOCAL_ROBOT_ID=3 SONIC_DDS_TOPIC_PREFIX=rt/r3 \
+bash deploy.sh \
+  --disable-crc-check \
+  --input-type keyboard \
+  --zmq-port 5576 \
+  --zmq-out-port 5577 \
+  --zmq-out-topic g1_3_debug \
+  --udp-out-port 5577 \
+  --udp-out-topic g1_3_debug \
+  --isaac-handcmd-hz 100 \
+  isaac
+```
+
+三个 deploy 都出现 `Proceed with deployment? [Y/n]:` 时直接回车确认，并在约 10–20 秒
+间隔内全部启动；不要等前一个完整 `Init Done` 后才启动下一个。`robot_3` 的
+`SONIC_DDS_TOPIC_PREFIX` 和 5576/5577 调试端口不能省略，否则外部 `deploy.sh` 会静默
+落回 `robot_1` 的 `rt/*` 和默认调试端口。
+
+**终端 5：manager#1（Pico UDP 63901 → deploy#1 ZMQ 5556）**
+
+```bash
+cd /home/nolovr/GR00T-WholeBodyControl
+
+XROBO_TRANSPORT=udp \
+XROBO_UDP_PORT=63901 \
+UNITREE_DDS_DOMAIN=1 \
+UNITREE_DDS_INTERFACE=lo \
+PYTHONUNBUFFERED=1 \
+.venv_teleop/bin/python \
+gear_sonic/scripts/pico_manager_thread_server.py \
+--manager \
+--no_auto_pose \
+--enable_isaac_scene_reset \
+--port 5556
+```
+
+manager 看到 Pico 第一帧后才 bind 5556，所以它可在 deploy 前后启动。`robot_1` 由头显
+`A+B+X+Y` 发车；`robot_2/3` 分别在自己的 deploy 终端输入 `]`、回车、`2` 进入行走
+模式，之后用 WASD 控制。manager#1 是这套五终端中唯一的 Pico 整场景 reset 权威。
+
+双 Pico 不是这套五终端：把 deploy#2 改为 `--input-type zmq_manager --zmq-port 5566`
+后，还必须增加监听 UDP 63902、发布 ZMQ 5566 的 `manager#2`；`deploy#3` 仍然保留，
+因此当前三机器人生产默认下合计是**六个终端**。只有显式回退
+`ISAACLAB_SONIC_ROBOT_COUNT=2`、不启动 deploy#3 时，双 Pico 才是历史上的五终端。
+
 真身执行器的生产一键默认是 `PIPELINE_SONIC_MERGE_ACTUATORS=1`、
 `PIPELINE_SONIC_VALIDATE_ACTUATORS=0`；核心直接启动的两个 `ISAACLAB_*` 开关仍默认关闭。
 `validate=1` 只用于首次/升级后单次启动的 GPU→CPU tensor 契约验收，核对 hash 后下一次
@@ -292,7 +410,7 @@ manager 侧对应日志：`[Manager] Buttons: A=1 B=1 ...`（每次按键变化�
 会在 `read` 处退出。脚本仍保留双 deploy 并行 Init、两套 manager UDP receiver、
 STARTUP HOLD 就绪检查和 renice，但不等待头显首帧、不代替任何操作者发车。
 
-回滚口径：不设置 `PIPELINE_DUAL_PICO=1` 即回到现有单 Pico + keyboard#2；头显#2
+回滚口径：不设置 `PIPELINE_DUAL_PICO=1` 即回到现有单 Pico + keyboard#2/3；头显#2
 可用施工前备份恢复。完整 bringup 会清理既有 sim/deploy/manager 进程，实机联调只在
 两台头显与两位操作者到场的测试窗口执行。
 
@@ -311,7 +429,8 @@ STARTUP HOLD 就绪检查和 renice，但不等待头显首帧、不代替任何
 4. ⚠️ **端口配错的故障模式是静默混流不是报错**：两台头显都发 63901 时，
    `xr_client` 只留"最新一帧"，两人身体数据交替覆盖、机器人抽搐。防呆判据见 5.3-①。
 
-**B. 两套 manager 隔离启动**（#2 是新增的第五终端）：
+**B. 两套 manager 隔离启动**（三机器人生产默认下 #2 是新增的第六终端；只有回退
+历史双机时才是第五终端）：
 
 ```bash
 cd <GR00T路径>
