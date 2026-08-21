@@ -138,17 +138,25 @@ bash deploy.sh --disable-crc-check --input-type keyboard --dds-domain 72 isaac
 [sonic_dds:r2] First complete LowCmd applied: enabled=29/29
 ```
 
-## 启动 Win130 AR Viewer
+## 启动 Win129/Win130 AR Viewer
 
 正式 Viewer 使用 OpenXR/AR，不运行 Unitree DDS，只通过 ZMQ 接收场景状态和 reset 事件。
-先启动 NOLO Link 或 ALVR，等待 SteamVR 显示头显 ready，再从 Win130 交互桌面双击：
+先启动 NOLO Link 或 ALVR，等待 SteamVR 显示头显 ready。
+
+Win129 作为 operator 1，OpenXR anchor 跟随 `robot_1`，从交互桌面双击：
+
+```bat
+D:\Isaac\unitree_sim_isaaclab-cafe-v61\run_cafe_viewer_ar_win129.local.bat
+```
+
+Win130 作为 operator 2，OpenXR anchor 跟随 `robot_2`，从交互桌面双击：
 
 ```bat
 D:\Isaac\unitree_sim_isaaclab-cafe-v61\run_cafe_viewer_ar_131.local.bat
 ```
 
-该本机脚本与 Win130 的 Conveyor AR 启动约定一致：固定连接 Ubuntu Host
-`192.168.1.131:17555`，并将 OpenXR anchor 绑定到 `robot_2` 镜像。它最终调用通用入口：
+两个本机脚本都固定连接 Ubuntu Host `192.168.1.131:17555`，并分别将 OpenXR
+anchor 绑定到对应机器人镜像。它们最终调用同一个通用入口：
 
 ```bat
 run_cafe_viewer_ar.bat
