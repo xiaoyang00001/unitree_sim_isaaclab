@@ -19,6 +19,7 @@ import os
 from copy import deepcopy
 from dataclasses import dataclass
 
+import isaaclab.sim as sim_utils
 from isaaclab.assets import AssetBaseCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
 from isaaclab.utils import configclass
@@ -325,14 +326,45 @@ def _make_scene_cfg_class(class_name: str, spec: MultiRobotSceneSpec):
         else None
     )
 
+    office_lighting = spec.key == "office"
     attrs = {
         "__module__": __name__,
         "__doc__": f"{spec.key} complete scene with Conveyor-compatible multi-robot assets.",
         "ground": None,
         "light": None,
-        # Complete room/building USDs carry their own lighting; the conveyor
-        # baseline's extra sun would wash out the imported materials.
-        "sun": None,
+        # Complete room/building USDs carry their own lighting. Office needs
+        # a small local lift for the reception area, so add a camera-side
+        # spherical fill plus a warm directional key without changing other
+        # variants.
+        "light": (
+            AssetBaseCfg(
+                prim_path="/World/OfficeReceptionAmbient",
+                init_state=AssetBaseCfg.InitialStateCfg(
+                    pos=(-4.5, -8.0, 2.8)
+                ),
+                spawn=sim_utils.SphereLightCfg(
+                    color=(1.0, 0.95, 0.88),
+                    intensity=50000.0,
+                    radius=1.5,
+                    treat_as_point=True,
+                ),
+            )
+            if office_lighting
+            else None
+        ),
+        "sun": (
+            AssetBaseCfg(
+                prim_path="/World/OfficeReceptionKey",
+                init_state=AssetBaseCfg.InitialStateCfg(
+                    rot=(0.9238795, 0.3826834, 0.0, 0.0)
+                ),
+                spawn=sim_utils.DistantLightCfg(
+                    color=(1.0, 0.93, 0.84), intensity=1800.0, angle=0.8
+                ),
+            )
+            if office_lighting
+            else None
+        ),
         "background": _make_background_cfg(spec),
         "robot": local_robot,
         "peer_robot": peer_robot,
