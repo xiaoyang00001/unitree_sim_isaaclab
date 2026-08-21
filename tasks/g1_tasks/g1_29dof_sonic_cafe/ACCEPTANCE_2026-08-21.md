@@ -2,12 +2,13 @@
 
 ## 结论
 
-**通过。**
+**部分通过。**
 
 本次验收不是代码静态检查，也不是仅确认 GUI 打开。Linux Host 同时接入两套真实 deploy，
 完成双路 LowCmd/LowState 锁步、60 秒计时、独立键盘输入、F12 reset 和 Win130 articulation
 Viewer 场景同步。修复后的 Cafe Viewer 与目标 Conveyor Viewer 使用同一完整 G1 几何和同一
-白、银、黑参考外观。
+白、银、黑参考外观。正式操作端要求通过 OpenXR/AR 启动；该补充验收阻塞在 Pico/SteamVR
+runtime session，尚未到达 XR anchor、材质和 AR 画面门禁，因此不能给出最终“通过”。
 
 ## 版本
 
@@ -16,7 +17,8 @@ Viewer 场景同步。修复后的 Cafe Viewer 与目标 Conveyor Viewer 使用�
 | 目标基线分支 | `feat/conveyor-v61-dual-robot-simultaneous-pick` |
 | 目标基线提交 | `87e1f4e326ad45e216b7c1b25039b9b0140048f7` |
 | Cafe 分支 | `feat/cafe-dual-sonic-on-conveyor-v61` |
-| 验收提交 | `f12abe2674c2f09a48653ff0b1528980952542d3` |
+| 核心验收提交 | `f12abe2674c2f09a48653ff0b1528980952542d3` |
+| Win130 AR 脚本提交 | `454dbd44c6d6ece1b22a8c90d3e5da4510b0a2ce` |
 | 验收日期 | `2026-08-21` |
 
 当前 Cafe 分支只新增 Cafe 场景、任务接入、启动器、测试和参考外观资产。Conveyor 场景、机器人
@@ -283,11 +285,69 @@ ZMQ 首次 reset ID 为 `d9a6dd1230b24509b764c0ec838f3ba6:0`。其 session 与�
 机器人相对配置出生位的最大偏差约 4.82 cm，来自落地和站姿收敛；杯子偏差约 3.1 mm。
 Win130 视觉确认两台机器人双脚着地、分别位于岛台两侧，杯子回到台面，无掉落、重叠或多余机器人。
 
+## Win130 OpenXR/AR 补充验收
+
+正式 Win130 入口：
+
+```bat
+D:\Isaac\unitree_sim_isaaclab-cafe-v61\run_cafe_viewer_ar_131.local.bat
+```
+
+该脚本参考 Win130 现有 `run_pipeline_viewer_ar_131.local.bat`：连接 Ubuntu Host
+`192.168.1.131:17555`，将 XR anchor 绑定 `robot_2`，再调用 Cafe 通用 OpenXR 入口。
+
+已经通过的启动门禁：
+
+```text
+[ext: omni.kit.xr.system.openxr-107.3.109] startup
+Loading experience file: ...isaaclab.python.xr.openxr.kit
+[viewer] Unitree DDS disabled; ZMQ scene sync only
+[sonic_cafe] ... peer_mode=articulation
+```
+
+随后 OpenXR runtime 创建实例失败：
+
+```text
+Error [GENERAL | xrCreateInstance | OpenXR-Loader] : LoaderInstance::CreateInstance chained CreateInstance call failed
+Error [GENERAL | xrCreateInstance | OpenXR-Loader] : xrCreateInstance failed
+[24.016s] Simulation App Shutting Down
+```
+
+运行环境诊断：
+
+| 项目 | 结果 |
+|---|---|
+| Active OpenXR runtime | SteamVR `steamxr_win64.json` |
+| SteamVR | `vrserver`、`vrcompositor`、`vrmonitor`、`vrdashboard` 均在 Session 2 |
+| NOLO | `XRLink` 在 Session 2，虚拟 `NOLO-HMD-1` 处于 standby |
+| ALVR | 未安装，无 Dashboard 或运行进程 |
+| Pico `192.168.1.190` | ping 超时/目标不可达，ARP 无记录 |
+| AR sim_main | 失败后正常退出，无残留 Python 进程 |
+
+由于 Pico client 未连接，未满足重试门禁。以下项目没有到达，不能用普通 Viewer 结果替代：
+
+```text
+XR anchor -> PeerRobot2
+[g1_materials] reference appearance applied: white=26, dark=22, logo=1
+OpenXR mirror window / headset image
+```
+
+失败证据：
+
+| 证据 | 文件 | SHA256 |
+|---|---|---|
+| Cafe AR 完整失败日志 | `/tmp/cafe-v61-ar-viewer-20260821.log` | `1fbb8dce2aa2de43ca814ff862e6764e607a087322452e9aa6ef4e12ad0d06c4` |
+| SteamVR 状态截图 | `/tmp/win130-steamvr-status-20260821.png` | `691d253090753b0d07eeb5b96c5793837526cf2aebf6afcdc19fc7707c2f99c1` |
+| XRLink 状态截图 | `/tmp/win130-xrlink-status-20260821.png` | `cd5966627de6547da3037b8236da4a3c8d5658c430fed49c2ae41787df23d3bc` |
+
+结论：AR 启动脚本和 OpenXR kit 路由已经接通，但外部头显链路未 ready。本项写入 TODO，
+Pico 恢复在线并在 XRLink 或 ALVR 明确显示 client connected 后，必须重新实跑才能将总结果升级为“通过”。
+
 ## 非阻塞警告
 
 - Lightwheel KitchenRoom 缺少 `Materials/Textures/3d66Model-7443619-files-8.jpg` 法线贴图。
 - 两套 deploy 检测到 TensorRT engine 跨设备复用警告。
 - `proxy_background` 只保留地面与岛台两个任务必需碰撞代理，不提供完整柜体和墙体交互。
 
-这些项目没有影响本次双路锁步、咖啡杯承托、Viewer 外观、F12 reset 或 50 Hz 结论，已记录到
+这些非阻塞项目没有影响本次双路锁步、咖啡杯承托、普通 Viewer 外观、F12 reset 或 50 Hz 结论，已记录到
 [TODO_sonic_cafe_acceptance.md](../../../TODO_sonic_cafe_acceptance.md)。
