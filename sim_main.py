@@ -506,26 +506,42 @@ parser.add_argument(
 )
 args_cli = parser.parse_args()
 
+SONIC_CONVEYOR_TASK_NAME = "Isaac-G1-29DoF-Sonic-Conveyor"
+SONIC_CAFE_TASK_NAME = "Isaac-G1-29DoF-Sonic-Cafe"
+scene_sync_sonic_task_names = {
+    SONIC_CONVEYOR_TASK_NAME,
+    SONIC_CAFE_TASK_NAME,
+}
 sonic_task_names = {
     "Isaac-G1-29DoF-Sonic",
     "Isaac-G1-29DoF-Dex3-Sonic",
     "Isaac-G1-29DoF-Training-Sonic",
-    "Isaac-G1-29DoF-Sonic-Conveyor",
+    SONIC_CONVEYOR_TASK_NAME,
+    SONIC_CAFE_TASK_NAME,
 }
 sonic_dex3_task_names = {
     "Isaac-G1-29DoF-Sonic",
     "Isaac-G1-29DoF-Dex3-Sonic",
-    "Isaac-G1-29DoF-Sonic-Conveyor",
+    SONIC_CONVEYOR_TASK_NAME,
+    SONIC_CAFE_TASK_NAME,
 }
 is_sonic_task = args_cli.task in sonic_task_names
+is_sonic_cafe_task = args_cli.task == SONIC_CAFE_TASK_NAME
+
+# Cafe 只创建两台 SONIC。必须在 sync_identity 读取 scene_sync.env、以及 tasks
+# 导入 conveyor_env_cfg 之前覆盖进程环境，确保场景、DDS、provider、seed 与 reset
+# 全部从同一个目标分支计数真源得到 2，而不会继承 Conveyor 的 3..5 台配置。
+if is_sonic_cafe_task:
+    os.environ["ISAACLAB_SONIC_ROBOT_COUNT"] = "2"
+    print("[sonic_cafe] Forcing ISAACLAB_SONIC_ROBOT_COUNT=2")
 
 # 纯镜像 viewer（工作包 A）：ISAACLAB_LOCAL_ROBOT_ID=0 表示本机只收不发地复刻
 # 权威端场景。没有 deploy ⇒ 不能挂 sonic_dds（锁步 ack 永远等不到，主循环会被
 # 250ms 超时压到 4Hz），改用 hold 动作源；倒地监控与锁步 seeding 一并关闭。
-# 只对 conveyor 任务生效：其余 SONIC 任务没有场景同步概念，残留的环境变量
-# 不该改写它们的行为。
+# 只对共享多机拓扑的 conveyor/cafe 任务生效；其余 SONIC 任务没有场景同步概念，
+# 残留的环境变量不该改写它们的行为。
 is_scene_sync_viewer = False
-if args_cli.task == "Isaac-G1-29DoF-Sonic-Conveyor":
+if args_cli.task in scene_sync_sonic_task_names:
     # 身份解析必须与 conveyor_env_cfg 同源（含 scene_sync.env 的 setdefault 注入
     # 与 int() 解析）——双源判定会在「ID 写在 env 文件」或 "00" 写法下裂脑。
     # 不能 import tasks 包取（会在 AppLauncher 之前拖进 isaaclab），按文件路径加载。
@@ -588,7 +604,8 @@ if args_cli.teleop_device == "motion_controllers":
     if args_cli.task not in sonic_dex3_task_names:
         parser.error(
             "--teleop_device motion_controllers is currently supported only by "
-            "Isaac-G1-29DoF-Sonic, Isaac-G1-29DoF-Dex3-Sonic and Isaac-G1-29DoF-Sonic-Conveyor"
+            "Isaac-G1-29DoF-Sonic, Isaac-G1-29DoF-Dex3-Sonic, "
+            "Isaac-G1-29DoF-Sonic-Conveyor and Isaac-G1-29DoF-Sonic-Cafe"
         )
     # Follow Isaac Lab's teleoperation runner behavior: selecting an OpenXR
     # device implies XR, while an explicit --xr remains accepted as well.
@@ -1268,7 +1285,7 @@ def main():
                         "imported material: "
                         + ", ".join(material_report.unmapped_visual_links)
                     )
-                if args_cli.task == "Isaac-G1-29DoF-Sonic-Conveyor":
+                if args_cli.task in scene_sync_sonic_task_names:
                     if is_scene_sync_host:
                         # Robot 已由上面的默认调用处理；补齐 host 的 Robot2..N 真身。
                         for _spec in sonic_host_channel_specs[1:]:
@@ -1290,14 +1307,18 @@ def main():
                                 )
                         else:
                             apply_g1_sonic_visual_materials("/World/envs/env_0/PeerRobot")
-                    # 以 InteractiveScene 实际生成的 extras 为真源，不再重复解析布局
-                    # 环境变量，也不写死数量。=0 时列表自然为空；=1 默认找到三台。
-                    standby_prim_paths = [
-                        prim_path
-                        for asset_name, view in env.scene.extras.items()
-                        if asset_name.startswith("standby_robot_")
-                        for prim_path in view.prim_paths
-                    ]
+                    # standby 是 Conveyor 专属展示层；Cafe 只保留两台 SONIC，不创建
+                    # 也不扫描其余展示机器人。
+                    standby_prim_paths = []
+                    if args_cli.task == SONIC_CONVEYOR_TASK_NAME:
+                        # 以 InteractiveScene 实际生成的 extras 为真源，不再重复解析
+                        # 布局环境变量，也不写死数量。
+                        standby_prim_paths = [
+                            prim_path
+                            for asset_name, view in env.scene.extras.items()
+                            if asset_name.startswith("standby_robot_")
+                            for prim_path in view.prim_paths
+                        ]
                     for standby_prim_path in standby_prim_paths:
                         apply_g1_sonic_visual_materials(standby_prim_path)
                     if standby_prim_paths:
@@ -1942,7 +1963,7 @@ def main():
     elif sonic_reset_supported:
         print("[fall_reset] automatic detection disabled; safe manual reset recovery remains available")
 
-    # ZMQ 双机场景同步（Isaac-G1-29DoF-Sonic-Conveyor 任务才有这两个 term）。
+    # ZMQ 多机场景同步（Conveyor/Cafe 任务提供这两个 term）。
     # 复位编排：ID=1 是复位权威，本机整环境复位后广播 reset_id；镜像端（ID=2）
     # 在主循环里消费该事件并跟随复位，scene_state 帧按 reset_id 门控丢弃复位前旧帧。
     def _get_scene_sync_term(term_name: str):
