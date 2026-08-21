@@ -203,8 +203,11 @@ class G129SonicOpenSpaceEnvCfg(G129SonicEnvCfg):
 
     def __post_init__(self):
         super().__post_init__()
-        self.viewer.eye = (-1.0, 10.5, 3.0)
-        self.viewer.lookat = TERRAIN_ROBOT_POS["gravel"]
+        # The gravel patch is an outdoor scan with no enclosing landmarks;
+        # keep the camera close enough to show the SONIC robot and ground
+        # texture instead of leaving the robot as a tiny horizon silhouette.
+        self.viewer.eye = (3.5, -0.5, 2.8)
+        self.viewer.lookat = (0.0, -5.0, 0.95)
 
 
 @configclass
