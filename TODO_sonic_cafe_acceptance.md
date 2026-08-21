@@ -1,9 +1,9 @@
 # 双 SONIC 咖啡场景后续事项
 
 当前版本已通过 Linux 双 deploy、Win130 普通 articulation Viewer、60 秒 50 Hz 锁步和
-F12 reset。正式 Win130 OpenXR/AR Viewer 仍被外部头显链路阻塞，Win129 环境部署仍被
-SSH 公钥授权阻塞，因此总验收为“部分通过”。第 1、2 项阻塞最终通过；其余项目为非阻塞
-后续事项。
+F12 reset，Win129/Win130 也已部署同一提交和同一 canonical G1 外观资产。正式 OpenXR/AR
+Viewer 仍被外部头显链路阻塞，因此总验收为“部分通过”。第 1 项阻塞最终通过；其余项目为
+待执行验收或非阻塞后续事项。
 
 ## 1. 恢复 Pico 链路并完成 Win130 OpenXR/AR 实跑
 
@@ -19,20 +19,21 @@ SSH 公钥授权阻塞，因此总验收为“部分通过”。第 1、2 项阻
 当前阻塞证据：Pico ping/ARP 不可达，ALVR 未安装，SteamVR/NOLO 仅提供 standby 虚拟 HMD；
 Isaac OpenXR 在 `xrCreateInstance` 阶段退出。失败日志为 `/tmp/cafe-v61-ar-viewer-20260821.log`。
 
-## 2. 完成 Win129 Cafe AR Viewer 环境部署
+## 2. 完成 Win129 Cafe AR Viewer 首次实跑
 
-- [ ] 在 Win129 的实际部署账号中授权 `codex-win129` SSH 公钥，并确认账号名。
-- [ ] 将 `feat/cafe-dual-sonic-on-conveyor-v61` 同步到
+- [x] 在 Win129 的实际部署账号中授权 `codex-win129` SSH 公钥，并确认账号名。
+- [x] 将 `feat/cafe-dual-sonic-on-conveyor-v61` 同步到
   `D:\Isaac\unitree_sim_isaaclab-cafe-v61`，提交必须与 Win130 完全一致。
-- [ ] 确认工作区干净，canonical G1 外观 USD 为 `40,570,877` 字节且 SHA256 为
+- [x] 确认工作区干净，canonical G1 外观 USD 为 `40,570,877` 字节且 SHA256 为
   `01677e6ab1d321e72533dc42393500c17655584d7f272b328857ab5080ef7c98`。
-- [ ] 确认 `run_cafe_viewer_ar_win129.local.bat` 存在，连接
+- [x] 确认 `run_cafe_viewer_ar_win129.local.bat` 存在，连接
   `192.168.1.131:17555`，并将 XR anchor 绑定 `robot_1`。
 - [ ] 从 Win129 交互桌面完成首次启动，确认 Viewer 仅使用 ZMQ、两台机器人使用
   `articulation` 模式且没有第 3 至第 5 台机器人。
 
-当前阻塞证据：`192.168.1.129:22` 可达，但专用密钥对 `nolovr`、`admin` 均返回
-`Permission denied (publickey,password,keyboard-interactive)`；本轮没有猜测密码或覆盖远端目录。
+部署结果：已通过 `ssh win129` 使用 `Administrator` 账号完成部署，远端 HEAD 为
+`4222cdfa34c3400a9b0de2dd256433cba9b686bb`，工作区干净；本轮未启动 Isaac，因此只保留
+首次 AR 实跑门禁。
 
 ## 3. 补齐 KitchenRoom 法线贴图
 
