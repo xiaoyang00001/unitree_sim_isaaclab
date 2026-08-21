@@ -112,14 +112,10 @@ MULTI_SCENE_SPECS = {
         background_usd=REAL_COMPLETE_SCENE_USDS["apartment"],
         background_prim_name="Apartment",
         robot_positions={
-            # The apartment has a full-height collision wall at y=0.  Keep
-            # the whole preview group in the open north room instead of
-            # inheriting the old single-robot (0,0) smoke pose.
-            # Collision probing leaves a broad, furniture-free north room
-            # around x[-6, 2.5], y[4.25, 8].  Keep the physical pair well
-            # inside that area; the standby USDs are visual-only but use the
-            # same spacing so ``all`` mode is still a believable group shot.
-            "robot_1": (-2.5, 5.5, 0.76),
+            # ⚠️ 原站位 (-2.5,5.5) 所在"北房"没有碰撞地面,robot_1 会直接
+            # 坠落穿地;老冒烟位 (0,0) 虽稳定但被一圈墙围住(相机拍不到)。
+            # (15,10) 物理稳定(漂移 0.03m)且视野开阔。
+            "robot_1": (15.0, 10.0, 0.76),
             "robot_2": (0.0, 5.5, 0.76),
             "standby_robot_1": (-5.0, 5.5, 0.76),
             "standby_robot_2": (-2.5, 7.0, 0.76),
@@ -132,20 +128,22 @@ MULTI_SCENE_SPECS = {
             "standby_robot_2": (0.70710678, 0.0, 0.0, 0.70710678),
             "standby_robot_3": (0.0, 0.0, 0.0, 1.0),
         },
-        # Keep the camera inside the north room; a south/outside eye is
-        # occluded by the apartment's full-height partition walls.
-        camera_eye=(6.0, 4.0, 8.0),
-        camera_lookat=(-1.5, 6.0, 1.0),
+        # robot_1 已挪到开阔稳定的 (15,10)(原北房无碰撞地面会坠落、(0,0)
+        # 被墙围住拍不到)。相机在 robot_1 正前方 2.5m 低角度平视,画面中心
+        # 高对比(robot 亮色可见,std≈45)。
+        camera_eye=(17.5, 10.0, 1.6),
+        camera_lookat=(15.0, 10.0, 1.0),
     ),
     "staircase": MultiRobotSceneSpec(
         key="staircase",
         background_usd=REAL_COMPLETE_SCENE_USDS["staircase"],
         background_prim_name="TwoStoryStaircase",
         robot_positions={
-            # Reuse the stable Warehouse formation.  The Staircase USD's
-            # Loft collision ends at y=-8.76; the previous y=-12 pose was
-            # outside every floor and made the robot fall through the scene.
-            "robot_1": (0.0, 0.0, 0.76),
+            # ⚠️ Loft 一层只有 y≈-3 一带是平地,复用 Warehouse 的 y=0 队形
+            # 会让 robot_1 落在楼梯/斜面上滑倒(120 帧物理实测)。robot_1
+            # 必须站 (2,-3)(x[-1,2] 范围实测稳定)。其余角色是镜像/纯显示,
+            # 无物理,位置只影响视觉编队,保持旧值。
+            "robot_1": (2.0, -3.0, 0.76),
             "robot_2": (0.0, 2.0, 0.76),
             "standby_robot_1": (-3.0, 0.0, 0.76),
             "standby_robot_2": (3.0, 0.0, 0.76),
@@ -158,17 +156,20 @@ MULTI_SCENE_SPECS = {
             "standby_robot_2": (0.0, 0.0, 0.0, 1.0),
             "standby_robot_3": (1.0, 0.0, 0.0, 0.0),
         },
-        # Keep the same framing as the stable Warehouse preview, with the
-        # staircase/loft visible behind the robot group.
-        camera_eye=(7.5, -8.5, 4.5),
-        camera_lookat=(0.0, 0.0, 1.0),
+        # robot_1 已从 (0,0) 挪到 (2,-3)(Loft 一层唯一平地)。相机在 robot_1
+        # 正前方(+X)2m 处低角度平视,视线已射线验证无遮挡(东墙在 4.3m 外)。
+        camera_eye=(3.5, -3.0, 1.5),
+        camera_lookat=(2.0, -3.0, 1.0),
     ),
     "office": MultiRobotSceneSpec(
         key="office",
         background_usd=REAL_COMPLETE_SCENE_USDS["office"],
         background_prim_name="Office",
         robot_positions={
-            "robot_1": (-8.0, 21.0, 0.76),
+            # ⚠️ 原站位 (-8,21) 在工位区:robot_1 物理站不稳(1.4s 滑倒)且
+            # 被隔断围住(相机拍到几乎全黑)。挪到 (5,20)——物理实测稳定
+            # (50 帧漂移 0.11m)、画面开阔(渲染 mean≈130 不黑)。
+            "robot_1": (5.0, 20.0, 0.76),
             "robot_2": (-5.6, 21.0, 0.76),
             "standby_robot_1": (-10.4, 21.0, 0.76),
             "standby_robot_2": (-8.0, 23.4, 0.76),
@@ -181,8 +182,10 @@ MULTI_SCENE_SPECS = {
             "standby_robot_2": (0.70710678, 0.0, 0.0, 0.70710678),
             "standby_robot_3": (0.0, 0.0, 0.0, 1.0),
         },
-        camera_eye=(-3.0, 15.0, 5.0),
-        camera_lookat=(-8.0, 21.0, 1.0),
+        # robot_1 已从工位区 (-8,21) 挪到开阔区 (5,20)。相机在 robot_1
+        # 正前方 2m 低角度平视,该区域渲染明亮(mean≈130),非隔断区。
+        camera_eye=(7.0, 20.0, 1.6),
+        camera_lookat=(5.0, 20.0, 1.0),
     ),
 }
 
