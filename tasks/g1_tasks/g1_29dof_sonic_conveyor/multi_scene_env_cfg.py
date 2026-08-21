@@ -140,11 +140,11 @@ MULTI_SCENE_SPECS = {
         background_usd=REAL_COMPLETE_SCENE_USDS["staircase"],
         background_prim_name="TwoStoryStaircase",
         robot_positions={
-            # ⚠️ Loft 一层只有 y≈-3 一带是平地,复用 Warehouse 的 y=0 队形
-            # 会让 robot_1 落在楼梯/斜面上滑倒(120 帧物理实测)。robot_1
-            # 必须站 (2,-3)(x[-1,2] 范围实测稳定)。其余角色是镜像/纯显示,
-            # 无物理,位置只影响视觉编队,保持旧值。
-            "robot_1": (2.0, -3.0, 0.76),
+            # 二楼连续平台的碰撞顶面约为 z=2.75，robot_1 放在东侧
+            # 开放房间中部的 (1.5, 4.7)，根部 z=3.51 对应 G1 的 0.76m 足底
+            # 偏移，避开楼梯开口和栏杆。
+            # 其余角色是镜像/纯显示，无物理，位置只影响视觉编队。
+            "robot_1": (1.5, 4.7, 3.51),
             "robot_2": (0.0, 2.0, 0.76),
             "standby_robot_1": (-3.0, 0.0, 0.76),
             "standby_robot_2": (3.0, 0.0, 0.76),
@@ -157,10 +157,10 @@ MULTI_SCENE_SPECS = {
             "standby_robot_2": (0.0, 0.0, 0.0, 1.0),
             "standby_robot_3": (1.0, 0.0, 0.0, 0.0),
         },
-        # robot_1 已从 (0,0) 挪到 (2,-3)(Loft 一层唯一平地)。相机在 robot_1
-        # 正前方(+X)2m 处低角度平视,视线已射线验证无遮挡(东墙在 4.3m 外)。
-        camera_eye=(3.5, -3.0, 1.5),
-        camera_lookat=(2.0, -3.0, 1.0),
+        # robot_1 与相机都位于二楼同一开放房间内，避免隔着门框取景；
+        # 相机从东南侧给出正面三分之一视角，并保留周围地面作为空间参照。
+        camera_eye=(3.8, 2.2, 4.35),
+        camera_lookat=(1.5, 4.7, 3.55),
     ),
     "office": MultiRobotSceneSpec(
         key="office",
