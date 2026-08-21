@@ -11,7 +11,7 @@ set "ISAACLAB_XR_ANCHOR_ROBOT_ID=2"
 set "ISAACLAB_PEER_ROBOT_MODE=articulation"
 set "ISAACLAB_CAFE_KITCHEN_MODE=proxy_background"
 set "ISAACLAB_SCENE_SYNC_PORT_BASE=17555"
-if not defined SIM_LOG set "SIM_LOG=D:\Isaac\cafe_viewer_ar_131.log"
+if not defined SIM_LOG set "SIM_LOG=D:\Isaac\cafe_viewer_ar_win130.log"
 
 call "%~dp0run_cafe_viewer_ar.bat" %*
 

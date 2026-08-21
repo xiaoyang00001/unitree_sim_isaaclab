@@ -152,7 +152,7 @@ D:\Isaac\unitree_sim_isaaclab-cafe-v61\run_cafe_viewer_ar_win129.local.bat
 Win130 作为 operator 2，OpenXR anchor 跟随 `robot_2`，从交互桌面双击：
 
 ```bat
-D:\Isaac\unitree_sim_isaaclab-cafe-v61\run_cafe_viewer_ar_131.local.bat
+D:\Isaac\unitree_sim_isaaclab-cafe-v61\run_cafe_viewer_ar_win130.local.bat
 ```
 
 两个本机脚本都固定连接 Ubuntu Host `192.168.1.131:17555`，并分别将 OpenXR

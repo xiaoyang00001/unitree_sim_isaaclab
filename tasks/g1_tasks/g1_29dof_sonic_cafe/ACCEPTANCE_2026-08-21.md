@@ -290,7 +290,7 @@ Win130 视觉确认两台机器人双脚着地、分别位于岛台两侧，杯�
 正式 Win130 入口：
 
 ```bat
-D:\Isaac\unitree_sim_isaaclab-cafe-v61\run_cafe_viewer_ar_131.local.bat
+D:\Isaac\unitree_sim_isaaclab-cafe-v61\run_cafe_viewer_ar_win130.local.bat
 ```
 
 该脚本参考 Win130 现有 `run_pipeline_viewer_ar_131.local.bat`：连接 Ubuntu Host

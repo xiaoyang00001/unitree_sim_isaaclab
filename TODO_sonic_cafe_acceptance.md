@@ -10,7 +10,7 @@ Viewer 仍被外部头显链路阻塞，因此总验收为“部分通过”。�
 - [ ] 让 Pico `192.168.1.190` 重新接入局域网，确认 Win130 ping 可达且 ARP 有对应记录。
 - [ ] 在 NOLO XRLink 或 ALVR Dashboard 中明确看到 Pico client connected，不以虚拟 HMD 进程存在代替连接状态。
 - [ ] 确认 SteamVR 头显与控制器均激活，不再处于仅有 `NOLO-HMD-1` standby 的状态。
-- [ ] 从 Win130 交互桌面双击 `run_cafe_viewer_ar_131.local.bat`，不得通过 SSH 非交互会话启动。
+- [ ] 从 Win130 交互桌面双击 `run_cafe_viewer_ar_win130.local.bat`，不得通过 SSH 非交互会话启动。
 - [ ] 确认 OpenXR 不再出现 `xrCreateInstance failed`，并到达 `XR anchor -> PeerRobot2`。
 - [ ] 确认两台 articulation G1 完成 `white=26, dark=22, logo=1` 材质绑定。
 - [ ] 保存 OpenXR mirror/headset 画面，确认只有两台 G1 和杯子，robot 2 anchor 正确。
