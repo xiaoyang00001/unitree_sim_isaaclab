@@ -332,20 +332,31 @@ def _make_scene_cfg_class(class_name: str, spec: MultiRobotSceneSpec):
         "__doc__": f"{spec.key} complete scene with Conveyor-compatible multi-robot assets.",
         "ground": None,
         "light": None,
-        # Complete room/building USDs carry their own lighting. Office needs
-        # a small local lift for the reception area, so add a camera-side
-        # spherical fill plus a warm directional key without changing other
-        # variants.
+        # Complete room/building USDs carry their own lighting. Office gets a
+        # moderate global ambient lift, a broad overhead room fill, and a
+        # warm outdoor/key contribution; no light is robot-local.
         "light": (
             AssetBaseCfg(
-                prim_path="/World/OfficeReceptionAmbient",
+                prim_path="/World/OfficeGlobalAmbient",
+                spawn=sim_utils.DomeLightCfg(
+                    color=(1.0, 1.0, 1.0),
+                    intensity=3000.0,
+                    visible_in_primary_ray=False,
+                ),
+            )
+            if office_lighting
+            else None
+        ),
+        "reception_room_fill": (
+            AssetBaseCfg(
+                prim_path="/World/OfficeReceptionRoomFill",
                 init_state=AssetBaseCfg.InitialStateCfg(
-                    pos=(-4.5, -8.0, 2.8)
+                    pos=(-4.5, -0.5, 3.2)
                 ),
                 spawn=sim_utils.SphereLightCfg(
-                    color=(1.0, 0.95, 0.88),
-                    intensity=50000.0,
-                    radius=1.5,
+                    color=(1.0, 0.97, 0.92),
+                    intensity=12000.0,
+                    radius=3.0,
                     treat_as_point=True,
                 ),
             )
@@ -359,7 +370,7 @@ def _make_scene_cfg_class(class_name: str, spec: MultiRobotSceneSpec):
                     rot=(0.9238795, 0.3826834, 0.0, 0.0)
                 ),
                 spawn=sim_utils.DistantLightCfg(
-                    color=(1.0, 0.93, 0.84), intensity=1800.0, angle=0.8
+                    color=(1.0, 0.96, 0.90), intensity=2600.0, angle=0.8
                 ),
             )
             if office_lighting
