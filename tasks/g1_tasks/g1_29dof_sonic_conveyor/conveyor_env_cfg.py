@@ -2232,6 +2232,74 @@ _PROP_NAMES = (
 )
 
 
+def configure_scene_sync_xr_anchor(
+    env_cfg,
+    *,
+    viewer_mode: bool,
+    host_mode: bool,
+    active_robot_count: int,
+    log_tag: str,
+) -> None:
+    """Redirect SONIC XR anchoring to the selected host or viewer robot."""
+
+    # XR 锚定重定向。⚠️ 只改 env_cfg.xr 不够——teleop_devices 构建时把 xr_cfg
+    # **拷贝**了一份（2026-08-02 实测：cfg 打印挂 PeerRobot、teleop 设备实际仍用
+    # Robot 路径，AR 视角锚到场外 ghost 上）。必须把 env_cfg.xr 与每个 teleop 设备
+    # 持有的 xr_cfg 一起改。
+    def _apply_xr_anchor(prim_name: str, tag: str, extra: dict | None = None) -> None:
+        anchor = f"/World/envs/env_0/{prim_name}/torso_link/head_link"
+        rotation = f"/World/envs/env_0/{prim_name}/pelvis"
+        targets = [env_cfg.xr]
+        for _dev_cfg in getattr(env_cfg.teleop_devices, "devices", {}).values():
+            _dev_xr = getattr(_dev_cfg, "xr_cfg", None)
+            if _dev_xr is not None and _dev_xr is not env_cfg.xr:
+                targets.append(_dev_xr)
+        for _xr in targets:
+            _xr.anchor_prim_path = anchor
+            _xr.anchor_rotation_prim_path = rotation
+            for _k, _v in (extra or {}).items():
+                setattr(_xr, _k, _v)
+        print(f"{log_tag} XR 锚定 -> {prim_name}（{tag}，含 {len(targets)} 份 xr_cfg）")
+
+    # host 模式可选：XR 锚定切到任一活动真身（默认 robot_1，即父类 Robot）。
+    _xr_anchor_robot_id = _env_int("ISAACLAB_XR_ANCHOR_ROBOT_ID", 1)
+    if host_mode and 2 <= _xr_anchor_robot_id <= active_robot_count:
+        _apply_xr_anchor(f"Robot{_xr_anchor_robot_id}", "host")
+    # viewer 模式（工作包 C）：本机 Robot 是场外 ghost（不可见），父类默认锚会把
+    # AR 视角带到空地上。改挂镜像体：ISAACLAB_XR_ANCHOR_ROBOT_ID=1 → PeerRobot
+    # （robot_1 镜像，默认），=N → PeerRobotN。镜像 USD 与本体同一
+    # URDF 转换，torso_link/head_link 与 pelvis 的层级一致。
+    if viewer_mode:
+        if not 1 <= _xr_anchor_robot_id <= active_robot_count:
+            print(
+                f"{log_tag} ⚠️ ISAACLAB_XR_ANCHOR_ROBOT_ID="
+                f"{_xr_anchor_robot_id} 超出活动机器人 1..{active_robot_count}；使用 1"
+            )
+            _xr_anchor_robot_id = 1
+        _anchor_prim = (
+            "PeerRobot"
+            if _xr_anchor_robot_id == 1
+            else f"PeerRobot{_xr_anchor_robot_id}"
+        )
+        # 镜像体是被同步帧离散传送的（非连续物理），锚定位置裸写会以应用频率抖动
+        # ——viewer 打开位置平滑（本体动力学路径保持 0=裸写不受影响）。
+        # 旋转：默认 FIXED——视角旋转只听操作者自己的头，不跟机器人转身
+        # （SONIC 转身会被动旋转视角，操作者实测头晕）。朝向与机器人错位时
+        # 按 B/F9 recenter 把机器人 pelvis 朝向重新对到正前方；启动时自动
+        # 对正一次。ISAACLAB_XR_ANCHOR_ROT_FOLLOW=1 恢复 yaw 跟随（旧手感）。
+        from isaaclab.devices.openxr import XrAnchorRotationMode as _RotMode
+
+        _extra = {
+            "anchor_position_smoothing_time": float(
+                os.environ.get("ISAACLAB_XR_ANCHOR_POS_SMOOTHING", "0.15")
+            ),
+            "recenter_yaw_on_start": True,
+        }
+        if os.environ.get("ISAACLAB_XR_ANCHOR_ROT_FOLLOW", "0") != "1":
+            _extra["anchor_rotation_mode"] = _RotMode.FIXED
+        _apply_xr_anchor(_anchor_prim, "viewer", extra=_extra)
+
+
 @configclass
 class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
     """SONIC DDS 控制 + warehouse 流水线场景 + ZMQ 双机同步。"""
@@ -2366,62 +2434,13 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
             )
         if not HOST_MODE:
             print(f"[conveyor_env_cfg] 镜像机器人模式: {PEER_ROBOT_MODE}")
-        # XR 锚定重定向。⚠️ 只改 self.xr 不够——teleop_devices 构建时把 xr_cfg
-        # **拷贝**了一份（2026-08-02 实测：cfg 打印挂 PeerRobot、teleop 设备实际仍用
-        # Robot 路径，AR 视角锚到场外 ghost 上）。必须把 self.xr 与每个 teleop 设备
-        # 持有的 xr_cfg 一起改。
-        def _apply_xr_anchor(prim_name: str, tag: str, extra: dict | None = None) -> None:
-            anchor = f"/World/envs/env_0/{prim_name}/torso_link/head_link"
-            rotation = f"/World/envs/env_0/{prim_name}/pelvis"
-            targets = [self.xr]
-            for _dev_cfg in getattr(self.teleop_devices, "devices", {}).values():
-                _dev_xr = getattr(_dev_cfg, "xr_cfg", None)
-                if _dev_xr is not None and _dev_xr is not self.xr:
-                    targets.append(_dev_xr)
-            for _xr in targets:
-                _xr.anchor_prim_path = anchor
-                _xr.anchor_rotation_prim_path = rotation
-                for _k, _v in (extra or {}).items():
-                    setattr(_xr, _k, _v)
-            print(f"[conveyor_env_cfg] XR 锚定 -> {prim_name}（{tag}，含 {len(targets)} 份 xr_cfg）")
-
-        # host 模式可选：XR 锚定切到任一活动真身（默认 robot_1，即父类 Robot）。
-        _xr_anchor_robot_id = _env_int("ISAACLAB_XR_ANCHOR_ROBOT_ID", 1)
-        if HOST_MODE and 2 <= _xr_anchor_robot_id <= ACTIVE_SONIC_ROBOT_COUNT:
-            _apply_xr_anchor(f"Robot{_xr_anchor_robot_id}", "host")
-        # viewer 模式（工作包 C）：本机 Robot 是场外 ghost（不可见），父类默认锚会把
-        # AR 视角带到空地上。改挂镜像体：ISAACLAB_XR_ANCHOR_ROBOT_ID=1 → PeerRobot
-        # （robot_1 镜像，默认），=N → PeerRobotN。镜像 USD 与本体同一
-        # URDF 转换，torso_link/head_link 与 pelvis 的层级一致。
-        if VIEWER_MODE:
-            if not 1 <= _xr_anchor_robot_id <= ACTIVE_SONIC_ROBOT_COUNT:
-                print(
-                    "[conveyor_env_cfg] ⚠️ ISAACLAB_XR_ANCHOR_ROBOT_ID="
-                    f"{_xr_anchor_robot_id} 超出活动机器人 1..{ACTIVE_SONIC_ROBOT_COUNT}；使用 1"
-                )
-                _xr_anchor_robot_id = 1
-            _anchor_prim = (
-                "PeerRobot"
-                if _xr_anchor_robot_id == 1
-                else f"PeerRobot{_xr_anchor_robot_id}"
-            )
-            # 镜像体是被同步帧离散传送的（非连续物理），锚定位置裸写会以应用频率抖动
-            # ——viewer 打开位置平滑（本体动力学路径保持 0=裸写不受影响）。
-            # 旋转：默认 FIXED——视角旋转只听操作者自己的头，不跟机器人转身
-            # （SONIC 转身会被动旋转视角，操作者实测头晕）。朝向与机器人错位时
-            # 按 B/F9 recenter 把机器人 pelvis 朝向重新对到正前方；启动时自动
-            # 对正一次。ISAACLAB_XR_ANCHOR_ROT_FOLLOW=1 恢复 yaw 跟随（旧手感）。
-            from isaaclab.devices.openxr import XrAnchorRotationMode as _RotMode
-
-            _extra = {
-                "anchor_position_smoothing_time": float(
-                    os.environ.get("ISAACLAB_XR_ANCHOR_POS_SMOOTHING", "0.15")
-                ),
-                "recenter_yaw_on_start": True,
-            }
-            if os.environ.get("ISAACLAB_XR_ANCHOR_ROT_FOLLOW", "0") != "1":
-                _extra["anchor_rotation_mode"] = _RotMode.FIXED
-            _apply_xr_anchor(_anchor_prim, "viewer", extra=_extra)
+        configure_scene_sync_xr_anchor(
+            self,
+            viewer_mode=VIEWER_MODE,
+            host_mode=HOST_MODE,
+            active_robot_count=ACTIVE_SONIC_ROBOT_COUNT,
+            log_tag="[conveyor_env_cfg]",
+        )
         if MIRROR_OBJECTS:
             # 基座注册的 reset_scene_to_default 会向 kinematic 镜像物体写速度，
             # CPU pipeline 下每次复位刷 ~14 条 PhysX 错误、累计 1000 条掐停仿真。

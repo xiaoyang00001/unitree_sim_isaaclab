@@ -40,6 +40,7 @@ from tasks.g1_tasks.g1_29dof_sonic_conveyor.conveyor_env_cfg import (
     HostConveyorActionsCfg,
     HostObservationsCfg,
     ViewerObservationsCfg,
+    configure_scene_sync_xr_anchor,
     _PEER_ROBOT_USD,
     _PEER_VISUAL_LOD_USD,
     _make_additional_local_robot_cfg as _make_conveyor_additional_local_robot_cfg,
@@ -477,6 +478,13 @@ class G129DualSonicCafeEnvCfg(G129SonicEnvCfg):
 
     def __post_init__(self):
         super().__post_init__()
+        configure_scene_sync_xr_anchor(
+            self,
+            viewer_mode=VIEWER_MODE,
+            host_mode=HOST_MODE,
+            active_robot_count=2,
+            log_tag="[sonic_cafe]",
+        )
         if MIRROR_OBJECTS:
             mirror_reset = SimpleEvent(func=reset_scene_mirror_safe)
             self.event_manager.register("reset_object_self", mirror_reset)
