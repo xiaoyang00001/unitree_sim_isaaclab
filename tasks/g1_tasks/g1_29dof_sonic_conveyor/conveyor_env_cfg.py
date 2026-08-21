@@ -2239,7 +2239,6 @@ def configure_scene_sync_xr_anchor(
     host_mode: bool,
     active_robot_count: int,
     log_tag: str,
-    anchor_position_offset: tuple[float, float, float] | None = None,
 ) -> None:
     """Redirect SONIC XR anchoring to the selected host or viewer robot."""
 
@@ -2247,12 +2246,7 @@ def configure_scene_sync_xr_anchor(
     # **拷贝**了一份（2026-08-02 实测：cfg 打印挂 PeerRobot、teleop 设备实际仍用
     # Robot 路径，AR 视角锚到场外 ghost 上）。必须把 env_cfg.xr 与每个 teleop 设备
     # 持有的 xr_cfg 一起改。
-    def _apply_xr_anchor(
-        prim_name: str,
-        tag: str,
-        extra: dict | None = None,
-        position_offset: tuple[float, float, float] | None = None,
-    ) -> None:
+    def _apply_xr_anchor(prim_name: str, tag: str, extra: dict | None = None) -> None:
         anchor = f"/World/envs/env_0/{prim_name}/torso_link/head_link"
         rotation = f"/World/envs/env_0/{prim_name}/pelvis"
         targets = [env_cfg.xr]
@@ -2263,8 +2257,6 @@ def configure_scene_sync_xr_anchor(
         for _xr in targets:
             _xr.anchor_prim_path = anchor
             _xr.anchor_rotation_prim_path = rotation
-            if position_offset is not None:
-                _xr.anchor_pos = position_offset
             for _k, _v in (extra or {}).items():
                 setattr(_xr, _k, _v)
         print(f"{log_tag} XR 锚定 -> {prim_name}（{tag}，含 {len(targets)} 份 xr_cfg）")
@@ -2305,12 +2297,7 @@ def configure_scene_sync_xr_anchor(
         }
         if os.environ.get("ISAACLAB_XR_ANCHOR_ROT_FOLLOW", "0") != "1":
             _extra["anchor_rotation_mode"] = _RotMode.FIXED
-        _apply_xr_anchor(
-            _anchor_prim,
-            "viewer",
-            extra=_extra,
-            position_offset=anchor_position_offset,
-        )
+        _apply_xr_anchor(_anchor_prim, "viewer", extra=_extra)
 
 
 @configclass

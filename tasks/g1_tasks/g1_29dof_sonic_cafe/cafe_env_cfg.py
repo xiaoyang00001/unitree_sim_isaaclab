@@ -478,25 +478,13 @@ class G129DualSonicCafeEnvCfg(G129SonicEnvCfg):
 
     def __post_init__(self):
         super().__post_init__()
-        cafe_xr_anchor_height = float(
-            os.environ.get("ISAACLAB_CAFE_XR_ANCHOR_HEIGHT", "0.43")
-        )
         configure_scene_sync_xr_anchor(
             self,
             viewer_mode=VIEWER_MODE,
             host_mode=HOST_MODE,
             active_robot_count=2,
             log_tag="[sonic_cafe]",
-            anchor_position_offset=(0.0, 0.0, cafe_xr_anchor_height)
-            if VIEWER_MODE
-            else None,
         )
-        if VIEWER_MODE:
-            print(
-                "[sonic_cafe] XR anchor height offset -> "
-                f"{cafe_xr_anchor_height:.3f} m "
-                "(ISAACLAB_CAFE_XR_ANCHOR_HEIGHT)"
-            )
         if MIRROR_OBJECTS:
             mirror_reset = SimpleEvent(func=reset_scene_mirror_safe)
             self.event_manager.register("reset_object_self", mirror_reset)
