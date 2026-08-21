@@ -138,23 +138,32 @@ bash deploy.sh --disable-crc-check --input-type keyboard --dds-domain 72 isaac
 [sonic_dds:r2] First complete LowCmd applied: enabled=29/29
 ```
 
-## 启动 Windows Viewer
+## 启动 Win130 AR Viewer
 
-Viewer 不运行 Unitree DDS，只通过 ZMQ 接收场景状态和 reset 事件：
+正式 Viewer 使用 OpenXR/AR，不运行 Unitree DDS，只通过 ZMQ 接收场景状态和 reset 事件。
+先启动 NOLO Link 或 ALVR，等待 SteamVR 显示头显 ready，再从 Win130 交互桌面双击：
+
+```bat
+D:\Isaac\unitree_sim_isaaclab-cafe-v61\run_cafe_viewer_ar_131.local.bat
+```
+
+该本机脚本与 Win130 的 Conveyor AR 启动约定一致：固定连接 Ubuntu Host
+`192.168.1.131:17555`，并将 OpenXR anchor 绑定到 `robot_2` 镜像。它最终调用通用入口：
+
+```bat
+run_cafe_viewer_ar.bat
+```
+
+operator 1 或其他 Host 可直接设置环境变量后调用通用入口：
 
 ```bat
 cd /d D:\Isaac\unitree_sim_isaaclab-cafe-v61
-set ISAACLAB_SCENE_SYNC_PEER_IP=192.168.1.131
-set ISAACLAB_SCENE_SYNC_PORT_BASE=17555
-call run_cafe_viewer.bat
-```
-
-AR 入口：
-
-```bat
+set PIPELINE_HOST_IP=<Ubuntu Host IP>
+set ISAACLAB_XR_ANCHOR_ROBOT_ID=1
 call run_cafe_viewer_ar.bat
-call run_cafe_viewer_ar_robot2.bat
 ```
+
+`run_cafe_viewer.bat` 是非 AR 诊断入口，不作为正式 Viewer 启动方式。
 
 Viewer 必须出现：
 
