@@ -1,8 +1,9 @@
 # 双 SONIC 咖啡场景后续事项
 
 当前版本已通过 Linux 双 deploy、Win130 普通 articulation Viewer、60 秒 50 Hz 锁步和
-F12 reset。正式 Win130 OpenXR/AR Viewer 仍被外部头显链路阻塞，因此总验收为“部分通过”。
-第 1 项阻塞最终通过；其余项目为非阻塞后续事项。
+F12 reset。正式 Win130 OpenXR/AR Viewer 仍被外部头显链路阻塞，Win129 环境部署仍被
+SSH 公钥授权阻塞，因此总验收为“部分通过”。第 1、2 项阻塞最终通过；其余项目为非阻塞
+后续事项。
 
 ## 1. 恢复 Pico 链路并完成 Win130 OpenXR/AR 实跑
 
@@ -18,7 +19,22 @@ F12 reset。正式 Win130 OpenXR/AR Viewer 仍被外部头显链路阻塞，因�
 当前阻塞证据：Pico ping/ARP 不可达，ALVR 未安装，SteamVR/NOLO 仅提供 standby 虚拟 HMD；
 Isaac OpenXR 在 `xrCreateInstance` 阶段退出。失败日志为 `/tmp/cafe-v61-ar-viewer-20260821.log`。
 
-## 2. 补齐 KitchenRoom 法线贴图
+## 2. 完成 Win129 Cafe AR Viewer 环境部署
+
+- [ ] 在 Win129 的实际部署账号中授权 `codex-win129` SSH 公钥，并确认账号名。
+- [ ] 将 `feat/cafe-dual-sonic-on-conveyor-v61` 同步到
+  `D:\Isaac\unitree_sim_isaaclab-cafe-v61`，提交必须与 Win130 完全一致。
+- [ ] 确认工作区干净，canonical G1 外观 USD 为 `40,570,877` 字节且 SHA256 为
+  `01677e6ab1d321e72533dc42393500c17655584d7f272b328857ab5080ef7c98`。
+- [ ] 确认 `run_cafe_viewer_ar_win129.local.bat` 存在，连接
+  `192.168.1.131:17555`，并将 XR anchor 绑定 `robot_1`。
+- [ ] 从 Win129 交互桌面完成首次启动，确认 Viewer 仅使用 ZMQ、两台机器人使用
+  `articulation` 模式且没有第 3 至第 5 台机器人。
+
+当前阻塞证据：`192.168.1.129:22` 可达，但专用密钥对 `nolovr`、`admin` 均返回
+`Permission denied (publickey,password,keyboard-interactive)`；本轮没有猜测密码或覆盖远端目录。
+
+## 3. 补齐 KitchenRoom 法线贴图
 
 - [ ] 从合法的 Lightwheel KitchenRoom 资产包补齐
   `Locomotion/KitchenRoom/Materials/Textures/3d66Model-7443619-files-8.jpg`。
@@ -27,7 +43,7 @@ Isaac OpenXR 在 `xrCreateInstance` 阶段退出。失败日志为 `/tmp/cafe-v6
 
 当前影响：KitchenRoom 个别表面的法线细节缺失；场景创建、关键碰撞、机器人和杯子均正常。
 
-## 3. 重建当前 GPU 对应的 TensorRT engine
+## 4. 重建当前 GPU 对应的 TensorRT engine
 
 - [ ] 删除或归档从其他 GPU 型号生成的旧 `.trt` engine。
 - [ ] 在实际部署 GPU 上分别重新生成 policy 和 encoder engine。
@@ -36,7 +52,7 @@ Isaac OpenXR 在 `xrCreateInstance` 阶段退出。失败日志为 `/tmp/cafe-v6
 
 当前影响：TensorRT 给出可移植性警告；本次两套 deploy 实跑未出现错误、死锁或降频。
 
-## 4. 为未来交互扩充 Cafe 碰撞代理
+## 5. 为未来交互扩充 Cafe 碰撞代理
 
 - [ ] 只有任务明确需要机器人接触墙、柜体、冰箱或咖啡机时，才增加对应简化碰撞代理。
 - [ ] 每个新增代理使用实测 KitchenRoom 几何尺寸，并增加机器人站位、杯子承托和 F12 回归。
@@ -45,7 +61,7 @@ Isaac OpenXR 在 `xrCreateInstance` 阶段退出。失败日志为 `/tmp/cafe-v6
 当前影响：当前端咖啡/交接任务只需要地面和岛台，现有两个代理已经覆盖；机器人可与未建代理的
 背景物体发生视觉穿透，因此不能直接把本配置扩展成厨房自由导航任务。
 
-## 5. 增加自动化外观运行门禁
+## 6. 增加自动化外观运行门禁
 
 - [ ] 在 CI 或 Viewer smoke test 中校验参考外观 USD 的 SHA256：
   `01677e6ab1d321e72533dc42393500c17655584d7f272b328857ab5080ef7c98`。
