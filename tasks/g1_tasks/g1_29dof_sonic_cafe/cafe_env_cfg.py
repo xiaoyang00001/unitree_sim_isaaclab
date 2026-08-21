@@ -402,6 +402,8 @@ class G129DualSonicCafeSceneCfg(G129Dex3SonicSceneCfg):
     """KitchenRoom with the conveyor host/viewer/peer robot topology."""
 
     ground = None
+    # KitchenRoom supplies the scene lighting. Do not stack the base DomeLight.
+    light = None
     background = AssetBaseCfg(
         prim_path="/World/envs/env_.*/Background",
         init_state=AssetBaseCfg.InitialStateCfg(
