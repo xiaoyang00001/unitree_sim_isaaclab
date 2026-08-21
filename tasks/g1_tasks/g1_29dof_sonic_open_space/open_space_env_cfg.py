@@ -268,7 +268,9 @@ class G129SonicWarehouseEnvCfg(G129SonicEnvCfg):
 
     def __post_init__(self):
         super().__post_init__()
-        self.viewer.eye = (7.5, -8.5, 4.5)
+        # Keep the warehouse context in frame while making the lone robot
+        # large enough to inspect from the active Kit viewport.
+        self.viewer.eye = (3.8, -5.0, 2.8)
         self.viewer.lookat = (0.0, 0.0, 1.0)
 
 
