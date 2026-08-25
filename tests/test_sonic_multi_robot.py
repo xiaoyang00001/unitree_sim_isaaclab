@@ -648,9 +648,9 @@ class FiveRobotWiringSourceTest(unittest.TestCase):
             self.sim_source,
         )
 
-    def test_shared_scene_config_defaults_to_three_robot_topology(self) -> None:
+    def test_shared_scene_config_defaults_to_two_robot_topology(self) -> None:
         source = SCENE_SYNC_ENV_PATH.read_text(encoding="utf-8")
-        self.assertIn("ISAACLAB_SONIC_ROBOT_COUNT=3", source)
+        self.assertIn("ISAACLAB_SONIC_ROBOT_COUNT=2", source)
 
 
 if __name__ == "__main__":

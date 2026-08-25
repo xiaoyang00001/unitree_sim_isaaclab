@@ -176,8 +176,9 @@ env cfg 共用，进程环境变量优先于 `configs/scene_sync.env`——别�
 - `ID=1` + `ISAACLAB_HOST_BOTH_ROBOTS=1`：**host 2..5 机器人**——数量由
   `ISAACLAB_SONIC_ROBOT_COUNT` 决定，每台都是 43-DoF 全动力学 SONIC 真身并拥有独立
   `rt[/rN]/*` DDS；动作源自动切 `sonic_dds_host`（`N×129` 维、N 路 ack AND 锁步）。
-  生产 bringup 与共享配置当前默认 `N=3`；robot_4/5 保持原始
-  `g1_43dof_standby_visual_only.usda` 展示站位。需要四/五路联调时显式设置
+  共享配置当前默认 `N=2`；生产一键 bringup 独立默认 `N=3`；robot_4/5 保持原始
+  `g1_43dof_standby_visual_only.usda` 展示站位。手工 host 需要三路时显式设置
+  `ISAACLAB_SONIC_ROBOT_COUNT=3`；四/五路联调时设置
   `PIPELINE_SONIC_ROBOT_COUNT=4|5`（手动 host 对应 `ISAACLAB_SONIC_ROBOT_COUNT=4|5`）。
   完整端口/命名与历史五机能力见 `doc/pipeline_five_robot_sonic_zh.md`。
 

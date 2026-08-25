@@ -21,8 +21,8 @@ DDS 通道。五台能力全开时共使用 15 个动作 term，动作张量为 
 - Windows/Linux viewer 仍是 `ISAACLAB_LOCAL_ROBOT_ID=0`；
 - 原 ID=1/2 对等模式保持双机语义；不要设置场景 ID=3/4/5。
 
-`ISAACLAB_SONIC_ROBOT_COUNT` 支持 `2..5`，便于逐台联调。共享配置和生产 bringup
-默认均为 `3`；设置为 `2` 即回退原双 SONIC 真身，设置为 `4` 或 `5` 才显式启用其余
+`ISAACLAB_SONIC_ROBOT_COUNT` 支持 `2..5`，便于逐台联调。共享配置默认为 `2`，生产一键
+bringup 仍通过独立的 `PIPELINE_SONIC_ROBOT_COUNT` 默认为 `3`；显式设置为 `3`、`4` 或 `5` 时依次启用其余
 站位。未覆盖站位继续使用无物理纯显示资产。额外真身只在
 `ISAACLAB_TOTES_ON_CONVEYOR=1` 的流水线布局中启用；推车布局只有两个站位，即使共享
 配置请求 `5`，EnvCfg、DDS 和 provider 也会一起自动回退到有效数量 `2`。
@@ -392,8 +392,8 @@ ACK mismatch、`sync_waits` 增量均为 0，姿态门禁通过。因此该候�
 `29.717 / 29.100 / 38.650 ms`。三路 timeout、stale、ACK mismatch、`sync_waits`
 增量均为 0，三台姿态健康。
 
-因此生产 bringup 与共享配置默认采用三路 SONIC；robot_4/5 恢复原始 visual-only
-standby。四/五路能力及本文历史数据全部保留，专项联调仍可显式设置
+因此生产一键 bringup 仍默认采用三路 SONIC；共享配置现默认为双路。robot_4/5 恢复原始
+visual-only standby。四/五路能力及本文历史数据全部保留，专项联调仍可显式设置
 `PIPELINE_SONIC_ROBOT_COUNT=4|5`，但不能把它们当成当前生产帧率。另一个接触传感器
 候选也未改变生产语义：`ISAACLAB_CONVEYOR_CONTACT_HISTORY_LENGTH` 默认仍为 `4`，
 current-only 的 `0` 只保留为显式实验值。

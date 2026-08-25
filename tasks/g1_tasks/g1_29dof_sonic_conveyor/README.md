@@ -68,14 +68,15 @@ ISAACLAB_PEER_ROBOT_MODE=visual_lod
 数量覆盖到该站位时，分别生成 SONIC 动力学真身或 `scene_state` 镜像；未覆盖的站位才使用
 `g1_43dof_standby_visual_only.usda`。该回退资产引用同源完整 G1 网格并烘焙默认姿态，
 `Physics/Robot/Sensor` 三组 variant 全关，不含 articulation、关节、刚体、碰撞、执行器或
-传感器。`ISAACLAB_TOTES_ON_CONVEYOR=0` 没有额外三个站位；共享配置仍请求 `3..5` 时，
+传感器。`ISAACLAB_TOTES_ON_CONVEYOR=0` 没有额外三个站位；显式请求 `3..5` 时，
 EnvCfg、DDS 和 provider 会一致自动回退为双机。
 
 额外站位使用固定接管映射，而不是按 standby 数组下标顺序：robot_3 优先接管靠近
 robot_1/2 的原 StandbyRobot2，robot_4 接管原 StandbyRobot1，robot_5 接管原
 StandbyRobot3。因而三机模式只替换近位，另外两台仍保持纯显示资产且不会与真身叠模。
 
-共享配置和一键 bringup 当前默认数量为 `3`。需要恢复四/五路能力时显式传
+共享配置当前默认数量为 `2`；生产一键 bringup 仍独立默认为 `3`。手工 host 需要三路时传
+`ISAACLAB_SONIC_ROBOT_COUNT=3`；需要四/五路能力时显式传
 `PIPELINE_SONIC_ROBOT_COUNT=4|5`；手动 host 使用对应的
 `ISAACLAB_SONIC_ROBOT_COUNT=4|5`。该切换会重建场景与 deploy，不是运行期热更新。
 
