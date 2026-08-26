@@ -14,8 +14,8 @@
   83.3 mm，窄化后支线机身南缘约 19.6697、净距约 275 mm），端头伸到排 B/叉车后面；
 * **不新增任何货架/遮挡件**（用户硬要求）：遮挡只依赖背景既有结构。出生/回生
   点深藏在 s=-3.90（箱心 (-16.66, 20.0534)），遮挡结论见下方「遮挡核算」。
-* 抓取主线与五段 A05 直线支线的有效带宽从 0.90 m 收窄到 0.60 m；A02 弯道
-  保留原宽，作为宽入口到窄直线的过渡，路径中线与插接位置不变。
+* 抓取主线、A02 弯道与五段 A05 直线支线的有效带宽统一从 0.90 m 收窄到
+  0.60 m；A02 采用逐顶点横向形变，路径中线、转弯半径与两端插接位置不变。
 
 ⚠️ 本模块的坐标常量是**绝对世界坐标**（Δ=0.25 已计入），刻意不 import
 conveyor_drive 的 Δ（零依赖单文件可测是设计目标，本地再抄 Δ 又违反"Δ 抄本只有
@@ -27,15 +27,16 @@ conveyor_drive 的 Δ（零依赖单文件可测是设计目标，本地再抄 �
 且道具策略为 ``layout`` 时真正生成：
 
 * =0 推车布局的拖车组 (-5.62, 19.0)（AABB x[-6.09,-5.15] y[18.18,19.82]，随 Δ
-  同移）约 83% 落在弯道占位 x[-7.113,-5.042] y[18.457,20.558] 内，冲突不可微调
+  同移）约 76% 落在窄弯道占位 x[-7.113,-5.233] y[18.457,20.390] 内，冲突不可微调
   回避（挪拖车会破坏 =0 "离带头 0.118 m" 的作业约定）；
 * ``legacy_props`` 回退在 =1 下把空车 pushcart_2 摆在 (-5.4, 19.64363)，
-  约 99% 包含于弯道占位——所以生成门是 "totes_on_conveyor 且 props==layout"，
+  车心仍落在窄弯道占位——所以生成门是 "totes_on_conveyor 且 props==layout"，
   不能只看 =1/=0。
 
 本模块刻意零 Isaac import、零相对 import（普通 unittest 用
 ``importlib.util.spec_from_file_location`` 单文件加载即可验证开关与几何算术）。
-资产路径只给相对段，由 conveyor_env_cfg 拼 isaaclab.utils.assets 的
+A02 窄版资产文件名由本模块给出并从同目录 ``scene_assets`` 加载；A05 源资产路径
+只给相对段，由 conveyor_env_cfg 拼 isaaclab.utils.assets 的
 ``NVIDIA_NUCLEUS_DIR``（本机 resolver 重定向到本地资产包）。
 
 坐标全部是世界系、米。数值来自离线 pxr 实测链（A02/A05 局部 bbox 逐件量过，
@@ -86,7 +87,8 @@ BELT_HEAD_MALE_CENTER_X = -5.617
 PLUG_DEPTH = 0.015  # 公插母 15 mm（族内先例最多 119 mm；对顶才只能留 3 mm 缝）
 
 # ------------------------------------------------------------------
-# 弯道 ConveyorBelt_A02（2.1007×2.0714×1.1663 m，裸厘米资产 ⇒ UsdFileCfg.scale=0.01）
+# 弯道 ConveyorBelt_A02 窄版（1.9325×1.8796×1.1663 m，裸厘米资产
+# ⇒ UsdFileCfg.scale=0.01）
 #
 # 摆位推导（mm，世界系；yaw=-90° 即绕 Z 顺时针 90°，局部 (x,y) → 世界 (y, -x)）：
 # * A02 默认（yaw=0）连通 南(公 y=0 面) + 东(母 x=2097.5 面)；转 -90° 后变
@@ -98,10 +100,7 @@ PLUG_DEPTH = 0.015  # 公插母 15 mm（族内先例最多 119 mm；对顶才只
 #   既有偏差同源，远小于母口孔宽 1151 对公头 1009 的单侧 71 mm 余量）；
 # * z：场景统一偏移 +3.0 mm ⇒ 滚筒顶 772.3、门柱顶 1169.3 与主线严格共面。
 # ------------------------------------------------------------------
-CURVE_ASSET_NVIDIA_RELPATH = (
-    "Assets/DigitalTwin/Assets/Warehouse/Equipment/Conveyors/"
-    "ConveyorBelt_A/ConveyorBelt_A02_PR_NVD_01.usd"
-)
+CURVE_ASSET_FILENAME = "conveyor_belt_a02_narrow_visual.usdc"
 CONVEYOR_UNIT_SCALE = 0.01  # DigitalTwin 资产是裸厘米（mpu=0.01 语义）
 SOURCE_LANE_WIDTH = 0.90
 NARROW_LANE_WIDTH = 0.60
@@ -109,8 +108,9 @@ NARROW_WIDTH_SCALE = NARROW_LANE_WIDTH / SOURCE_LANE_WIDTH
 CURVE_SCALE = (CONVEYOR_UNIT_SCALE,) * 3
 CURVE_POS = (-7.1129, 20.5548, 0.003)
 CURVE_YAW_DEG = -90.0
-# 离线实测世界 AABB（z 上限 1.1693 是南口旁两根门柱；连续挡边只到 0.8012）。
-CURVE_AABB = ((-7.1130, -5.0416), (18.4573, 20.5580), (0.003, 1.1693))
+# 窄版覆写层离线实测世界 AABB（z 上限 1.1693 是南口旁两根门柱；连续挡边只到
+# 0.8012）。横向几何已收窄，中心线、半径及南/西接口的纵向坐标不变。
+CURVE_AABB = ((-7.1130, -5.2334), (18.4573, 20.3898), (0.003, 1.1693))
 # 西向公头端面 x 与西口车道中线 y（=t.y-501.4mm）。
 CURVE_WEST_MALE_TIP_X = -7.1129
 CURVE_WEST_LANE_Y = 20.0534
@@ -189,8 +189,8 @@ BRANCH_ROLLER_WEST_END_X = XLEG_ROLLER_X_RANGES[-1][0]  # -17.0342
 # * 叉车 /Root/forklift：整体 AABB x[-16.087,-14.873] y[15.826,19.321]；北缘
 #   19.321 是**货叉尖**（z≤1.049），车体北缘只到 18.140。与段 5 x 重叠段的
 #   y 净距约 348.7 mm（对货叉尖）/1529.7 mm（对车体）。
-# * +Y 落地墙 SM_WallA_6M16/17 南面 23.606：支线北缘约 20.437 留 3.169 m、弯道
-#   北缘 20.558 留 3.048 m；
+# * +Y 落地墙 SM_WallA_6M16/17 南面 23.606：支线北缘约 20.437 留 3.169 m、窄弯道
+#   北缘 20.390 留 3.216 m；
 # * 交通锥 Cone_4 x[-11.07,-10.74] y[21.23,21.56]：与段 3 x 几乎相切但 y 净距
 #   约 0.793 m；Cone_3 在弯道南侧，均无碰撞。
 # * 柱 SM_PillarPartA_9M10_1473（视觉上像挡在 x≈-13.7 的 9m 大件）：落地柱身
@@ -375,9 +375,9 @@ def resolve_endless_intake(
         reason = f"{ENDLESS_MODE_ENV}=off"
         return EndlessIntakeConfig(mode=mode, requested=False, enabled=False, disabled_reason=reason)
     if not totes_on_conveyor:
-        reason = "=0 推车布局：作业组 (-5.62, 19.0) 约 83% 落在弯道占位 x[-7.113,-5.042] y[18.457,20.558] 内"
+        reason = "=0 推车布局：作业组 (-5.62, 19.0) 约 76% 落在窄弯道占位 x[-7.113,-5.233] y[18.457,20.390] 内"
         return EndlessIntakeConfig(mode=mode, requested=True, enabled=False, disabled_reason=reason)
     if str(props_mode).strip().lower() == "legacy_props":
-        reason = "legacy_props 回退：空车 pushcart_2 (-5.4, 19.64363) 约 99% 落在弯道占位内"
+        reason = "legacy_props 回退：空车 pushcart_2 (-5.4, 19.64363) 的车心落在窄弯道占位内"
         return EndlessIntakeConfig(mode=mode, requested=True, enabled=False, disabled_reason=reason)
     return EndlessIntakeConfig(mode=mode, requested=True, enabled=True, disabled_reason="")

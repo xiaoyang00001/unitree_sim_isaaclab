@@ -63,7 +63,7 @@ class EndlessIntakeModeTest(unittest.TestCase):
             )
 
     def test_pushcart_layout_never_generates_the_curve(self) -> None:
-        """=0 的拖车组 (-5.62, 19.0) 约 83% 落在弯道占位内，必须被布局门拦下。"""
+        """=0 的拖车组 (-5.62, 19.0) 约 76% 落在窄弯道内，必须被布局门拦下。"""
 
         cfg = _EI.resolve_endless_intake(
             {"ISAACLAB_CONVEYOR_ENDLESS": "on"}, totes_on_conveyor=False, props_mode="layout"
@@ -140,7 +140,7 @@ class EndlessIntakeGeometryCrossTest(unittest.TestCase):
         self.assertAlmostEqual(support_y0 - visual_y0, visual_y1 - support_y1, places=4)
 
     def test_curve_and_xleg_stay_clear_of_the_north_wall(self) -> None:
-        # 窄支线北缘约 20.437、弯道北缘 20.558，均距墙超过 2.9 m。
+        # 窄支线北缘约 20.437、窄弯道北缘 20.390，均距墙超过 2.9 m。
         for name, aabb in (("curve", _EI.CURVE_AABB), *(
             (f"xleg{i+1}", a) for i, a in enumerate(_EI.XLEG_AABBS)
         )):

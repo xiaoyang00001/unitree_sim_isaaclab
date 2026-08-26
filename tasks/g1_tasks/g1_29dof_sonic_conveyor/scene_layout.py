@@ -602,8 +602,8 @@ def resolve_scene_layout(environ: Mapping[str, str]) -> ConveyorSceneLayout:
     # Δ=0.25 下拖车组随线到 (-5.62, 19.0)：拖车实测占位 y 跨度 0.824（spawn
     # scale 0.5）⇒ y[18.18, 19.82]，离带端 18.472 仍是 0.118 m（相对几何不变）、
     # 离 +Y 墙面 23.606 有 4.194 m。
-    # ⚠️ 该占位与西拐弯道 footprint x[-7.113,-5.042] y[18.457,20.558] 大面积重叠
-    #    （相对几何同 Δ=0，约 83% 被吞没），弯道组必须只在 =1 流水线布局生成（见
+    # ⚠️ 该占位与西拐窄弯道 footprint x[-7.113,-5.233] y[18.457,20.390] 大面积重叠
+    #    （相对几何同 Δ=0，约 76% 被吞没），弯道组必须只在 =1 流水线布局生成（见
     #    endless_intake 的生成门与 conveyor_env_cfg 的门控断言）。
     cart_group_y = _env_float(environ, "ISAACLAB_CART_GROUP_Y", _shifted(18.75))
     robot_side_offset = _env_float(environ, "ISAACLAB_ROBOT_SIDE_OFFSET", 0.80)

@@ -680,9 +680,12 @@ def _make_endless_visual_cfg(
     yaw_deg: float = 0.0,
     scale: tuple[float, float, float] | None = None,
 ) -> AssetBaseCfg:
-    """入口弯道视觉件：DigitalTwin 资产离线审计 coll=0/rigid=0（纯视觉），
-    一律不传 rigid_props/collision_props；裸厘米 ⇒ 由调用方传 scale=0.01
-    （不在薄层里写 xformOp:scale，会被 spawner 重写挤掉）。"""
+    """入口弯道/支线视觉件：离线审计 coll=0/rigid=0（纯视觉）。
+
+    一律不传 rigid_props/collision_props；A02 本地稀疏覆写层与 A05 源资产都保留
+    裸厘米坐标，由调用方传 scale=0.01（不在薄层里写 xformOp:scale，避免被
+    spawner 重写挤掉）。
+    """
 
     spawn = UsdFileCfg(usd_path=usd_url)
     if scale is not None:
@@ -752,7 +755,7 @@ def _make_endless_path_support_cfg(prim_name: str) -> AssetBaseCfg:
     )
 
 
-_ENDLESS_CURVE_USD = f"{NVIDIA_NUCLEUS_DIR}/{endless_intake.CURVE_ASSET_NVIDIA_RELPATH}"
+_ENDLESS_CURVE_USD = str(_ASSETS_DIR / endless_intake.CURVE_ASSET_FILENAME)
 _ENDLESS_XLEG_USD = f"{NVIDIA_NUCLEUS_DIR}/{endless_intake.XLEG_ASSET_NVIDIA_RELPATH}"
 # legacy 默认使用一体托面；surface_velocity 仍保留可单独施加 -Y 表面速度的主线
 # Cuboid（该实验后端本来就不驱动支线/弧段）。
@@ -867,7 +870,8 @@ def _log_scene_layout() -> None:
         )
     if ENDLESS_INTAKE.enabled:
         print(
-            f"{tag}   入口形态: 看不到头（A02 西拐弯道 + A05×{endless_intake.XLEG_COUNT} X 支线，"
+            f"{tag}   入口形态: 看不到头（0.60m A02 西拐弯道 + "
+            f"0.60m A05×{endless_intake.XLEG_COUNT} X 支线，"
             "复用背景货架、零新增遮挡件）"
             f" [ISAACLAB_CONVEYOR_ENDLESS={ENDLESS_INTAKE.mode}]"
         )
@@ -1519,9 +1523,10 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
 
     # ------------------------------------------------------------------
     # 看不到头的入料端（=1 且 layout 道具时生成；开关/几何见 endless_intake）：
-    # A02 原宽弯道套住带头公头向西拐 90°，五段横向收窄的 A05 短直段接成 X 支线，
-    # 弯道作为宽入口到 0.60 m 窄直线的过渡；支线从背景货架
-    # 排 B 北侧擦过、端头伸到排 B/叉车后面（Δ=0.25 整体北移换来的通道）。
+    # A02 窄弯道套住带头公头向西拐 90°，五段同宽的 A05 短直段接成 X 支线；
+    # A02 只收横向网格，中心线、R=1.4 m 半径和两端接口纵向位置保持不动。
+    # 弯道与主线/支线统一为 0.60 m 有效带宽；支线从背景货架排 B 北侧擦过、
+    # 端头伸到排 B/叉车后面（Δ=0.25 整体北移换来的通道）。
     # 全部 AssetBaseCfg（scene.extras），输送机件纯视觉（coll=0/rigid=0，
     # 裸厘米 ⇒ scale=0.01）；legacy 用一张连续静态托面覆盖主线/弧段/支线，
     # surface_velocity 实验后端仍用可单独驱动的主线 + 两块扩展 Cuboid。

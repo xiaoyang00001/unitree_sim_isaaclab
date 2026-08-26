@@ -1,0 +1,14 @@
+{
+  "generator": "tools/build_narrow_conveyor_curve.py",
+  "source_asset": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/NVIDIA/Assets/DigitalTwin/Assets/Warehouse/Equipment/Conveyors/ConveyorBelt_A/ConveyorBelt_A02_PR_NVD_01.usd",
+  "output_asset": "conveyor_belt_a02_narrow_visual.usdc",
+  "source_geometry_sha256": "0ec93c48a7afc2e889f3c11ae56a272780166b568374a5e9c7f2cc64a29896a8",
+  "source_mesh_count": 57,
+  "source_point_count": 145122,
+  "source_lane_width_source_units": 90.0,
+  "target_lane_width_source_units": 60.0,
+  "centerline_source_units": {
+    "corner_center_xy": [190.14, 9.59],
+    "radius": 140.0
+  }
+}
