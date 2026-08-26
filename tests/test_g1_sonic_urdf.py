@@ -80,7 +80,7 @@ class SonicG143DoFUrdfTest(unittest.TestCase):
             set(G1_29DOF_DDS_JOINT_ORDER) | set(DEX3_HAND_JOINT_NAMES),
         )
 
-    def test_training_sole_collisions_and_primitive_hand_proxies(self) -> None:
+    def test_training_sole_collisions_and_flat_distal_hand_pads(self) -> None:
         left_sole_collisions = self._link("left_ankle_roll_link").findall("collision")
         right_sole_collisions = self._link("right_ankle_roll_link").findall("collision")
         self.assertEqual(len(left_sole_collisions), 7)
@@ -104,25 +104,59 @@ class SonicG143DoFUrdfTest(unittest.TestCase):
             ]
             self.assertEqual(generated_origins, expected_origins)
 
+        terminal_link_suffixes = ("thumb_2_link", "middle_1_link", "index_1_link")
         hand_links = [
             link
             for link in self.root.findall("link")
             if link.get("name", "").startswith(("left_hand_", "right_hand_"))
         ]
         self.assertEqual(len(hand_links), 16)
+        collision_count = 0
         for link in hand_links:
             link_name = link.get("name", "")
             collisions = link.findall("collision")
-            self.assertEqual(len(collisions), 1, link_name)
-            geometry = collisions[0].find("geometry")
-            self.assertIsNotNone(geometry, link_name)
-            self.assertIsNone(geometry.find("mesh"), link_name)
+            collision_count += len(collisions)
+            expected_collision_count = (
+                2 if link_name.endswith(terminal_link_suffixes) else 1
+            )
+            self.assertEqual(len(collisions), expected_collision_count, link_name)
+            expected_names = {f"{link_name}_physics_proxy"}
+            if link_name.endswith(terminal_link_suffixes):
+                expected_names.add(f"{link_name}_grip_pad")
+            self.assertEqual(
+                {collision.get("name") for collision in collisions},
+                expected_names,
+                link_name,
+            )
+
+            for collision in collisions:
+                geometry = collision.find("geometry")
+                self.assertIsNotNone(geometry, link_name)
+                self.assertIsNone(geometry.find("mesh"), link_name)
+
+            physics_proxy = next(
+                collision
+                for collision in collisions
+                if collision.get("name") == f"{link_name}_physics_proxy"
+            )
+            proxy_geometry = physics_proxy.find("geometry")
             if link_name.endswith(("palm_link", "thumb_0_link")):
-                self.assertIsNotNone(geometry.find("box"), link_name)
-                self.assertIsNone(geometry.find("cylinder"), link_name)
+                self.assertIsNotNone(proxy_geometry.find("box"), link_name)
+                self.assertIsNone(proxy_geometry.find("cylinder"), link_name)
             else:
-                self.assertIsNotNone(geometry.find("cylinder"), link_name)
-                self.assertIsNone(geometry.find("box"), link_name)
+                self.assertIsNotNone(proxy_geometry.find("cylinder"), link_name)
+                self.assertIsNone(proxy_geometry.find("box"), link_name)
+
+            if link_name.endswith(terminal_link_suffixes):
+                grip_pad = next(
+                    collision
+                    for collision in collisions
+                    if collision.get("name") == f"{link_name}_grip_pad"
+                )
+                self.assertIsNotNone(grip_pad.find("geometry/box"), link_name)
+                self.assertIsNone(grip_pad.find("geometry/cylinder"), link_name)
+
+        self.assertEqual(collision_count, 22)
 
         left_thumb_origin = self._link("left_hand_thumb_1_link").find(
             "collision/origin"
@@ -132,6 +166,73 @@ class SonicG143DoFUrdfTest(unittest.TestCase):
         )
         self.assertEqual(left_thumb_origin.get("xyz"), "0 -0.024 0")
         self.assertEqual(right_thumb_origin.get("xyz"), "0 0.024 0")
+
+        for side, thumb_proxy_y, thumb_pad_y, finger_pad_y in (
+            ("left", "-0.0225", "-0.029", "-0.010"),
+            ("right", "0.0225", "0.029", "0.010"),
+        ):
+            thumb_link = self._link(f"{side}_hand_thumb_2_link")
+            thumb_proxy = next(
+                collision
+                for collision in thumb_link.findall("collision")
+                if collision.get("name") == f"{side}_hand_thumb_2_link_physics_proxy"
+            )
+            self.assertEqual(
+                thumb_proxy.find("origin").attrib,
+                {"xyz": f"0 {thumb_proxy_y} 0", "rpy": "1.57079632679 0 0"},
+            )
+            self.assertEqual(
+                thumb_proxy.find("geometry/cylinder").attrib,
+                {"radius": "0.0115", "length": "0.036"},
+            )
+
+            thumb_pad = next(
+                collision
+                for collision in thumb_link.findall("collision")
+                if collision.get("name") == f"{side}_hand_thumb_2_link_grip_pad"
+            )
+            self.assertEqual(
+                thumb_pad.find("origin").get("xyz"),
+                f"0.010 {thumb_pad_y} 0",
+            )
+            self.assertEqual(thumb_pad.find("origin").get("rpy"), "0 0 0")
+            self.assertEqual(
+                thumb_pad.find("geometry/box").get("size"),
+                "0.004 0.030 0.018",
+            )
+
+            for finger in ("middle", "index"):
+                distal_link = self._link(f"{side}_hand_{finger}_1_link")
+                distal_proxy = next(
+                    collision
+                    for collision in distal_link.findall("collision")
+                    if collision.get("name")
+                    == f"{side}_hand_{finger}_1_link_physics_proxy"
+                )
+                self.assertEqual(
+                    distal_proxy.find("origin").attrib,
+                    {"xyz": "0.0225 0 0", "rpy": "0 1.57079632679 0"},
+                )
+                self.assertEqual(
+                    distal_proxy.find("geometry/cylinder").attrib,
+                    {"radius": "0.0115", "length": "0.036"},
+                )
+
+                distal_pad = next(
+                    collision
+                    for collision in distal_link.findall("collision")
+                    if collision.get("name")
+                    == f"{side}_hand_{finger}_1_link_grip_pad"
+                )
+                self.assertEqual(
+                    distal_pad.find("origin").get("xyz"),
+                    f"0.029 {finger_pad_y} 0",
+                )
+                self.assertEqual(distal_pad.find("origin").get("rpy"), "0 0 0")
+                self.assertEqual(
+                    distal_pad.find("geometry/box").get("size"),
+                    "0.030 0.004 0.018",
+                )
 
     def test_body_limits_are_copied_and_hand_limits_are_preserved(self) -> None:
         for side in ("left", "right"):

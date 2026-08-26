@@ -12,7 +12,8 @@ temporary URDF with the parts that matter for the current validation phase:
   the exact SONIC training URDF;
 * body inertias remain identical to the articulated source/training model;
 * Dex3 visuals keep the requested STL meshes, while dynamic collision uses
-  low-complexity palm boxes and finger capsules suitable for PhysX contact.
+  low-complexity palm boxes, rounded finger capsules, and thin flat pads on the
+  distal grasp faces suitable for stable PhysX carton contact.
 
 Only the generated file is written.  The two GR00T source URDFs and their mesh
 directories remain untouched.
@@ -50,6 +51,18 @@ DEX3_HAND_JOINT_NAMES = (
 
 _HAND_LINK_PREFIXES = ("left_hand_", "right_hand_")
 _OUTPUT_FILE_NAME = "g1_29dof_with_hand_rev_1_0_sonic_isaaclab.urdf"
+
+# The distal STL envelopes extend about 59 mm along their link axis.  Keep the
+# rounded capsule as the full-link envelope and add a centered 30 x 18 mm pad
+# only on the inward grasp face.  Its 4 mm thickness puts the working face at
+# 12 mm from the link axis, 0.5 mm proud of the 11.5 mm capsule, so the flat
+# patch contacts a carton first while rounded edges still handle glancing
+# contact.  The pad stays inside the visual tip and joint-side bounds.
+_DEX3_DISTAL_PAD_AXIAL_CENTER = 0.029
+_DEX3_DISTAL_PAD_NORMAL_CENTER = 0.010
+_DEX3_DISTAL_PAD_LENGTH = 0.030
+_DEX3_DISTAL_PAD_THICKNESS = 0.004
+_DEX3_DISTAL_PAD_HEIGHT = 0.018
 
 
 def _user_scoped_suffix() -> str:
@@ -261,11 +274,12 @@ def _append_collision(
     rpy: str,
     geometry_tag: str,
     geometry_attributes: dict[str, str],
+    name_suffix: str = "physics_proxy",
 ) -> None:
     collision = ET.SubElement(
         link,
         "collision",
-        {"name": f"{link.get('name', 'dex3')}_physics_proxy"},
+        {"name": f"{link.get('name', 'dex3')}_{name_suffix}"},
     )
     ET.SubElement(collision, "origin", {"xyz": xyz, "rpy": rpy})
     geometry = ET.SubElement(collision, "geometry")
@@ -277,8 +291,9 @@ def _append_dex3_collision_proxy(link: ET.Element) -> None:
 
     The URDF importer is configured with ``replace_cylinders_with_capsules``;
     therefore finger cylinders become rounded PhysX capsules in the generated
-    USD.  The proxies are deliberately inset from the visual STL envelope to
-    avoid adjacent-link contact chatter while retaining useful object contact.
+    USD.  Each distal link additionally gets one thin box on its inward face,
+    slightly proud of the capsule so carton contact starts on a planar patch.
+    The capsule remains as a rounded fallback for tip and glancing contact.
     """
 
     link_name = link.get("name", "")
@@ -326,6 +341,23 @@ def _append_dex3_collision_proxy(link: ET.Element) -> None:
             geometry_tag="cylinder",
             geometry_attributes={"radius": "0.0115", "length": "0.036"},
         )
+        _append_collision(
+            link,
+            xyz=(
+                f"{_DEX3_DISTAL_PAD_NORMAL_CENTER:.3f} "
+                f"{thumb_y_sign * _DEX3_DISTAL_PAD_AXIAL_CENTER:.3f} 0"
+            ),
+            rpy="0 0 0",
+            geometry_tag="box",
+            geometry_attributes={
+                "size": (
+                    f"{_DEX3_DISTAL_PAD_THICKNESS:.3f} "
+                    f"{_DEX3_DISTAL_PAD_LENGTH:.3f} "
+                    f"{_DEX3_DISTAL_PAD_HEIGHT:.3f}"
+                )
+            },
+            name_suffix="grip_pad",
+        )
         return
 
     if link_name.endswith(("middle_0_link", "index_0_link")):
@@ -339,12 +371,30 @@ def _append_dex3_collision_proxy(link: ET.Element) -> None:
         return
 
     if link_name.endswith(("middle_1_link", "index_1_link")):
+        finger_pad_y_sign = -1.0 if is_left else 1.0
         _append_collision(
             link,
             xyz="0.0225 0 0",
             rpy="0 1.57079632679 0",
             geometry_tag="cylinder",
             geometry_attributes={"radius": "0.0115", "length": "0.036"},
+        )
+        _append_collision(
+            link,
+            xyz=(
+                f"{_DEX3_DISTAL_PAD_AXIAL_CENTER:.3f} "
+                f"{finger_pad_y_sign * _DEX3_DISTAL_PAD_NORMAL_CENTER:.3f} 0"
+            ),
+            rpy="0 0 0",
+            geometry_tag="box",
+            geometry_attributes={
+                "size": (
+                    f"{_DEX3_DISTAL_PAD_LENGTH:.3f} "
+                    f"{_DEX3_DISTAL_PAD_THICKNESS:.3f} "
+                    f"{_DEX3_DISTAL_PAD_HEIGHT:.3f}"
+                )
+            },
+            name_suffix="grip_pad",
         )
         return
 
