@@ -243,7 +243,7 @@ class ConveyorLayoutNorthShiftTest(unittest.TestCase):
 
 
 class BeltBoxLayoutTest(unittest.TestCase):
-    """箱/包队列默认沿西拐入口弯道路径排 17 槽，十种外观带 seed 混排。"""
+    """箱/包队列默认沿西拐入口弯道路径排 17 槽，八种窄带安全外观带 seed 混排。"""
 
     def test_default_conveyor_layout_uses_seventeen_slots_along_the_path(self) -> None:
         layout = resolve_scene_layout({})
@@ -253,23 +253,23 @@ class BeltBoxLayoutTest(unittest.TestCase):
             layout.belt_box_names,
             tuple(f"belt_box_{i + 1}" for i in range(17)),
         )
-        # 默认 seed 的 golden：队首两箱固定，后 15 件按完整资产池分轮稳定打乱。
+        # 默认 seed 的 golden：队首两箱固定，后 15 件按八种小箱池分轮稳定打乱。
         expected_kinds = (
             "d01",
             "d02",
+            "d05",
+            "parcel_a02",
             "parcel_a01",
+            "d02",
+            "d03",
             "d04",
             "parcel_a03",
-            "d05",
-            "d02",
-            "c02",
-            "parcel_a02",
-            "d03",
             "d01",
-            "c01",
+            "d05",
+            "d03",
             "d04",
             "parcel_a02",
-            "c02",
+            "parcel_a03",
             "parcel_a01",
             "d01",
         )
@@ -303,19 +303,19 @@ class BeltBoxLayoutTest(unittest.TestCase):
             (
                 0.19,
                 0.19,
+                0.19,
+                0.2263,
                 0.20085,
+                0.19,
+                0.2063,
                 0.19,
                 0.1609,
                 0.19,
                 0.19,
-                0.25,
-                0.2263,
                 0.2063,
                 0.19,
-                0.25,
-                0.19,
                 0.2263,
-                0.25,
+                0.1609,
                 0.20085,
                 0.19,
             ),
@@ -338,8 +338,38 @@ class BeltBoxLayoutTest(unittest.TestCase):
         pool = _LAYOUT_MODULE.DEFAULT_BELT_BOX_RANDOM_POOL
 
         self.assertEqual(keys[:2], ["d01", "d02"])
-        self.assertEqual(len(pool), 10)
+        self.assertEqual(
+            pool,
+            (
+                "d01",
+                "d02",
+                "d03",
+                "d04",
+                "d05",
+                "parcel_a01",
+                "parcel_a02",
+                "parcel_a03",
+            ),
+        )
+        self.assertNotIn("c01", keys)
+        self.assertNotIn("c02", keys)
+        for key in pool:
+            edge_clearance = (
+                _LAYOUT_MODULE.BELT_BOX_BELT_WIDTH
+                - _LAYOUT_MODULE.BELT_BOX_KINDS[key].width_x
+            ) * 0.5
+            self.assertGreaterEqual(edge_clearance, 0.07)
         self.assertCountEqual(keys[2 : 2 + len(pool)], pool)
+
+    def test_explicit_pattern_can_still_opt_in_to_the_c_boxes(self) -> None:
+        """C01/C02 只退出生产默认池，显式回退和 A/B 调试能力仍保留。"""
+
+        layout = resolve_scene_layout({"ISAACLAB_BELT_BOX_PATTERN": "c01,c02"})
+
+        self.assertEqual(
+            [kind.key for kind in layout.belt_box_kinds],
+            ["c01", "c02"] * 8 + ["c01"],
+        )
 
     def test_seed_is_stable_and_only_changes_the_tail(self) -> None:
         seed_env = _LAYOUT_MODULE.BELT_BOX_RANDOM_SEED_ENV
@@ -367,6 +397,7 @@ class BeltBoxLayoutTest(unittest.TestCase):
                 halves = layout.belt_box_half_lengths
 
                 self.assertEqual(keys[:2], ["d01", "d02"])
+                self.assertTrue(set(keys[2:]).issubset(pool))
                 self.assertCountEqual(keys[2 : 2 + len(pool)], pool)
                 self.assertGreaterEqual(
                     _SLOTS_DEFAULT[-1] - halves[-1], _EI_MODULE.PATH_S_MIN
@@ -668,13 +699,13 @@ class BeltBoxLayoutTest(unittest.TestCase):
             resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_PITCH": "0.37"})
 
         # 0.40 对全 D01 够（所需 0.19+0.19=0.38）；默认 seed 的最宽相邻对
-        # c02/parcel_a02 需要 0.25+0.2263=0.4763。
+        # parcel_a02/parcel_a01 需要 0.2263+0.20085=0.42715。
         resolve_scene_layout(
             {"ISAACLAB_BELT_BOX_PATTERN": "d01", "ISAACLAB_BELT_BOX_SPAWN_PITCH": "0.40"}
         )
-        with self.assertRaisesRegex(ValueError, "c02/parcel_a02"):
-            resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_PITCH": "0.47"})
-        resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_PITCH": "0.48"})
+        with self.assertRaisesRegex(ValueError, "parcel_a02/parcel_a01"):
+            resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_PITCH": "0.42"})
+        resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_PITCH": "0.43"})
 
     def test_lead_box_on_the_workstation_fails_fast(self) -> None:
         with self.assertRaisesRegex(ValueError, "压在工位"):
@@ -708,19 +739,20 @@ class BeltBoxLayoutTest(unittest.TestCase):
         """间距、行程、数量此消彼长：只调大 pitch 而不让出空间就会被拦住。
 
         弯道形态默认 17 箱的等距 pitch 上限为 0.94625（队尾缘顶到支线可用端
-        s_min=-4.27）：0.94 放得下，0.95 顶穿。显式 COUNT=5 时上限约 3.792，
-        pitch=3.79 仍放得下、3.8 顶穿。直线回退维持旧的 1.0 拦截。
+        s_min=-4.27）：0.94 放得下，0.95 顶穿。显式 COUNT=5 时队尾为
+        parcel_a01，上限约 3.782，pitch=3.78 仍放得下、3.79 顶穿。直线回退
+        维持旧的 1.0 拦截。
         """
 
         resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_PITCH": "0.94"})
         with self.assertRaisesRegex(ValueError, "悬出支线带面"):
             resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_PITCH": "0.95"})
         resolve_scene_layout(
-            {"ISAACLAB_BELT_BOX_COUNT": "5", "ISAACLAB_BELT_BOX_SPAWN_PITCH": "3.79"}
+            {"ISAACLAB_BELT_BOX_COUNT": "5", "ISAACLAB_BELT_BOX_SPAWN_PITCH": "3.78"}
         )
         with self.assertRaisesRegex(ValueError, "悬出支线带面"):
             resolve_scene_layout(
-                {"ISAACLAB_BELT_BOX_COUNT": "5", "ISAACLAB_BELT_BOX_SPAWN_PITCH": "3.8"}
+                {"ISAACLAB_BELT_BOX_COUNT": "5", "ISAACLAB_BELT_BOX_SPAWN_PITCH": "3.79"}
             )
         with self.assertRaisesRegex(ValueError, "悬出带面"):
             resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_PITCH": "1.0", **_ENDLESS_OFF})

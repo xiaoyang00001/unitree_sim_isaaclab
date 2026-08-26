@@ -527,8 +527,8 @@ CONVEYOR_DRIVE = resolve_conveyor_drive(
     mirror_objects=MIRROR_OBJECTS,
     default_y_stop=SCENE_LAYOUT.conveyor_y_stop,
     # 移动带面在期望停位上游 handoff_offset 处结束，取作业对象沿带方向的半长。
-    # 流水线布局有十种箱/包，取**队首**那个（它才是停在工位上的那个）；推车布局
-    # 仍是原尺寸塑料筐（0.20）。
+    # 流水线布局共注册十种箱/包（默认随机池使用八种小件），取**队首**那个
+    # （它才是停在工位上的那个）；推车布局仍是原尺寸塑料筐（0.20）。
     default_handoff_offset=(
         (BELT_BOX_HALF_LENGTHS[0] if BELT_BOX_HALF_LENGTHS else 0.19)
         if TOTES_ON_CONVEYOR
@@ -837,7 +837,7 @@ def _log_scene_layout() -> None:
         f" robot_2=({ROBOT_2_X:.3f},{ROBOT_2_WORKSTATION_Y:.3f})"
         f" | 流水线中线 x={BELT_X_CENTER:.3f} 有效宽={BELT_WIDTH:.2f}m 入料端 y={BELT_Y_MAX:.3f}"
         f" | 整体北移 Δ={CONVEYOR_NORTH_SHIFT_Y:.2f}"
-        "（支线越过货架排 B 所需；wrapper 组变换/装饰/地贴同 Δ）"
+        "（支线越过货架排 B 所需；wrapper 组变换/带面装饰同 Δ，地面标识已移除）"
     )
     if STANDBY_ROBOT_POSES:
         _active_extra_xy = " / ".join(
@@ -1103,8 +1103,9 @@ def _make_belt_box_spawn_cfg(object_name: str, kind) -> UsdFileCfg:
     """流水线纸箱：v61 同款视觉资产 + convexHull 碰撞。
 
     ``kind`` 是 ``scene_layout.BeltBoxKind``，决定用哪份物理封装和质量。默认队首是
-    D01 / 顶部压皱的 D02，后续从 C01/C02、D01~D05 和三种程序化软包中做平衡
-    随机；十种都共用同一套刚体、碰撞和权威/镜像分流逻辑。
+    D01 / 顶部压皱的 D02，后续从 D01~D05 和三种程序化软包中做平衡随机；
+    C01/C02 只在显式 PATTERN 中启用。十种都共用同一套刚体、碰撞和权威/镜像
+    分流逻辑。
 
     刻意**不**就地提升背景 USD 里的 ``ConveyorBelt_Box_XX`` / ``KLT_Bin_XX``：那些
     Prim 带的是 triangle-mesh 碰撞（PhysX 对动态刚体只能退化成凸包 fallback 并刷

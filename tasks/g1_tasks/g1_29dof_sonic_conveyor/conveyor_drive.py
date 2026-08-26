@@ -35,9 +35,9 @@ DRIVE_MODES = (DRIVE_MODE_LEGACY, DRIVE_MODE_SURFACE_VELOCITY)
 #
 # ⚠️ 出生点/回收线/判据/布局经 _shifted 管线自动跟随本常量。几何位移写在背景
 #    clean wrapper warehouse-simple6_v61_visual_only.usda 的 over "ConveyorBelt"
-#    组变换 + 15 件带面装饰 + 3 条地贴（世界 y +Δ ≡ 背景局部 x +Δ，因为背景
-#    挂载时绕 Z 转了 +90°）；改本常量必须同步重写 wrapper 的 override 并重钉
-#    conveyor_workcell_lite.manifest.json 的 source sha。
+#    组变换 + 15 件带面装饰（世界 y +Δ ≡ 背景局部 x +Δ，因为背景挂载时绕 Z
+#    转了 +90°）；地面标识已全部失活，不再需要位移 override。改本常量必须同步
+#    重写 wrapper 的 override 并重钉 conveyor_workcell_lite.manifest.json 的 source sha。
 # ⚠️ legacy_v61 裸 v61 回退档不含位移（Δ=0 几何），Δ≠0 期间它与代码常量错位
 #    0.25 m，只可作视觉参考、不可作功能 A/B 基线。
 # ⚠️ scene_layout.py 为保持零相对 import 抄了一份 Δ（抄本共两处），
@@ -47,8 +47,9 @@ DRIVE_MODES = (DRIVE_MODE_LEGACY, DRIVE_MODE_SURFACE_VELOCITY)
 CONVEYOR_NORTH_SHIFT_Y = 0.25
 
 # 三段 ConveyorBelt_A08 原始可用滚轮面宽 0.90 m。本任务把三段视觉沿横向等比
-# 收窄到 0.60 m：最宽 C01/C02 箱为 0.50 m，居中后两侧各留 50 mm；同时缩短
-# 双机手到箱心的无效跨距。BELT_Y_*_BASE 是北移前的实测值，运行值 = 基准 + Δ。
+# 收窄到 0.60 m：生产默认最宽的 parcel_a02 为 0.4526 m，居中后两侧各留
+# 73.7 mm；0.50 m 的 C01/C02 只供显式 PATTERN 回退。同时缩短双机手到箱心的
+# 无效跨距。BELT_Y_*_BASE 是北移前的实测值，运行值 = 基准 + Δ。
 BELT_X_CENTER = -5.62
 BELT_SOURCE_WIDTH = 0.90
 BELT_WIDTH = 0.60

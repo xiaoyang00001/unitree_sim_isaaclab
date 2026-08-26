@@ -216,10 +216,9 @@ class ConveyorNorthShiftTest(unittest.TestCase):
             'uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]',
             body,
         )
-        # 三条地面标线是 /Root 下的兄弟 prim，不跟组走，必须各自 +Δ。
-        self.assertIn(f'over "FloorZone_KeepClear"\n    {{\n        double3 xformOp:translate = ({shift:g}, 0.94, 0.01)', layer)
-        self.assertIn(f'over "FloorZone_Robot"\n    {{\n        double3 xformOp:translate = ({4.5 + shift:g}, 1.5, 0.01)', layer)
-        self.assertIn(f'over "Stripe_Conv1"\n    {{\n        double3 xformOp:translate = ({1.0 + shift:g}, 2, 0.01)', layer)
+        # 地面标线已按场景精简要求退出组合，不再需要随流水线北移。
+        for marker in ("FloorZone_KeepClear", "FloorZone_Robot", "Stripe_Conv1"):
+            self.assertIn(f'over "{marker}" (active = false) {{}}', layer)
         # 15 件带面装饰物（active=false 但保留回退路径）各自 +Δ：抽两件锚点验证。
         self.assertIn(f"double3 xformOp:translate = ({-2.5 + shift:g}, 0.937, 0.633)", layer)
         self.assertIn(f"double3 xformOp:translate = ({4.19 + shift:g}, 0.937, 0.633)", layer)
