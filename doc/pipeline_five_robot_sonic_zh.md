@@ -4,16 +4,15 @@
 
 `Isaac-G1-29DoF-Sonic-Conveyor` 的五个站位都具备在同一个 host 进程中升级为
 43-DoF SONIC 动力学机器人的能力。当前生产默认收敛为三路：`robot_1..3` 是 SONIC
-真身，`robot_4/5` 恢复原始无物理纯显示 standby；需要专项联调时仍可把第 4、5 个
-站位逐台升级为真身。`robot_3`、`robot_4`、`robot_5` 复用原三台纯显示站位的位置和
+真身，`robot_4/5` 站位为空；需要专项联调时仍可把第 4、5 个
+站位逐台启用为真身。`robot_3`、`robot_4`、`robot_5` 沿用原额外站位的位置和
 朝向，只有数量覆盖时才具备独立 articulation、执行器、足底接触传感器、动作、观测及
 DDS 通道。五台能力全开时共使用 15 个动作 term，动作张量为 `5 × 43 × 3 = 645` 维。
 
-额外站位采用固定 ID 映射，并让 `robot_3` 优先接管近位：`robot_3` 接管原
-`StandbyRobot2` 近位 `(-6.70, 17.95)`、朝 `+X`；`robot_4` 接管原
-`StandbyRobot1` 远位 `(-12.70, 18.9534)`、朝西北；`robot_5` 接管原
-`StandbyRobot3` `(-9.50, 21.15)`、朝 `-Y`。因此生产默认三机只把近位升级为
-动力学真身，另外两个原站位继续使用 visual-only standby；四、五机按上述固定映射接管。
+额外站位采用固定 ID 映射，并让 `robot_3` 优先使用近位：`robot_3` 位于
+`(-6.50, 17.95)`、朝 `+X`；`robot_4` 使用远位 `(-12.70, 18.9534)`、朝西北；
+`robot_5` 位于 `(-9.50, 21.15)`、朝 `-Y`。因此生产默认三机只生成近位 SONIC，
+另外两个站位为空；四、五机按上述固定映射启用。
 
 这个数量只扩展同一 host 内的 SONIC 通道，**不扩展场景同步身份**：
 
@@ -23,7 +22,7 @@ DDS 通道。五台能力全开时共使用 15 个动作 term，动作张量为 
 
 `ISAACLAB_SONIC_ROBOT_COUNT` 支持 `2..5`，便于逐台联调。共享配置默认为 `2`，生产一键
 bringup 仍通过独立的 `PIPELINE_SONIC_ROBOT_COUNT` 默认为 `3`；显式设置为 `3`、`4` 或 `5` 时依次启用其余
-站位。未覆盖站位继续使用无物理纯显示资产。额外真身只在
+站位。未覆盖站位保持为空。额外真身只在
 `ISAACLAB_TOTES_ON_CONVEYOR=1` 的流水线布局中启用；推车布局只有两个站位，即使共享
 配置请求 `5`，EnvCfg、DDS 和 provider 也会一起自动回退到有效数量 `2`。
 
@@ -34,8 +33,8 @@ bringup 仍通过独立的 `PIPELINE_SONIC_ROBOT_COUNT` 默认为 `3`；显式�
 | 1 | `robot` / `Robot` | `g129` | `dex3` | `rt` | 无 | `5556` / `5557` |
 | 2 | `robot_2` / `Robot2` | `g129_r2` | `dex3_r2` | `rt/r2` | `_r2` | `5566` / `5567` |
 | 3 | `robot_3` / `Robot3` | `g129_r3` | `dex3_r3` | `rt/r3` | `_r3` | `5576` / `5577` |
-| 4 | `robot_4` / `Robot4`（生产默认 standby） | `g129_r4` | `dex3_r4` | `rt/r4` | `_r4` | `5586` / `5587` |
-| 5 | `robot_5` / `Robot5`（生产默认 standby） | `g129_r5` | `dex3_r5` | `rt/r5` | `_r5` | `5596` / `5597` |
+| 4 | `robot_4` / `Robot4`（生产默认不生成） | `g129_r4` | `dex3_r4` | `rt/r4` | `_r4` | `5586` / `5587` |
+| 5 | `robot_5` / `Robot5`（生产默认不生成） | `g129_r5` | `dex3_r5` | `rt/r5` | `_r5` | `5596` / `5597` |
 
 已启用的 N 路 LowCmd ack 是 AND 门：任意一个已配置 deploy 没有运行或没有回当前 tick 的 ack，
 整个环境都会保持在当前物理步。因此启动时应让 N 个 deploy 并行存活，不能等待前一个
@@ -44,7 +43,7 @@ bringup 仍通过独立的 `PIPELINE_SONIC_ROBOT_COUNT` 默认为 `3`；显式�
 ## 3. 推荐启动
 
 一键脚本生产默认启动三台：robot_1 走 Pico，robot_2/3 走互相隔离的 keyboard 调试通道；
-robot_4/5 使用原始 visual-only standby，不创建对应 deploy。四/五机能力仍保留，只有
+robot_4/5 站位为空，不创建机器人或对应 deploy。四/五机能力仍保留，只有
 显式设置 `PIPELINE_SONIC_ROBOT_COUNT=4|5` 时才增加真身、DDS 与 deploy。
 脚本会对每个 Isaac deploy 显式传入 `--isaac-handcmd-hz 100`；这只把每台左右手的
 Dex3 HandCmd 从 500 Hz 降到 100 Hz，LowCmd、锁步 ACK、Control 和 Planner 链路仍保持
@@ -392,8 +391,8 @@ ACK mismatch、`sync_waits` 增量均为 0，姿态门禁通过。因此该候�
 `29.717 / 29.100 / 38.650 ms`。三路 timeout、stale、ACK mismatch、`sync_waits`
 增量均为 0，三台姿态健康。
 
-因此生产一键 bringup 仍默认采用三路 SONIC；共享配置现默认为双路。robot_4/5 恢复原始
-visual-only standby。四/五路能力及本文历史数据全部保留，专项联调仍可显式设置
+因此生产一键 bringup 仍默认采用三路 SONIC；共享配置现默认为双路。robot_4/5 站位为空。
+四/五路能力及本文历史数据全部保留，专项联调仍可显式设置
 `PIPELINE_SONIC_ROBOT_COUNT=4|5`，但不能把它们当成当前生产帧率。另一个接触传感器
 候选也未改变生产语义：`ISAACLAB_CONVEYOR_CONTACT_HISTORY_LENGTH` 默认仍为 `4`，
 current-only 的 `0` 只保留为显式实验值。

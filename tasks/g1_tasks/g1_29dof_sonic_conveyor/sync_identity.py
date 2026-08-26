@@ -142,8 +142,8 @@ def resolve_sonic_robot_count(verbose_tag: str = "[scene_sync]", load_env: bool 
     """Resolve how many SONIC channels the conveyor host/viewer should expose.
 
     ``ISAACLAB_SONIC_ROBOT_COUNT`` is shared by the authoritative host and its
-    viewers.  Two preserves the historical dual-robot topology; five promotes
-    all three conveyor standby positions to independent SONIC robots.  Values
+    viewers.  Two preserves the historical dual-robot topology; five fills
+    all three optional conveyor positions with independent SONIC robots.  Values
     3 and 4 are supported for staged bring-up.  Peer-to-peer ID=1/2 mode keeps
     its historical two-robot semantics and ignores the extra slots in the
     scene configuration.

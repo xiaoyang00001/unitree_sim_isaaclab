@@ -26,18 +26,19 @@ CONVEYOR_NORTH_SHIFT_Y = 0.25
 # robot_2 搬 D02 时应先向西侧回撤再转向收纳箱；直接斜线仍可能擦到 A08 高端架。
 ROBOT_WORKCELL_DOWNSTREAM_SHIFT_Y = 0.30
 
-# 纯显示站位机器人使用与现有两台相同的 SONIC 默认姿态。该姿态烘焙后的完整
-# G1 网格包围盒 min z=-0.757501582；沿用工作机器人 root z=0.76 时脚底离地
-# 约 2.5 mm，视觉贴地且 pelvis 高度一致。
-STANDBY_ROBOT_ROOT_Z = 0.76
+# 可选 robot_3..5 的站位与现有两台 SONIC 使用同一 root 高度。
+# 未启用的站位保持为空，不再生成无物理的展示机器人。
+EXTRA_SONIC_ROBOT_ROOT_Z = 0.76
+# 保留旧导入名仅为仓外布局工具兼容；它不会恢复静态机器人生成。
+STANDBY_ROBOT_ROOT_Z = EXTRA_SONIC_ROBOT_ROOT_Z
 
-# robot_3..5 接管额外站位时的固定映射。三机生产默认让 robot_3 优先接管
-# 靠近 robot_1/2 的 pose[1]；robot_4/5 分别保留 pose[0]/pose[2] 的唯一槽位。
+# robot_3..5 使用额外站位时的固定映射。三机生产默认让 robot_3 优先使用
+# 靠近 robot_1/2 的 pose[1]；robot_4/5 分别使用 pose[0]/pose[2] 的唯一槽位。
 SONIC_EXTRA_ROBOT_POSE_ORDER = (1, 0, 2)
 
 
 def sonic_extra_robot_pose_index(robot_id: int) -> int:
-    """Return the standby-pose index assigned to ``robot_3..5``."""
+    """Return the optional SONIC pose index assigned to ``robot_3..5``."""
 
     order_index = robot_id - 3
     if not 0 <= order_index < len(SONIC_EXTRA_ROBOT_POSE_ORDER):
@@ -55,7 +56,10 @@ def sonic_active_extra_pose_indices(robot_count: int) -> tuple[int, ...]:
 
 
 def sonic_standby_pose_indices(robot_count: int) -> tuple[int, ...]:
-    """Return extra pose indices that must remain render-only standby assets."""
+    """Return unoccupied optional slots for backward compatibility.
+
+    These indices no longer cause render-only standby robots to be spawned.
+    """
 
     active = sonic_active_extra_pose_indices(robot_count)
     return tuple(
@@ -357,12 +361,16 @@ def _path_s_of_main_y(y: float) -> float:
 
 
 @dataclass(frozen=True)
-class StandbyRobotPose:
-    """One physics-free G1 pose in the conveyor workcell."""
+class ExtraSonicRobotPose:
+    """One optional SONIC robot pose in the conveyor workcell."""
 
     pos: tuple[float, float, float]
     # 当前项目的 Isaac Lab InitialStateCfg 约定为 (w, x, y, z)。
     rot: tuple[float, float, float, float]
+
+
+# 旧类名仅保留布局 API 兼容；场景已不再创建 StandbyRobot Prim。
+StandbyRobotPose = ExtraSonicRobotPose
 
 
 @dataclass(frozen=True)
@@ -377,7 +385,8 @@ class ConveyorSceneLayout:
     robot_2_workstation_y: float
     robot_1_x: float
     robot_2_x: float
-    standby_robot_poses: tuple[StandbyRobotPose, ...]
+    # 字段名保留向后兼容；这些坐标现在只供显式启用的 SONIC 使用。
+    standby_robot_poses: tuple[ExtraSonicRobotPose, ...]
     pushcart_2_pos: tuple[float, float, float]
     cart2_tote1_pos: tuple[float, float, float]
     cart2_tote2_pos: tuple[float, float, float]
@@ -387,6 +396,12 @@ class ConveyorSceneLayout:
     belt_box_positions: tuple[tuple[float, float, float], ...]
     belt_box_kinds: tuple[BeltBoxKind, ...]
     belt_box_queue_gap: float
+
+    @property
+    def extra_sonic_robot_poses(self) -> tuple[ExtraSonicRobotPose, ...]:
+        """Return the optional SONIC positions under their current semantics."""
+
+        return self.standby_robot_poses
 
     @property
     def belt_box_names(self) -> tuple[str, ...]:
@@ -649,24 +664,23 @@ def resolve_scene_layout(environ: Mapping[str, str]) -> ConveyorSceneLayout:
         -6.5 if totes_on_conveyor else cart_group_x - robot_side_offset,
     )
 
-    # 只在 =1 流水线布局生成三台纯显示 G1。它们分散在 X 支线队尾、主线上游和
-    # X 支线中段，不组成面对面队列。第一台站在默认最后一个物体南侧偏东 1 m 并
-    # 朝西北正对该物体；第二台沿用现有机器人到主带中线的横向站距；第三台在支线北侧。
-    # 三台额外站位的坐标和朝向保持不变。
-    standby_robot_poses = (
+    # =1 流水线布局为可选 robot_3..5 保留三个分散站位，分别位于
+    # X 支线队尾、主线上游和 X 支线中段。只有当 SONIC 数量覆盖到对应
+    # ID 时才生成真身或镜像；其余站位保持为空。
+    extra_sonic_robot_poses = (
         (
-            StandbyRobotPose(
-                pos=(-12.70, 18.9534, STANDBY_ROBOT_ROOT_Z),
+            ExtraSonicRobotPose(
+                pos=(-12.70, 18.9534, EXTRA_SONIC_ROBOT_ROOT_Z),
                 rot=(0.40455358, 0.0, 0.0, 0.91451430),  # 朝西北正对队尾物体
             ),
-            StandbyRobotPose(
+            ExtraSonicRobotPose(
                 # 额外站位不属于本次双机作业组，不随 robot_1/2 的 -Y 0.30 m
                 # 下移；它与西侧桌箱的净距因此只会增大。
-                pos=(robot_2_x, _shifted(17.70), STANDBY_ROBOT_ROOT_Z),
+                pos=(robot_2_x, _shifted(17.70), EXTRA_SONIC_ROBOT_ROOT_Z),
                 rot=(1.0, 0.0, 0.0, 0.0),  # yaw 0°，朝 +X
             ),
-            StandbyRobotPose(
-                pos=(-9.50, _shifted(20.90), STANDBY_ROBOT_ROOT_Z),
+            ExtraSonicRobotPose(
+                pos=(-9.50, _shifted(20.90), EXTRA_SONIC_ROBOT_ROOT_Z),
                 rot=(0.70710678, 0.0, 0.0, -0.70710678),  # yaw -90°，朝 -Y
             ),
         )
@@ -718,7 +732,7 @@ def resolve_scene_layout(environ: Mapping[str, str]) -> ConveyorSceneLayout:
         robot_2_workstation_y=robot_2_workstation_y,
         robot_1_x=robot_1_x,
         robot_2_x=robot_2_x,
-        standby_robot_poses=standby_robot_poses,
+        standby_robot_poses=extra_sonic_robot_poses,
         pushcart_2_pos=pushcart_2_pos,
         cart2_tote1_pos=cart2_tote1_pos,
         cart2_tote2_pos=cart2_tote2_pos,

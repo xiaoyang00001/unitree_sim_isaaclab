@@ -8,7 +8,7 @@
 
 | 角色 | 机器 | 跑什么 | 必需？ |
 |---|---|---|---|
-| host | Ubuntu + NVIDIA GPU | sim（默认 robot_1..3 三台动力学，robot_4/5 visual-only standby）+ deploy#1..3 + pico_manager | ✅ |
+| host | Ubuntu + NVIDIA GPU | sim（默认 robot_1..3 三台动力学，robot_4/5 站位为空）+ deploy#1..3 + pico_manager | ✅ |
 | viewer | Windows + NVIDIA GPU | IsaacLab 纯镜像（只收不发）+ SteamVR AR | 可选 |
 | 操作端 | Pico 4 Ultra | GameLink app（全身追踪+手柄 → host） | 可选（keyboard 可替代调试） |
 
@@ -89,8 +89,7 @@ bash tools/pipeline_pico_bringup.sh
 ```
 
 默认拉起 sim + deploy#1(zmq_manager) + deploy#2/3(keyboard) + pico_manager 全套，并对
-每个 Isaac deploy 显式传 `--isaac-handcmd-hz 100`；robot_4/5 保持原始 visual-only
-standby，只有显式
+每个 Isaac deploy 显式传 `--isaac-handcmd-hz 100`；robot_4/5 站位为空，只有显式
 `PIPELINE_SONIC_ROBOT_COUNT=4|5` 才增加对应真身和 deploy。LowCmd、锁步 ACK、Control 和 Planner
 仍保持 500 Hz。外仓 standalone Isaac 默认及非 Isaac/实机路径也仍为 500 Hz。
 一键脚本的生产默认同时为 `PIPELINE_SONIC_MERGE_ACTUATORS=1`、

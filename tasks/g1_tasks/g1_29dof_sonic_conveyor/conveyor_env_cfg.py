@@ -18,7 +18,7 @@ DDS/XR 链路沿用本工程 ``g1_29dof_dex3_sonic`` 的 SONIC 底座。
 
 host/viewer 形态保留同一场景身份协议：ID=1 host 通过
 ``ISAACLAB_SONIC_ROBOT_COUNT=2..5`` 创建并发布多台 SONIC 动力学真身，ID=0 viewer
-创建同数量镜像；额外三台沿用流水线原纯显示站位。原 ID=1/2 对等模式不扩展场景 ID。
+创建同数量镜像；未启用的额外站位保持为空。原 ID=1/2 对等模式不扩展场景 ID。
 
 配置读取是**单轨制**：进程环境变量永远优先；``configs/scene_sync.env``
 （或 ``ISAACLAB_SCENE_SYNC_ENV_FILE`` 指定的文件）里的值在 import 时
@@ -100,7 +100,6 @@ from .scene_layout import (
     resolve_scene_layout,
     sonic_active_extra_pose_indices,
     sonic_extra_robot_pose_index,
-    sonic_standby_pose_indices,
 )
 from .scene_props import resolve_scene_props
 from .tote_assets import resolve_tote_asset
@@ -381,8 +380,8 @@ def _env_reset_sync_cfg() -> ZmqEnvResetSyncActionCfg:
 #   1 = 流水线布局：17 个箱/包沿西拐 L 路径排在**入料端**，由
 #       drive_belt_boxes 事件沿路径送到第二段工位挡停；双机站第二段两侧
 #       (x=-4.74 / -6.50, y=14.098/14.848)；首批箱统一在 x=-5.62 中线上，
-#       两侧手到箱心横向距离同为 0.88 m。另有三台无物理 G1 在支线队尾、主线和
-#       支线中段分散站位，不组成面对面队列；pushcart_2 空车留在 y=19.64363。
+#       两侧手到箱心横向距离同为 0.88 m。只生成已配置的 SONIC 机器人，
+#       未启用的 robot_3..5 额外站位保持为空；pushcart_2 空车留在 y=19.64363。
 #       所有世界 y 已含整体北移 Δ=0.25。
 #   0 = 原布局：两筐恢复原尺寸（scale 0.01）叠放回 pushcart_2 拖车顶面
 #       (x=-5.62, y=19.0)；双机回到拖车两侧工位；筐被机器人搬上入料端后
@@ -399,15 +398,11 @@ ROBOT_WORKSTATION_Y = SCENE_LAYOUT.robot_workstation_y
 ROBOT_2_WORKSTATION_Y = SCENE_LAYOUT.robot_2_workstation_y
 ROBOT_1_X = SCENE_LAYOUT.robot_1_x
 ROBOT_2_X = SCENE_LAYOUT.robot_2_x
-STANDBY_ROBOT_POSES = SCENE_LAYOUT.standby_robot_poses
+EXTRA_SONIC_ROBOT_POSES = SCENE_LAYOUT.extra_sonic_robot_poses
 
-# 额外三个站位使用固定 SONIC ID 映射：robot_3 优先接管靠近 robot_1/2 的
-# pose[1]，robot_4/5 分别接管 pose[0]/pose[2]。纯函数同时生成活动槽位及其
-# standby 补集，供 host、viewer、展示资产和日志共用，避免数量切片漂移后叠模。
+# 额外三个站位使用固定 SONIC ID 映射：robot_3 优先使用靠近 robot_1/2 的
+# pose[1]，robot_4/5 分别使用 pose[0]/pose[2]。未被数量覆盖的槽位不生成机器人。
 _ACTIVE_SONIC_EXTRA_POSE_INDICES = sonic_active_extra_pose_indices(
-    ACTIVE_SONIC_ROBOT_COUNT
-)
-_STATIC_SONIC_EXTRA_POSE_INDICES = sonic_standby_pose_indices(
     ACTIVE_SONIC_ROBOT_COUNT
 )
 
@@ -491,15 +486,15 @@ def _scene_robot_pose(
         pose_index = sonic_extra_robot_pose_index(robot_id)
     except ValueError as exc:
         raise ValueError(
-            f"robot_{robot_id} has no conveyor standby pose; "
+            f"robot_{robot_id} has no extra conveyor pose; "
             "ISAACLAB_SONIC_ROBOT_COUNT>2 requires ISAACLAB_TOTES_ON_CONVEYOR=1"
         ) from exc
-    if pose_index >= len(STANDBY_ROBOT_POSES):
+    if pose_index >= len(EXTRA_SONIC_ROBOT_POSES):
         raise ValueError(
-            f"robot_{robot_id} has no conveyor standby pose; "
+            f"robot_{robot_id} has no extra conveyor pose; "
             "ISAACLAB_SONIC_ROBOT_COUNT>2 requires ISAACLAB_TOTES_ON_CONVEYOR=1"
         )
-    pose = STANDBY_ROBOT_POSES[pose_index]
+    pose = EXTRA_SONIC_ROBOT_POSES[pose_index]
     return pose.pos, pose.rot
 
 # ==================================================================
@@ -839,10 +834,10 @@ def _log_scene_layout() -> None:
         f" | 整体北移 Δ={CONVEYOR_NORTH_SHIFT_Y:.2f}"
         "（支线越过货架排 B 所需；wrapper 组变换/带面装饰同 Δ，地面标识已移除）"
     )
-    if STANDBY_ROBOT_POSES:
+    if EXTRA_SONIC_ROBOT_POSES:
         _active_extra_xy = " / ".join(
-            f"({STANDBY_ROBOT_POSES[index].pos[0]:.2f},"
-            f"{STANDBY_ROBOT_POSES[index].pos[1]:.2f})"
+            f"({EXTRA_SONIC_ROBOT_POSES[index].pos[0]:.2f},"
+            f"{EXTRA_SONIC_ROBOT_POSES[index].pos[1]:.2f})"
             for index in _ACTIVE_SONIC_EXTRA_POSE_INDICES
         )
         if _ACTIVE_SONIC_EXTRA_POSE_INDICES:
@@ -851,17 +846,6 @@ def _log_scene_layout() -> None:
                 f"{tag}   新增活动机器人 ×{len(_ACTIVE_SONIC_EXTRA_POSE_INDICES)}: "
                 f"{_active_extra_xy}"
                 f"（{_active_role}，沿流水线分散、非面对面）"
-            )
-        _static_pose_indices = _STATIC_SONIC_EXTRA_POSE_INDICES
-        if _static_pose_indices:
-            _static_xy = " / ".join(
-                f"({STANDBY_ROBOT_POSES[index].pos[0]:.2f},"
-                f"{STANDBY_ROBOT_POSES[index].pos[1]:.2f})"
-                for index in _static_pose_indices
-            )
-            print(
-                f"{tag}   纯显示站位机器人 ×{len(_static_pose_indices)}: "
-                f"{_static_xy}（无 articulation/物理）"
             )
     if CONVEYOR_TOTE_NAMES and TOTES_ON_CONVEYOR:
         print(
@@ -1231,7 +1215,6 @@ def _make_additional_local_robot_cfg(robot_id: int) -> ArticulationCfg:
 
 _PEER_ROBOT_USD = _ASSETS_DIR / "peer_robot" / "g1_43dof_peer.usd"
 _PEER_VISUAL_LOD_USD = _ASSETS_DIR / "peer_robot" / "g1_43dof_visual_lod.usda"
-_STANDBY_ROBOT_USD = _ASSETS_DIR / "peer_robot" / "g1_43dof_standby_visual_only.usda"
 
 # 镜像体的无重力/零阻尼自由体刚体参数：关节与 root 由 scene_state 帧直写，
 # 去穿透无意义，但 PhysX 不接受 0，只能不设置（None）。
@@ -1361,33 +1344,6 @@ def _make_additional_peer_scene_cfg(robot_id: int) -> ArticulationCfg | AssetBas
             rot=rot,
         )
     return _make_additional_peer_robot_cfg(robot_id)
-
-
-_STANDBY_ROBOT_PRIM_NAMES = (
-    "StandbyRobot1",
-    "StandbyRobot2",
-    "StandbyRobot3",
-)
-
-
-def _make_standby_robot_cfg(index: int) -> AssetBaseCfg | None:
-    """Create one full-fidelity, render-only G1 beside the conveyor."""
-
-    if index >= len(STANDBY_ROBOT_POSES):
-        return None
-    pose = STANDBY_ROBOT_POSES[index]
-    return AssetBaseCfg(
-        prim_path=f"{{ENV_REGEX_NS}}/{_STANDBY_ROBOT_PRIM_NAMES[index]}",
-        init_state=AssetBaseCfg.InitialStateCfg(pos=pose.pos, rot=pose.rot),
-        # 引用原两台同源的完整 SONIC G1，切掉物理/控制/传感 variant，并烘焙
-        # 相同默认关节姿态。组合后保留完整网格与材质，但没有 joint、rigid body、
-        # articulation、collision 或 sensor schema，PhysX 不会解析它。
-        spawn=UsdFileCfg(
-            usd_path=str(_STANDBY_ROBOT_USD),
-            variants={"Physics": "None", "Robot": "None", "Sensor": "None"},
-            activate_contact_sensors=False,
-        ),
-    )
 
 
 # ==================================================================
@@ -1741,6 +1697,7 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
     peer_robot: ArticulationCfg | AssetBaseCfg | None = None if HOST_MODE else _make_peer_scene_cfg()
 
     # viewer 镜像体。robot_2 始终保留；robot_3..5 仅在配置数量覆盖对应站位时生成。
+    # 未覆盖的可选站位保持为空，不生成非 SONIC 展示机器人。
     peer_robot_2: ArticulationCfg | AssetBaseCfg | None = (
         _make_additional_peer_scene_cfg(2) if VIEWER_MODE else None
     )
@@ -1795,24 +1752,6 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
     foot_contact_5: ContactSensorCfg | None = (
         _make_foot_contact_sensor("Robot5")
         if HOST_MODE and ACTIVE_SONIC_ROBOT_COUNT >= 5
-        else None
-    )
-
-    # 未被 SONIC 数量覆盖的额外站位继续用原纯显示资产；覆盖后由上面的 RobotN 真身
-    # 或 PeerRobotN 镜像取代，避免同一位置叠出两台机器人。
-    standby_robot_1: AssetBaseCfg | None = (
-        _make_standby_robot_cfg(0)
-        if 0 in _STATIC_SONIC_EXTRA_POSE_INDICES
-        else None
-    )
-    standby_robot_2: AssetBaseCfg | None = (
-        _make_standby_robot_cfg(1)
-        if 1 in _STATIC_SONIC_EXTRA_POSE_INDICES
-        else None
-    )
-    standby_robot_3: AssetBaseCfg | None = (
-        _make_standby_robot_cfg(2)
-        if 2 in _STATIC_SONIC_EXTRA_POSE_INDICES
         else None
     )
 
@@ -2347,24 +2286,6 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
             raise RuntimeError(
                 f"缺少纯显示镜像机器人资产 {_PEER_VISUAL_LOD_USD}\n"
                 "先运行: python tools/build_peer_visual_lod_usd.py"
-            )
-        if (
-            STANDBY_ROBOT_POSES
-            and ACTIVE_SONIC_ROBOT_COUNT < 5
-            and not _STANDBY_ROBOT_USD.exists()
-        ):
-            raise RuntimeError(
-                f"流水线布局缺少完整 G1 纯显示站位资产 {_STANDBY_ROBOT_USD}\n"
-                "先运行: python tools/build_standby_robot_visual_only_usd.py"
-            )
-        if (
-            STANDBY_ROBOT_POSES
-            and ACTIVE_SONIC_ROBOT_COUNT < 5
-            and not _PEER_ROBOT_USD.exists()
-        ):
-            raise RuntimeError(
-                f"纯显示站位资产缺少同源完整 G1 引用 {_PEER_ROBOT_USD}\n"
-                "先运行: python tools/build_peer_robot_usd.py"
             )
         if not HOST_MODE:
             print(f"[conveyor_env_cfg] 镜像机器人模式: {PEER_ROBOT_MODE}")

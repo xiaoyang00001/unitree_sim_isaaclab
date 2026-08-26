@@ -206,67 +206,42 @@ class PeerVisualLodWiringTests(unittest.TestCase):
         for robot_id in range(2, 6):
             self.assertIn(f"peer_robot_{robot_id}: ArticulationCfg | AssetBaseCfg | None", source)
 
-    def test_conveyor_standby_robots_use_full_meshes_without_physics(self) -> None:
+    def test_conveyor_scene_does_not_spawn_non_sonic_standby_robots(self) -> None:
         source = CONFIG_PATH.read_text(encoding="utf-8")
-        factory = source.split("def _make_standby_robot_cfg(", 1)[1].split(
-            "# ==================================================================\n# 场景", 1
-        )[0]
 
-        self.assertIn("if index >= len(STANDBY_ROBOT_POSES):", factory)
-        self.assertIn("pose = STANDBY_ROBOT_POSES[index]", factory)
-        self.assertIn("return AssetBaseCfg(", factory)
-        self.assertIn("pos=pose.pos, rot=pose.rot", factory)
-        self.assertIn("usd_path=str(_STANDBY_ROBOT_USD)", factory)
-        self.assertIn(
-            'variants={"Physics": "None", "Robot": "None", "Sensor": "None"}',
-            factory,
-        )
-        self.assertIn("activate_contact_sensors=False", factory)
-        self.assertNotIn("_make_peer_visual_lod_cfg(", factory)
-        self.assertNotIn("ArticulationCfg(", factory)
-        self.assertNotIn("RigidBodyPropertiesCfg", factory)
-        for index in range(3):
-            self.assertIn(f"_make_standby_robot_cfg({index})", source)
-        for name in ("StandbyRobot1", "StandbyRobot2", "StandbyRobot3"):
-            self.assertIn(f'"{name}"', source)
+        # 只保留已配置的 Robot/PeerRobot SONIC 真身或镜像。
+        # 未启用的额外槽位不得回退生成纯显示 G1。
+        for marker in (
+            "_STANDBY_ROBOT_USD",
+            "_make_standby_robot_cfg",
+            "standby_robot_1:",
+            "standby_robot_2:",
+            "standby_robot_3:",
+            "StandbyRobot1",
+            "StandbyRobot2",
+            "StandbyRobot3",
+            "sonic_standby_pose_indices",
+        ):
+            self.assertNotIn(marker, source)
 
-        # 五机 host/viewer 中相同站位改由 Robot3..5 / PeerRobot3..5 接管，
-        # 纯显示体必须条件关闭，不能叠出第六至第八台机器人。
+        sim_source = SIM_MAIN_PATH.read_text(encoding="utf-8")
+        self.assertNotIn("standby_prim_paths", sim_source)
+        self.assertNotIn('asset_name.startswith("standby_robot_")', sim_source)
+
         self.assertIn(
             "_ACTIVE_SONIC_EXTRA_POSE_INDICES = sonic_active_extra_pose_indices(",
             source,
         )
-        self.assertIn(
-            "_STATIC_SONIC_EXTRA_POSE_INDICES = sonic_standby_pose_indices(",
-            source,
-        )
         self.assertIn("pose_index = sonic_extra_robot_pose_index(robot_id)", source)
-        for pose_index in range(3):
-            self.assertIn(
-                f"if {pose_index} in _STATIC_SONIC_EXTRA_POSE_INDICES",
-                source,
-            )
+        self.assertIn("EXTRA_SONIC_ROBOT_POSES", source)
 
-        # 新增展示体不能改动原有两台的朝向契约。
+        # 删除静态展示体不能改动原有两台的朝向契约。
         self.assertIn(
             "_ROBOT_1_ROT = (1.0, 0.0, 0.0, 0.0) if _ROBOT_YAW_IDENTITY "
             "else (0.0, 0.0, 0.0, 1.0)",
             source,
         )
         self.assertIn("_ROBOT_2_ROT = (1.0, 0.0, 0.0, 0.0)", source)
-
-        # 涂装跟随实际 scene.extras，不重复读取开关、不硬编码三条 Prim 路径。
-        sim_source = SIM_MAIN_PATH.read_text(encoding="utf-8")
-        material_block = sim_source.split("standby_prim_paths = [", 1)[1].split(
-            "except Exception as e:", 1
-        )[0]
-        self.assertIn("for asset_name, view in env.scene.extras.items()", material_block)
-        self.assertIn('asset_name.startswith("standby_robot_")', material_block)
-        self.assertIn("for prim_path in view.prim_paths", material_block)
-        self.assertIn("apply_g1_sonic_visual_materials(standby_prim_path)", material_block)
-        self.assertNotIn("os.environ", material_block)
-        for name in ("StandbyRobot1", "StandbyRobot2", "StandbyRobot3"):
-            self.assertNotIn(name, material_block)
 
     def test_sync_uses_visual_writer_before_articulation_methods(self) -> None:
         source = SYNC_PATH.read_text(encoding="utf-8")

@@ -23,7 +23,6 @@ ROBOT_WORKCELL_DOWNSTREAM_SHIFT_Y = _LAYOUT_MODULE.ROBOT_WORKCELL_DOWNSTREAM_SHI
 SONIC_EXTRA_ROBOT_POSE_ORDER = _LAYOUT_MODULE.SONIC_EXTRA_ROBOT_POSE_ORDER
 sonic_extra_robot_pose_index = _LAYOUT_MODULE.sonic_extra_robot_pose_index
 sonic_active_extra_pose_indices = _LAYOUT_MODULE.sonic_active_extra_pose_indices
-sonic_standby_pose_indices = _LAYOUT_MODULE.sonic_standby_pose_indices
 
 _DRIVE_MODULE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -111,15 +110,15 @@ class ConveyorSceneLayoutTest(unittest.TestCase):
         self.assertEqual(layout.conveyor_y_stop, 12.25)
 
 
-class StandbyRobotLayoutTest(unittest.TestCase):
-    """流水线布局最多增加三台分散、非面对面的纯显示机器人。"""
+class ExtraSonicRobotLayoutTest(unittest.TestCase):
+    """流水线布局为可选 SONIC robot_3..5 保留分散站位。"""
 
-    def test_conveyor_layout_adds_three_scattered_standby_robots(self) -> None:
+    def test_conveyor_layout_defines_three_scattered_sonic_slots(self) -> None:
         layout = resolve_scene_layout({})
 
-        self.assertLessEqual(len(layout.standby_robot_poses), 3)
+        self.assertEqual(len(layout.extra_sonic_robot_poses), 3)
         self.assertEqual(
-            tuple((pose.pos, pose.rot) for pose in layout.standby_robot_poses),
+            tuple((pose.pos, pose.rot) for pose in layout.extra_sonic_robot_poses),
             (
                 (
                     (-12.7, 18.9534, 0.76),
@@ -132,17 +131,17 @@ class StandbyRobotLayoutTest(unittest.TestCase):
                 ),
             ),
         )
-        # 三台分处支线队尾、主线上游和支线中段，不在同一横截面相向站立。
-        self.assertEqual(len({pose.pos[1] for pose in layout.standby_robot_poses}), 3)
-        self.assertEqual(len({pose.rot for pose in layout.standby_robot_poses}), 3)
+        # 三个可选 SONIC 站位分处支线队尾、主线上游和支线中段。
+        self.assertEqual(len({pose.pos[1] for pose in layout.extra_sonic_robot_poses}), 3)
+        self.assertEqual(len({pose.rot for pose in layout.extra_sonic_robot_poses}), 3)
 
-    def test_sonic_robot3_uses_the_near_standby_position(self) -> None:
+    def test_sonic_robot3_uses_the_near_extra_position(self) -> None:
         layout = resolve_scene_layout({})
 
         self.assertEqual(SONIC_EXTRA_ROBOT_POSE_ORDER, (1, 0, 2))
         self.assertEqual(set(SONIC_EXTRA_ROBOT_POSE_ORDER), {0, 1, 2})
         promoted = tuple(
-            layout.standby_robot_poses[index]
+            layout.extra_sonic_robot_poses[index]
             for index in SONIC_EXTRA_ROBOT_POSE_ORDER
         )
         self.assertEqual(promoted[0].pos, (-6.5, 17.95, 0.76))
@@ -150,34 +149,31 @@ class StandbyRobotLayoutTest(unittest.TestCase):
         self.assertEqual(promoted[1].pos, (-12.7, 18.9534, 0.76))
         self.assertEqual(promoted[2].pos, (-9.5, 21.15, 0.76))
 
-    def test_sonic_extra_robot_ids_and_standby_slots_share_one_matrix(self) -> None:
+    def test_sonic_extra_robot_ids_use_the_fixed_slot_order(self) -> None:
         expected = {
-            2: ((), (0, 1, 2)),
-            3: ((1,), (0, 2)),
-            4: ((1, 0), (2,)),
-            5: ((1, 0, 2), ()),
+            2: (),
+            3: (1,),
+            4: (1, 0),
+            5: (1, 0, 2),
         }
 
         self.assertEqual(
             tuple(sonic_extra_robot_pose_index(robot_id) for robot_id in range(3, 6)),
             (1, 0, 2),
         )
-        for count, (active, standby) in expected.items():
+        for count, active in expected.items():
             with self.subTest(count=count):
                 self.assertEqual(sonic_active_extra_pose_indices(count), active)
-                self.assertEqual(sonic_standby_pose_indices(count), standby)
-                self.assertFalse(set(active) & set(standby))
-                self.assertEqual(set(active) | set(standby), {0, 1, 2})
 
         for invalid_count in (1, 6):
             with self.subTest(invalid_count=invalid_count):
                 with self.assertRaises(ValueError):
                     sonic_active_extra_pose_indices(invalid_count)
 
-    def test_pushcart_layout_does_not_add_standby_robots(self) -> None:
+    def test_pushcart_layout_has_no_extra_sonic_slots(self) -> None:
         layout = resolve_scene_layout({"ISAACLAB_TOTES_ON_CONVEYOR": "0"})
 
-        self.assertEqual(layout.standby_robot_poses, ())
+        self.assertEqual(layout.extra_sonic_robot_poses, ())
 
     def test_second_robot_workstation_is_offset_only_in_conveyor_layout(self) -> None:
         conveyor = resolve_scene_layout({})

@@ -10,8 +10,8 @@
 > [Isaac/SONIC 场景复位说明](scene_reset_zh.md)。
 >
 > 2026-08-20 起生产 bringup 收敛为三台 SONIC 动力学机器人：本手册的 Pico 主链仍聚焦
-> robot_1/2，robot_3 默认走独立 keyboard deploy；robot_4/5 恢复原始 visual-only
-> standby。四/五路仍可显式启用，完整 DDS/端口和历史性能说明见
+> robot_1/2，robot_3 默认走独立 keyboard deploy；robot_4/5 站位保持为空。
+> 四/五路仍可显式启用，完整 DDS/端口和历史性能说明见
 > [流水线多机器人 SONIC 控制](pipeline_five_robot_sonic_zh.md)。
 
 ## 0. 链路一图流
@@ -30,7 +30,7 @@
        └─ 双 Pico模式改为 zmq_manager :5566 ← Pico#2 UDP :63902
      deploy#3 --input-type keyboard（生产默认）
        └─ DDS rt/r3/*（独立输入/调试端口；三路 ack AND）
-     robot_4/5 visual-only standby
+     robot_4/5 站位为空（不生成机器人）
        └─ 显式 PIPELINE_SONIC_ROBOT_COUNT=4|5 时才增加 deploy 与 rt/r4..r5/*
      win 侧 AR viewer（观看链，与控制链完全并行独立）
 ```
@@ -124,7 +124,7 @@ PIPELINE_DUAL_PICO=1 bash tools/pipeline_pico_bringup.sh
 # 回退历史双机：
 PIPELINE_SONIC_ROBOT_COUNT=2 bash tools/pipeline_pico_bringup.sh
 
-# 显式四/五机联调（robot_4/5 才从 visual-only standby 升级为 SONIC 真身）
+# 显式四/五机联调（在 robot_4/5 空站位创建 SONIC 真身）
 PIPELINE_SONIC_ROBOT_COUNT=5 bash tools/pipeline_pico_bringup.sh
 
 # HandCmd 兼容性回滚：必须重启完整 bringup，不是热更新

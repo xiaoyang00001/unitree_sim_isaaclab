@@ -581,7 +581,7 @@ class FiveRobotWiringSourceTest(unittest.TestCase):
         cls.sim_source = SIM_MAIN_PATH.read_text(encoding="utf-8")
         cls.dds_source = DDS_CREATE_PATH.read_text(encoding="utf-8")
 
-    def test_scene_promotes_three_standby_slots_to_articulations(self) -> None:
+    def test_scene_uses_extra_slots_only_for_configured_sonic_robots(self) -> None:
         self.assertIn("def _make_additional_local_robot_cfg(robot_id: int)", self.cfg_source)
         for robot_id in range(3, 6):
             self.assertIn(f"robot_{robot_id}: ArticulationCfg | None", self.cfg_source)
@@ -591,16 +591,17 @@ class FiveRobotWiringSourceTest(unittest.TestCase):
             "_ACTIVE_SONIC_EXTRA_POSE_INDICES = sonic_active_extra_pose_indices(",
             self.cfg_source,
         )
-        self.assertIn(
-            "_STATIC_SONIC_EXTRA_POSE_INDICES = sonic_standby_pose_indices(",
-            self.cfg_source,
-        )
         self.assertIn("pose_index = sonic_extra_robot_pose_index(robot_id)", self.cfg_source)
-        for pose_index in range(3):
-            self.assertIn(
-                f"if {pose_index} in _STATIC_SONIC_EXTRA_POSE_INDICES",
-                self.cfg_source,
-            )
+        self.assertIn("EXTRA_SONIC_ROBOT_POSES", self.cfg_source)
+        for marker in (
+            "_STATIC_SONIC_EXTRA_POSE_INDICES",
+            "sonic_standby_pose_indices",
+            "_make_standby_robot_cfg",
+            "standby_robot_1:",
+            "standby_robot_2:",
+            "standby_robot_3:",
+        ):
+            self.assertNotIn(marker, self.cfg_source)
 
     def test_scene_publishes_and_viewer_applies_all_configured_robots(self) -> None:
         self.assertIn(

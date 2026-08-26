@@ -176,8 +176,8 @@ env cfg 共用，进程环境变量优先于 `configs/scene_sync.env`——别�
 - `ID=1` + `ISAACLAB_HOST_BOTH_ROBOTS=1`：**host 2..5 机器人**——数量由
   `ISAACLAB_SONIC_ROBOT_COUNT` 决定，每台都是 43-DoF 全动力学 SONIC 真身并拥有独立
   `rt[/rN]/*` DDS；动作源自动切 `sonic_dds_host`（`N×129` 维、N 路 ack AND 锁步）。
-  共享配置当前默认 `N=2`；生产一键 bringup 独立默认 `N=3`；robot_4/5 保持原始
-  `g1_43dof_standby_visual_only.usda` 展示站位。手工 host 需要三路时显式设置
+  共享配置当前默认 `N=2`；生产一键 bringup 独立默认 `N=3`；未启用的
+  robot_4/5 站位保持为空。手工 host 需要三路时显式设置
   `ISAACLAB_SONIC_ROBOT_COUNT=3`；四/五路联调时设置
   `PIPELINE_SONIC_ROBOT_COUNT=4|5`（手动 host 对应 `ISAACLAB_SONIC_ROBOT_COUNT=4|5`）。
   完整端口/命名与历史五机能力见 `doc/pipeline_five_robot_sonic_zh.md`。
@@ -192,7 +192,7 @@ env cfg 共用，进程环境变量优先于 `configs/scene_sync.env`——别�
 
 Pico VR 控制接入（分支 `feat/pipeline-pico-vr-control`，正路；keyboard 只是调试）：
 `tools/pipeline_pico_bringup.sh` 一键拉起（生产默认三机：deploy#1 换 `--input-type zmq_manager`，
-robot_2/3 为隔离 keyboard 通道；robot_4/5 保持纯显示待机）。**POSE 全身跟随已实测跟动**（2026-08-03，tag `pipeline-pico-pose-v1`；摇杆行走/
+robot_2/3 为隔离 keyboard 通道；robot_4/5 站位为空）。**POSE 全身跟随已实测跟动**（2026-08-03，tag `pipeline-pico-pose-v1`；摇杆行走/
 急停待补测）。部署/操作/判读见 `doc/pipeline_pico_vr_deployment_zh.md`，架构盘点见权威文档 §8。
 双 Pico 编排用 `PIPELINE_DUAL_PICO=1 bash tools/pipeline_pico_bringup.sh`：manager UDP
 63901/63902、ZMQ PUB 5556/5566 显式隔离，deploy#2 显式订 5566 且脚本不再代按发车；

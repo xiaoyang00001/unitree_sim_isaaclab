@@ -1,7 +1,7 @@
 # Isaac-G1-29DoF-Sonic-Conveyor
 
 SONIC DDS 控制的 2..5 台 G1 + warehouse 流水线场景 + ZMQ host/viewer 场景同步。
-生产默认启用 `robot_1..3` 三路 SONIC，`robot_4/5` 保持原始 visual-only standby；
+生产默认启用 `robot_1..3` 三路 SONIC，`robot_4/5` 站位保持为空；
 四/五路仍可显式启用。
 
 完整五路能力的通道表、启动方式、GR00T deploy 陷阱和验收入口见
@@ -59,7 +59,7 @@ ISAACLAB_PEER_ROBOT_MODE=visual_lod
 
 | 值 | 布局 | 关键世界坐标 |
 |---|---|---|
-| `1`（默认） | 17 个箱/包沿**西拐入口弯道路径**以 pitch 0.75 排在工位上游；前两箱成组到位后供 robot_1/2 同时抱取，流水线持续停住且不再补位；生产默认前三个站位是 SONIC 动力学真身，robot_4/5 是纯显示 standby | 第一/第二机器人工位分别为 `y=14.098 / 14.848`（`x=-4.74 / -6.50`）；robot_3 优先接管靠近它们的原 StandbyRobot2，位于 `(-6.50,17.95)` 并朝 `+X`；robot_4 对应远端 `(-12.70,18.9534)` 并朝西北，robot_5 对应 `(-9.50,21.15)` 并朝 `-Y`；出生槽位 s=`11.06 − 0.75k (k=0..16)`；`y_stop=14.098` |
+| `1`（默认） | 17 个箱/包沿**西拐入口弯道路径**以 pitch 0.75 排在工位上游；前两箱成组到位后供 robot_1/2 同时抱取，流水线持续停住且不再补位；场景只生成已配置的 SONIC 真身/镜像，其余机器人站位为空 | 第一/第二机器人工位分别为 `y=14.098 / 14.848`（`x=-4.74 / -6.50`）；robot_3 的首选可选站位为 `(-6.50,17.95)` 并朝 `+X`；robot_4 对应远端 `(-12.70,18.9534)` 并朝西北，robot_5 对应 `(-9.50,21.15)` 并朝 `-Y`；出生槽位 s=`11.06 − 0.75k (k=0..16)`；`y_stop=14.098` |
 | `0` | 两个原尺寸塑料筐叠放在入料口推车上；机器人面对面站在推车两侧 | 作业组 `(-5.62, 19.0)`（机器人 `x=-4.82 / -6.42`）；`y_stop=11.75` |
 
 例如：`ISAACLAB_TOTES_ON_CONVEYOR=0 python sim_main.py ...`。
@@ -78,18 +78,16 @@ X 中心由 `-4.473/-6.767` 调整为 `-4.673/-6.567`，恢复为分别位于 ro
 按 D02 的完整平面尺寸核算，30 cm 的紧凑布局不适合从第二停位直接斜送到西侧收纳箱
 （保守扫掠仍会与北端高架相交约 `26 mm`）；搬运轨迹应先向 robot_2 一侧回撤到
 `x≈-6.25`，再转向收纳箱，该折线路径约留 `0.23 m` 净距。箱底与桌面贴合关系不变，
-出料端的 `blue_sorting_bin_03`、robot_3..5 和推车回退布局不动。
+出料端的 `blue_sorting_bin_03`、robot_3..5 的可选站位和推车回退布局不动。
 
-流水线布局中的三个新增站位由 `ISAACLAB_SONIC_ROBOT_COUNT` 决定形态：host/viewer
-数量覆盖到该站位时，分别生成 SONIC 动力学真身或 `scene_state` 镜像；未覆盖的站位才使用
-`g1_43dof_standby_visual_only.usda`。该回退资产引用同源完整 G1 网格并烘焙默认姿态，
-`Physics/Robot/Sensor` 三组 variant 全关，不含 articulation、关节、刚体、碰撞、执行器或
-传感器。`ISAACLAB_TOTES_ON_CONVEYOR=0` 没有额外三个站位；显式请求 `3..5` 时，
+流水线布局中的三个可选站位由 `ISAACLAB_SONIC_ROBOT_COUNT` 决定是否生成：host/viewer
+数量覆盖到该站位时，分别生成 SONIC 动力学真身或 `scene_state` 镜像；未覆盖的站位保持为空，
+不再生成纯显示 G1。`ISAACLAB_TOTES_ON_CONVEYOR=0` 没有额外三个站位；显式请求 `3..5` 时，
 EnvCfg、DDS 和 provider 会一致自动回退为双机。
 
-额外站位使用固定接管映射，而不是按 standby 数组下标顺序：robot_3 优先接管靠近
-robot_1/2 的原 StandbyRobot2，robot_4 接管原 StandbyRobot1，robot_5 接管原
-StandbyRobot3。因而三机模式只替换近位，另外两台仍保持纯显示资产且不会与真身叠模。
+额外站位使用固定 ID 映射：robot_3 优先使用靠近 robot_1/2 的中间站位，
+robot_4 使用远端站位，robot_5 使用支线北侧站位。因而三机模式只生成近位 SONIC，
+另外两个站位为空。
 
 共享配置当前默认数量为 `2`；生产一键 bringup 仍独立默认为 `3`。手工 host 需要三路时传
 `ISAACLAB_SONIC_ROBOT_COUNT=3`；需要四/五路能力时显式传
@@ -401,8 +399,8 @@ wall-clock 发布频率仍受实际物理步速度限制。
 `N × 129` 维，所有已配置通道的 LowCmd ack 都匹配后才推进环境。完整启动与端口表见
 [多机器人 SONIC 手册](../../../doc/pipeline_five_robot_sonic_zh.md)。
 
-生产 bringup 当前选择三台真身；第 4、5 个站位继续使用原始
-`g1_43dof_standby_visual_only.usda`，不创建对应 DDS/deploy。四/五机仅在显式
+生产 bringup 当前选择三台真身；第 4、5 个站位保持为空，不创建对应机器人、
+DDS 或 deploy。四/五机仅在显式
 `PIPELINE_SONIC_ROBOT_COUNT=4|5` 时启用。
 
 核心的 `ISAACLAB_SONIC_MERGE_ACTUATORS` 与 `ISAACLAB_SONIC_VALIDATE_ACTUATORS` 都默认
@@ -604,9 +602,9 @@ HandCmd 默认超时为 `0.20 s`；超时后保持最后安全的 `q/kp/kd`、�
 | conveyor_workcell_lite.usd | `tools/build_conveyor_workcell_lite.py` 生成的 ASCII USD 薄层 | opt-in 背景；白名单引用 63 个 v61 根 Prim，当前静态审计为 27,802→1,052 active Prim、1,818→13 used layer |
 | conveyor_workcell_lite.manifest.json | 本仓库可复现生成清单 | 锁定源哈希、保留规则、必须存在/缺席的 Prim 和组合降幅门槛 |
 | ConveyorBelt02.usd (46.7MB) | 分叉工作区拷入（**已入本仓库 git**） | 被 warehouse USD 以 `./ConveyorBelt02.usd` 相对引用，必须与 warehouse 层保持可解析的相对路径；后续 visual-only 派生层不直接重写这个二进制源资产 |
-| peer_robot/g1_43dof_peer.usd | `tools/build_peer_robot_usd.py` 生成（已入 git） | 默认 articulation 模式的无碰撞镜像机器人；流水线布局的三台站位机器人也复用其完整网格；缺失时任务启动 fail-fast |
+| peer_robot/g1_43dof_peer.usd | `tools/build_peer_robot_usd.py` 生成（已入 git） | 默认 articulation 模式的无碰撞 SONIC 镜像机器人；缺失时任务启动 fail-fast |
 | peer_robot/g1_43dof_visual_lod.usda | `tools/build_peer_visual_lod_usd.py` 生成（入 git） | 43-DoF 纯显示镜像；47 个解析 Gprim、3 份共享材质、无 PhysX schema |
-| peer_robot/g1_43dof_standby_visual_only.usda | `tools/build_standby_robot_visual_only_usd.py` 生成（入 git） | 静态站位机器人专用；引用完整 G1 网格、烘焙 SONIC 默认姿态，三组物理 variant 全关，无活动 Physics schema |
+| peer_robot/g1_43dof_standby_visual_only.usda | `tools/build_standby_robot_visual_only_usd.py` 生成（入 git） | 保留的历史离线资产；当前流水线场景不再引用，因此不会生成 `StandbyRobot` 或进入渲染 |
 | nolo_label.png | 分叉 git | warehouse USD 相对引用的地面贴花 |
 | props/pushcart_physics.usda | 分叉工作区手拷（未入 git） | 引用 Nucleus 5.1 SM_PushcartA_02 |
 | props/cart_box_d05_physics.usda | 分叉 git-LFS tip 版 | D05 平底刚体封装，已含关 CCD 修复（ae9118a2e）；现已注册到默认随机池 |
