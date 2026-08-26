@@ -233,16 +233,16 @@ class EndlessIntakePathTest(unittest.TestCase):
                 self.assertAlmostEqual(_EI.path_s_of_point(x, y), s, places=6)
 
     def test_workstation_maps_onto_the_main_segment(self) -> None:
-        # 工位 y=14.398（=14.148+Δ）；s 对 Δ 平移不变，s_stop 仍是 12.1945。
-        s_stop = _EI.path_s_of_main_y(14.398)
+        # 北移基准 14.398 再沿世界 -Y 下移 0.40 m，默认工位 y=13.998。
+        s_stop = _EI.path_s_of_main_y(13.998)
         self.assertGreater(s_stop, _EI.S_ARC_END)
-        self.assertAlmostEqual(s_stop, 12.194515, places=4)
+        self.assertAlmostEqual(s_stop, 12.594515, places=4)
         x, y = _EI.path_point(s_stop)
         self.assertAlmostEqual(x, _EI.MAIN_LANE_X, places=9)
-        self.assertAlmostEqual(y, 14.398, places=9)
+        self.assertAlmostEqual(y, 13.998, places=9)
 
     def test_recycle_line_maps_downstream_of_the_workstation(self) -> None:
-        self.assertGreater(_EI.path_s_of_main_y(10.85), _EI.path_s_of_main_y(14.398))
+        self.assertGreater(_EI.path_s_of_main_y(10.85), _EI.path_s_of_main_y(13.998))
 
     def test_respawn_point_is_on_the_deepest_xleg_rollers(self) -> None:
         x, y = _EI.RESPAWN_XY

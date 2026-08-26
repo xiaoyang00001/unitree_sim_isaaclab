@@ -19,6 +19,7 @@ sys.modules[_LAYOUT_SPEC.name] = _LAYOUT_MODULE
 _LAYOUT_SPEC.loader.exec_module(_LAYOUT_MODULE)
 resolve_scene_layout = _LAYOUT_MODULE.resolve_scene_layout
 CONVEYOR_NORTH_SHIFT_Y = _LAYOUT_MODULE.CONVEYOR_NORTH_SHIFT_Y
+ROBOT_WORKCELL_DOWNSTREAM_SHIFT_Y = _LAYOUT_MODULE.ROBOT_WORKCELL_DOWNSTREAM_SHIFT_Y
 SONIC_EXTRA_ROBOT_POSE_ORDER = _LAYOUT_MODULE.SONIC_EXTRA_ROBOT_POSE_ORDER
 sonic_extra_robot_pose_index = _LAYOUT_MODULE.sonic_extra_robot_pose_index
 sonic_active_extra_pose_indices = _LAYOUT_MODULE.sonic_active_extra_pose_indices
@@ -49,8 +50,9 @@ sys.modules[_EI_SPEC.name] = _EI_MODULE
 _EI_SPEC.loader.exec_module(_EI_MODULE)
 
 # 弯道形态（默认）下的关键路径量：与 endless_intake 交叉推导。
-# 工位 y=14.398（=14.148+Δ）；s 参数化对 Δ 平移不变，s_stop 仍 ≈12.1945。
-_S_STOP_DEFAULT = _EI_MODULE.path_s_of_main_y(14.398)
+# 双机作业组在北移基准上再沿世界 -Y 下移 0.40 m：默认工位 y=13.998，
+# 对应 s_stop≈12.5945。
+_S_STOP_DEFAULT = _EI_MODULE.path_s_of_main_y(13.998)
 _S_LEAD_DEFAULT = _LAYOUT_MODULE.BELT_BOX_DEFAULT_S_LEAD
 _SLOTS_DEFAULT = _LAYOUT_MODULE.BELT_BOX_DEFAULT_SLOT_S
 _ENDLESS_OFF = {"ISAACLAB_CONVEYOR_ENDLESS": "off"}
@@ -71,9 +73,10 @@ class ConveyorSceneLayoutTest(unittest.TestCase):
             abs(layout.robot_1_x - (-5.62)), abs(layout.robot_2_x - (-5.62)), places=6
         )
         self.assertEqual(layout.robot_2_x, -6.5)
-        self.assertEqual(layout.robot_workstation_y, 14.398)
-        self.assertEqual(layout.robot_2_workstation_y, 15.148)
-        self.assertEqual(layout.conveyor_y_stop, 14.398)
+        self.assertEqual(ROBOT_WORKCELL_DOWNSTREAM_SHIFT_Y, 0.40)
+        self.assertEqual(layout.robot_workstation_y, 13.998)
+        self.assertEqual(layout.robot_2_workstation_y, 14.748)
+        self.assertEqual(layout.conveyor_y_stop, 13.998)
 
     def test_zero_selects_stacked_full_size_totes_on_pushcart(self) -> None:
         layout = resolve_scene_layout({"ISAACLAB_TOTES_ON_CONVEYOR": "0"})
@@ -187,7 +190,7 @@ class StandbyRobotLayoutTest(unittest.TestCase):
                 conveyor.robot_workstation_y,
                 conveyor.robot_2_workstation_y,
             ),
-            (-4.74, -6.5, 14.398, 15.148),
+            (-4.74, -6.5, 13.998, 14.748),
         )
         self.assertEqual(
             (
@@ -215,12 +218,12 @@ class ConveyorLayoutNorthShiftTest(unittest.TestCase):
         self.assertLess(layout.cart2_tote2_pos[1] + 0.10, belt_max)
         self.assertGreater(layout.cart2_tote1_pos[1], layout.robot_workstation_y)
         self.assertGreater(layout.robot_workstation_y, belt_min)
-        # 行程长度不随整体平移改变。
+        # 北移 Δ 不改相对行程；双机作业组额外下移 0.40 m 后，行程相应增加 0.40 m。
         self.assertAlmostEqual(
-            layout.cart2_tote1_pos[1] - layout.robot_workstation_y, 3.252, places=6
+            layout.cart2_tote1_pos[1] - layout.robot_workstation_y, 3.652, places=6
         )
         self.assertAlmostEqual(
-            layout.cart2_tote2_pos[1] - layout.robot_workstation_y, 3.852, places=6
+            layout.cart2_tote2_pos[1] - layout.robot_workstation_y, 4.252, places=6
         )
 
     def test_pushcart_layout_group_stays_between_the_belt_end_and_the_wall(self) -> None:
@@ -568,7 +571,7 @@ class BeltBoxLayoutTest(unittest.TestCase):
 
         停稳位一定比出生位更靠下游（队首从 s_lead 走到更大的 s_stop），所以这条
         由出生位校验蕴含；这里显式钉住，防止以后换回积放语义时无声失守。
-        17 箱跨度 12.0 ⇒ 停稳队尾 s = 12.1945 − 12.0 ≈ 0.19，仍深在支线段上
+        17 箱跨度 12.0 ⇒ 停稳队尾 s = 12.5945 − 12.0 ≈ 0.59，仍深在支线段上
         ——要等前面被逐一取走才逐格拐出来，这是"看不到头"的刻意语义。
         """
 
@@ -709,10 +712,10 @@ class BeltBoxLayoutTest(unittest.TestCase):
 
     def test_lead_box_on_the_workstation_fails_fast(self) -> None:
         with self.assertRaisesRegex(ValueError, "压在工位"):
-            resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_Y_LEAD": "14.2"})
+            resolve_scene_layout({"ISAACLAB_BELT_BOX_SPAWN_Y_LEAD": "14.1"})
         with self.assertRaisesRegex(ValueError, "压在工位"):
             resolve_scene_layout(
-                {"ISAACLAB_BELT_BOX_SPAWN_Y_LEAD": "14.2", **_ENDLESS_OFF}
+                {"ISAACLAB_BELT_BOX_SPAWN_Y_LEAD": "14.1", **_ENDLESS_OFF}
             )
 
     def test_queue_running_off_the_path_start_fails_fast(self) -> None:
