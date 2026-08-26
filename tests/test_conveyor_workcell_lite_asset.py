@@ -23,12 +23,14 @@ class ConveyorWorkcellLiteAssetTest(unittest.TestCase):
         digest = hashlib.sha256(source.read_bytes()).hexdigest()
 
         self.assertEqual(digest, _MANIFEST["source_asset_sha256"])
-        # 2489 = 3017 - 300(BA01 纸箱垛) - 148(TB04 料筐垛) - 7(桌子/台面物)
+        # 2485 = 3017 - 300(BA01 纸箱垛) - 148(TB04 料筐垛) - 7(桌子/台面物)
         #             - 15(传送带装饰物) - 42(双机器人工位装饰箱)
-        #             - 16(地面 decal/区域/条纹标识)。
+        #             - 16(地面 decal/区域/条纹标识) - 4(交通锥)。
+        # ConveyorBelt 内嵌的 warehouse_extras_01 纸箱堆不是根子 Prim，因此不再
+        # 减根清单数，但会在组合后的 active Prim 审计中体现。
         # clean wrapper 用 active=false 将纯布景移出组合，承重地面和任务箱不在
         # 清理范围内。TB04 是 148 而非 50×3=150，第 8 列只有 L0。
-        self.assertEqual(_MANIFEST["source_root_child_count"], 2489)
+        self.assertEqual(_MANIFEST["source_root_child_count"], 2485)
         self.assertIn("ConveyorBelt", _MANIFEST["keep_root_exact"])
         self.assertEqual(
             _MANIFEST["omit_pseudoroot_prims"],
