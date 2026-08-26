@@ -146,7 +146,7 @@ class ConveyorBackgroundAssetTest(unittest.TestCase):
         )[0]
 
         self.assertIn(
-            "double3 xformOp:translate = (1.2539417853480621, "
+            "double3 xformOp:translate = (1.3539417853480621, "
             "1.886707303107458, -0.577029550733144)",
             table_03,
         )
@@ -159,7 +159,7 @@ class ConveyorBackgroundAssetTest(unittest.TestCase):
             table_03,
         )
         self.assertIn(
-            "(7.91997747620902, -8.82928249104018, "
+            "(8.01997747620902, -8.82928249104018, "
             "-0.6416343162044926, 1.0)",
             bin_01,
         )
@@ -172,10 +172,10 @@ class ConveyorBackgroundAssetTest(unittest.TestCase):
         )
         bin_02 = layer.split('over "blue_sorting_bin_02"', 1)[1]
 
-        # 根矩阵局部 Y +0.20 m 靠近窄带、局部 X -0.40 m 移向世界 -Y；
+        # 根矩阵局部 Y +0.20 m 靠近窄带、局部 X -0.30 m 移向世界 -Y；
         # 旋转/缩放和偏置补偿保持不变。
         self.assertIn(
-            "(-2.3383017274054972, -0.15331139354023133, "
+            "(-2.2383017274054972, -0.15331139354023133, "
             "-0.24833856360426954, 1.0)",
             bin_02,
         )
@@ -189,7 +189,7 @@ class ConveyorBackgroundAssetTest(unittest.TestCase):
 
     @unittest.skipUnless(_HAS_PXR, "需要 pxr（usd-core）做离线组合审计")
     def test_both_workcell_tables_and_bins_follow_the_inward_and_downstream_shifts(self) -> None:
-        """两套桌箱向内 0.20 m、向世界 -Y 0.40 m，并保持箱底完整坐在桌面上。"""
+        """两套桌箱向内 0.20 m、向世界 -Y 0.30 m，并保持箱底完整坐在桌面上。"""
 
         stage = Usd.Stage.Open(
             str(_ASSETS_DIR / "warehouse-simple6_v61_visual_only.usda"),
@@ -244,18 +244,17 @@ class ConveyorBackgroundAssetTest(unittest.TestCase):
 
         east_bin_world_y = 14.39363 + east_bin[0]
         west_bin_world_y = 14.39363 + west_bin[0]
-        self.assertAlmostEqual(east_bin_world_y, 15.14757178534806, places=6)
-        self.assertAlmostEqual(west_bin_world_y, 15.897571785348062, places=6)
+        self.assertAlmostEqual(east_bin_world_y, 15.24757178534806, places=6)
+        self.assertAlmostEqual(west_bin_world_y, 15.997571785348062, places=6)
         # 桌箱与对应机器人刚性同移，仍保持约 1.1496 m 的纵向关系。
-        self.assertAlmostEqual(east_bin_world_y - 13.998, 1.14957178534806, places=6)
-        self.assertAlmostEqual(west_bin_world_y - 14.748, 1.149571785348062, places=6)
+        self.assertAlmostEqual(east_bin_world_y - 14.098, 1.14957178534806, places=6)
+        self.assertAlmostEqual(west_bin_world_y - 14.848, 1.149571785348062, places=6)
         west_near_y, _west_far_y = world_y_range("blue_sorting_bin_01")
-        self.assertLess(west_near_y, 15.20)
+        self.assertLess(west_near_y, 15.30)
 
-        # robot_2 搬 D02 时，以箱心从第二停位直线移到西侧收纳箱中心作保守扫掠。
         # 从组合后的 A08_07 网格直接抽取 z>0.85 m 的北端高架，再按 D02 半尺寸做
-        # Minkowski 膨胀；0.40 m 下移应留下至少 35 mm 的正交净距。0.30 m 会让
-        # 这条回归得到约 -26 mm（相交），因此能防止只看机器人根位置的误判。
+        # Minkowski 膨胀。紧凑的 0.30 m 布局不支持直接斜送：robot_2 必须先向西侧
+        # 回撤到 x≈-6.25，再转向收纳箱；该折线路径应保留至少 0.20 m 正交净距。
         frame_mesh_path = (
             "/Root/ConveyorBelt/ConveyorBelt_A08_07/ConveyorBelt_A08_07/"
             "SM_ConveyorBelt_A08_02"
@@ -280,16 +279,20 @@ class ConveyorBackgroundAssetTest(unittest.TestCase):
         frame_min_y = min(point[1] for point in high_frame_xy)
         layout = _LAYOUT_MODULE.resolve_scene_layout({})
         d02 = layout.belt_box_kinds[1]
-        start_x, start_y = _LAYOUT_MODULE.BELT_BOX_LANE_X, layout.robot_2_workstation_y
+        start_y = layout.robot_2_workstation_y
         target_x, target_y = west_bin_world_x, west_bin_world_y
-        vector_x, vector_y = target_x - start_x, target_y - start_y
         expanded_corner_x = frame_min_x - d02.width_x * 0.5
         expanded_corner_y = frame_min_y - d02.length_y * 0.5
-        signed_clearance = (
-            vector_y * (expanded_corner_x - start_x)
-            - vector_x * (expanded_corner_y - start_y)
-        ) / math.hypot(vector_x, vector_y)
-        self.assertGreaterEqual(signed_clearance, 0.035)
+
+        waypoint_x, waypoint_y = -6.25, start_y
+        # 第一段保持在高架膨胀 AABB 南侧；第二段从 waypoint 斜送到收纳箱。
+        self.assertGreaterEqual(expanded_corner_y - waypoint_y, 0.60)
+        dogleg_x, dogleg_y = target_x - waypoint_x, target_y - waypoint_y
+        dogleg_signed_clearance = (
+            dogleg_y * (expanded_corner_x - waypoint_x)
+            - dogleg_x * (expanded_corner_y - waypoint_y)
+        ) / math.hypot(dogleg_x, dogleg_y)
+        self.assertGreaterEqual(dogleg_signed_clearance, 0.20)
 
         belt_ranges = [
             world_x_range(name)
@@ -332,7 +335,7 @@ class ConveyorBackgroundAssetTest(unittest.TestCase):
 
         self.assertGreater(opening_01 * opening_02, 0.9999)
         expected_origin_02 = Gf.Vec3d(
-            0.7539417853480611, -0.00670726210634566, 0.43127658462090845
+            0.8539417853480611, -0.00670726210634566, 0.43127658462090845
         )
         for actual, expected in zip(origin_02, expected_origin_02):
             self.assertAlmostEqual(actual, expected, places=9)

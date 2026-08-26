@@ -21,10 +21,10 @@ CONVEYOR_NORTH_SHIFT_Y = 0.25
 
 # 双机作业组相对流水线既有停止工位向下游（世界 -Y）平移量。A08_07/A08_06
 # 对接端约 y=15.6~15.9 的高端架会挡住 robot_2 从第二件箱子回收到西侧收纳箱的
-# 搬运路径；两台机器人和各自桌箱整体下移 0.40 m 后，D02 到西侧收纳箱的保守
-# 平面扫掠从仍可能擦碰变为约 38 mm 正净距，收纳箱近沿退到 y≈15.20，
-# 同时停止线跟随机器人，仍保持 robot_1/2 分别正对队首/第二件箱。
-ROBOT_WORKCELL_DOWNSTREAM_SHIFT_Y = 0.40
+# 搬运路径；按紧凑场景要求，两台机器人和各自桌箱整体下移 0.30 m，收纳箱近沿
+# 退到 y≈15.30。停止线跟随机器人，仍保持 robot_1/2 分别正对队首/第二件箱。
+# robot_2 搬 D02 时应先向西侧回撤再转向收纳箱；直接斜线仍可能擦到 A08 高端架。
+ROBOT_WORKCELL_DOWNSTREAM_SHIFT_Y = 0.30
 
 # 纯显示站位机器人使用与现有两台相同的 SONIC 默认姿态。该姿态烘焙后的完整
 # G1 网格包围盒 min z=-0.757501582；沿用工作机器人 root z=0.76 时脚底离地
@@ -288,16 +288,16 @@ BELT_BOX_MAX_COUNT = 17
 #   圆角弧 s∈[5.74, ~7.939]（圆心 (-5.62-1.4, 20.0534-1.4)、R=1.4）；
 #   主线段 s>~7.939 沿 -Y（工位/停止线都在这段上）。
 #   s 参数化对 Δ 整体平移不变（圆心 cy 与工位 y 同加抵消）；双机作业组另沿
-#   世界 -Y 下移 0.40 m，因此默认停止线 s 在北移基准上增加 0.40，S_LEAD 不变。
+#   世界 -Y 下移 0.30 m，因此默认停止线 s 在北移基准上增加 0.30，S_LEAD 不变。
 # ------------------------------------------------------------------
 BELT_BOX_BRANCH_LANE_Y = 20.0534
 BELT_BOX_CORNER_RADIUS = 1.40
 BELT_BOX_PATH_S_ORIGIN_X = -12.76
 # 支线滚筒可用端（段 5 西端 x=-17.0342 ⇒ s=-4.2742，取 -4.27）：队尾不得越过。
 BELT_BOX_PATH_S_MIN = -4.27
-# 默认队首 s=11.06：落在主线 y≈15.533，距下移后的工位停止点约 1.535 m。
+# 默认队首 s=11.06：落在主线 y≈15.533，距下移后的工位停止点约 1.435 m。
 BELT_BOX_DEFAULT_S_LEAD = 11.06
-# 直线回退形态（endless off / legacy_props）的默认箱数：上游带面约 4.47 m，
+# 直线回退形态（endless off / legacy_props）的默认箱数：上游带面约 4.37 m，
 # 17 箱队列依赖弯道路径的额外容量，直排默认维持历史 5 箱（显式 COUNT 对两种
 # 形态都生效，直排给大了会被"悬出带面"fail-fast 拦住）。
 BELT_BOX_STRAIGHT_DEFAULT_COUNT = 5
@@ -461,7 +461,7 @@ def resolve_belt_box_positions(
     """
 
     endless = _endless_intake_active(environ, totes_on_conveyor=True)
-    # 弯道形态默认使用 17 槽；直线回退的上游带面约 4.47 m，默认维持历史 5 箱
+    # 弯道形态默认使用 17 槽；直线回退的上游带面约 4.37 m，默认维持历史 5 箱
     # （legacy_props 也走直线分支，默认 17 会启动即"悬出带面"）。
     count = _env_int(
         environ,
@@ -571,8 +571,8 @@ def resolve_belt_box_positions(
         [spawn_pitch] * (count - 1), "ISAACLAB_BELT_BOX_SPAWN_PITCH"
     )
     # ⚠️ 出生间距同时**就是**停稳后的队列间距（整带节拍：所有箱子同起同停，相对
-    # 位置恒定）。工位上游约有 18.47-13.998 ≈ 4.47 m，因此
-    #     队列长度 (count-1)*pitch + 端部半长  +  队首行程 (y_lead - y_stop)  ≤ 4.47
+    # 位置恒定）。工位上游约有 18.47-14.098 ≈ 4.37 m，因此
+    #     队列长度 (count-1)*pitch + 端部半长  +  队首行程 (y_lead - y_stop)  ≤ 4.37
     # 间距、行程、数量三者此消彼长；调大 pitch 必须同时下调 y_lead 或 count，
     # 否则下面的两条 fail-fast 会拦住。y_lead 是世界 y，走 _shifted 管线（Δ 非零
     # 时自动跟随，忘了会让队首出生在工位下游、启动即触发 fail-fast）。
@@ -616,7 +616,7 @@ def resolve_scene_layout(environ: Mapping[str, str]) -> ConveyorSceneLayout:
     cart_group_y = _env_float(environ, "ISAACLAB_CART_GROUP_Y", _shifted(18.75))
     robot_side_offset = _env_float(environ, "ISAACLAB_ROBOT_SIDE_OFFSET", 0.80)
 
-    # 0.60 m 窄带双机作业组整体沿世界 -Y 下移 0.40 m，绕开主线两段 A08
+    # 0.60 m 窄带双机作业组整体沿世界 -Y 下移 0.30 m，拉开与主线两段 A08
     # 对接处 y≈15.6~15.9 的高端架。只改 =1 流水线布局；=0 推车布局保持原位。
     default_robot_workstation_y = (
         round(_shifted(14.148) - ROBOT_WORKCELL_DOWNSTREAM_SHIFT_Y, 6)
@@ -660,7 +660,7 @@ def resolve_scene_layout(environ: Mapping[str, str]) -> ConveyorSceneLayout:
                 rot=(0.40455358, 0.0, 0.0, 0.91451430),  # 朝西北正对队尾物体
             ),
             StandbyRobotPose(
-                # 额外站位不属于本次双机作业组，不随 robot_1/2 的 -Y 0.40 m
+                # 额外站位不属于本次双机作业组，不随 robot_1/2 的 -Y 0.30 m
                 # 下移；它与西侧桌箱的净距因此只会增大。
                 pos=(robot_2_x, _shifted(17.70), STANDBY_ROBOT_ROOT_Z),
                 rot=(1.0, 0.0, 0.0, 0.0),  # yaw 0°，朝 +X
