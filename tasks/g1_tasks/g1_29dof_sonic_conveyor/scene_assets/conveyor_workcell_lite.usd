@@ -15,18 +15,6 @@ def Xform "Root"
     {
     }
 
-    def Xform "FloorZone_KeepClear" (
-        prepend references = @./warehouse-simple6_v61_visual_only.usda@</Root/FloorZone_KeepClear>
-    )
-    {
-    }
-
-    def Xform "FloorZone_Robot" (
-        prepend references = @./warehouse-simple6_v61_visual_only.usda@</Root/FloorZone_Robot>
-    )
-    {
-    }
-
     def Xform "GroundPlane" (
         prepend references = @./warehouse-simple6_v61_visual_only.usda@</Root/GroundPlane>
     )
@@ -365,24 +353,6 @@ def Xform "Root"
 
     def Xform "SM_floor58" (
         prepend references = @./warehouse-simple6_v61_visual_only.usda@</Root/SM_floor58>
-    )
-    {
-    }
-
-    def Xform "Stripe_Conv1" (
-        prepend references = @./warehouse-simple6_v61_visual_only.usda@</Root/Stripe_Conv1>
-    )
-    {
-    }
-
-    def Xform "Stripe_Walk1" (
-        prepend references = @./warehouse-simple6_v61_visual_only.usda@</Root/Stripe_Walk1>
-    )
-    {
-    }
-
-    def Xform "Stripe_Walk2" (
-        prepend references = @./warehouse-simple6_v61_visual_only.usda@</Root/Stripe_Walk2>
     )
     {
     }

@@ -26,6 +26,23 @@ _MODULE = importlib.util.module_from_spec(_MODULE_SPEC)
 sys.modules[_MODULE_SPEC.name] = _MODULE
 _MODULE_SPEC.loader.exec_module(_MODULE)
 
+_WORKCELL_DECORATIVE_BOXES = tuple(
+    f"CardBoxC_{row:02d}_{column:02d}" for row in range(3) for column in range(6)
+) + tuple(
+    f"CardBoxD_{row:02d}_{column:02d}" for row in range(4) for column in range(6)
+)
+_FLOOR_MARKERS = (
+    "SM_FloorDecal_Keepclear6_446",
+    "SM_FloorDecal_RecRed1X15",
+    "SM_FloorDecal_RecRed1X16",
+    *(f"SM_FloorDecal_StripeFull_4m{index}" for index in range(74, 82)),
+    "FloorZone_KeepClear",
+    "FloorZone_Robot",
+    "Stripe_Walk1",
+    "Stripe_Walk2",
+    "Stripe_Conv1",
+)
+
 
 class ConveyorBackgroundAssetTest(unittest.TestCase):
     def test_visual_only_background_is_the_default(self) -> None:
@@ -77,6 +94,17 @@ class ConveyorBackgroundAssetTest(unittest.TestCase):
         self.assertEqual(layer.count("delete apiSchemas"), 30)
         self.assertEqual(layer.count("bool physics:collisionEnabled = 0"), 30)
         self.assertEqual(layer.count("bool physics:rigidBodyEnabled = 0"), 30)
+
+    def test_workcell_box_piles_and_floor_markers_are_removed(self) -> None:
+        """工位两侧 42 个装饰箱和全部 16 个地面标识应退出 USD 组合。"""
+
+        layer = (_ASSETS_DIR / "warehouse-simple6_v61_visual_only.usda").read_text(
+            encoding="utf-8"
+        )
+
+        for name in (*_WORKCELL_DECORATIVE_BOXES, *_FLOOR_MARKERS):
+            with self.subTest(name=name):
+                self.assertEqual(layer.count(f'over "{name}" (active = false)'), 1)
 
     def test_three_main_belt_segments_are_narrowed_around_their_centerline(self) -> None:
         layer = (_ASSETS_DIR / "warehouse-simple6_v61_visual_only.usda").read_text(

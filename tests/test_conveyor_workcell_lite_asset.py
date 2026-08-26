@@ -23,13 +23,12 @@ class ConveyorWorkcellLiteAssetTest(unittest.TestCase):
         digest = hashlib.sha256(source.read_bytes()).hexdigest()
 
         self.assertEqual(digest, _MANIFEST["source_asset_sha256"])
-        # 2547 = 3017 - 300(BA01 纸箱垛) - 148(TB04 料筐垛) - 7(4 张桌子及台面三件)
-        #             - 15(传送带上的 10 个 ConveyorBelt_Box + 5 个 KLT_Bin)：
-        # clean wrapper 用 active=false 把这些装饰物移出组合。TB04 是 148 而非
-        # 50×3=150，第 8 列只有 L0——按实际存在枚举，不用笛卡尔积。
-        # 末尾那 15 个是任务改用真刚体纸箱队列后一并摘掉的（摆位还对不上带面），
-        # 理由见 clean wrapper 头部注释。
-        self.assertEqual(_MANIFEST["source_root_child_count"], 2547)
+        # 2489 = 3017 - 300(BA01 纸箱垛) - 148(TB04 料筐垛) - 7(桌子/台面物)
+        #             - 15(传送带装饰物) - 42(双机器人工位装饰箱)
+        #             - 16(地面 decal/区域/条纹标识)。
+        # clean wrapper 用 active=false 将纯布景移出组合，承重地面和任务箱不在
+        # 清理范围内。TB04 是 148 而非 50×3=150，第 8 列只有 L0。
+        self.assertEqual(_MANIFEST["source_root_child_count"], 2489)
         self.assertIn("ConveyorBelt", _MANIFEST["keep_root_exact"])
         self.assertEqual(
             _MANIFEST["omit_pseudoroot_prims"],
@@ -43,7 +42,7 @@ class ConveyorWorkcellLiteAssetTest(unittest.TestCase):
         self.assertLess(_LAYER_PATH.stat().st_size, 32 * 1024)
         self.assertNotIn("subLayers", layer)
         self.assertNotIn("active = false", layer)
-        self.assertEqual(layer.count("prepend references = @./warehouse-simple6_v61_visual_only.usda@</Root/"), 63)
+        self.assertEqual(layer.count("prepend references = @./warehouse-simple6_v61_visual_only.usda@</Root/"), 58)
 
     def test_required_workcell_roots_are_referenced(self) -> None:
         layer = _LAYER_PATH.read_text(encoding="utf-8")
@@ -53,11 +52,6 @@ class ConveyorWorkcellLiteAssetTest(unittest.TestCase):
             "GroundPlane",
             "SM_floor47",
             "SM_floor58",
-            "FloorZone_Robot",
-            "FloorZone_KeepClear",
-            "Stripe_Walk1",
-            "Stripe_Walk2",
-            "Stripe_Conv1",
         ):
             self.assertIn(f"</Root/{name}>", layer)
         self.assertIn("</Root/SM_WallA_", layer)
@@ -80,6 +74,11 @@ class ConveyorWorkcellLiteAssetTest(unittest.TestCase):
             "forklift",
             "SM_PushcartA",
             "WorkTable",
+            "CardBoxC_",
+            "CardBoxD_",
+            "SM_FloorDecal_",
+            "FloorZone_",
+            "Stripe_",
         ):
             self.assertNotIn(name, layer)
 

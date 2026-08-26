@@ -1,20 +1,15 @@
 {
   "schema_version": 1,
-  "description": "v61 流水线工位的白名单引用薄层，只组合传送带、工位地面标识、地面碰撞与仓库外墙。",
+  "description": "v61 流水线工位的白名单引用薄层，只组合传送带、地面碰撞与仓库外墙。",
   "source_asset": "warehouse-simple6_v61_visual_only.usda",
-  "source_asset_sha256": "fa22b36ce4f1f9eccbb0c9c201908b0cdf1b5ff2a6a773b66cc65d2796e5390f",
-  "source_root_child_count": 2547,
+  "source_asset_sha256": "f1781adba32cfede501d04c8e9e6a983d19715030e8008c93ea599cc45e42bd0",
+  "source_root_child_count": 2489,
   "output_asset": "conveyor_workcell_lite.usd",
   "keep_root_exact": [
     "ConveyorBelt",
     "GroundPlane",
     "SM_floor47",
-    "SM_floor58",
-    "FloorZone_Robot",
-    "FloorZone_KeepClear",
-    "Stripe_Walk1",
-    "Stripe_Walk2",
-    "Stripe_Conv1"
+    "SM_floor58"
   ],
   "keep_root_prefixes": [
     "SM_WallA_"
@@ -47,7 +42,15 @@
     "/Root/forklift",
     "/Root/SM_PushcartA_02_22",
     "/Root/WorkTable_1",
-    "/Root/WorkTable_2"
+    "/Root/WorkTable_2",
+    "/Root/CardBoxC_00_00",
+    "/Root/CardBoxD_00_00",
+    "/Root/SM_FloorDecal_Keepclear6_446",
+    "/Root/FloorZone_Robot",
+    "/Root/FloorZone_KeepClear",
+    "/Root/Stripe_Walk1",
+    "/Root/Stripe_Walk2",
+    "/Root/Stripe_Conv1"
   ],
   "forbidden_active_type_names": [
     "Camera",
@@ -72,5 +75,5 @@
     "min_used_layer_reduction": 1600
   },
   "remote_dependency_prefix": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/",
-  "expected_lite_remote_layers": 8
+  "expected_lite_remote_layers": 5
 }
