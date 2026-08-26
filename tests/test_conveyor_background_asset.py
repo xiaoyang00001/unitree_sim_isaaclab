@@ -123,7 +123,7 @@ class ConveyorBackgroundAssetTest(unittest.TestCase):
                 self.assertIn("float3 xformOp:scale = (1, 0.6666667, 1)", block)
 
     def test_robot_2_workcell_keeps_original_side_without_half_turn(self) -> None:
-        """robot_2 的支撑台和 bin_01 应恢复换边前的变换。"""
+        """robot_2 的桌箱保留恢复后的侧向/朝向，并作为一组向窄带内移。"""
 
         layer = (_ASSETS_DIR / "warehouse-simple6_v61_visual_only.usda").read_text(
             encoding="utf-8"
@@ -137,7 +137,7 @@ class ConveyorBackgroundAssetTest(unittest.TestCase):
 
         self.assertIn(
             "double3 xformOp:translate = (1.6539417853480621, "
-            "2.086707303107458, -0.577029550733144)",
+            "1.886707303107458, -0.577029550733144)",
             table_03,
         )
         self.assertIn(
@@ -149,7 +149,7 @@ class ConveyorBackgroundAssetTest(unittest.TestCase):
             table_03,
         )
         self.assertIn(
-            "(8.31997747620902, -8.62928249104018, "
+            "(8.31997747620902, -8.82928249104018, "
             "-0.6416343162044926, 1.0)",
             bin_01,
         )
@@ -162,9 +162,9 @@ class ConveyorBackgroundAssetTest(unittest.TestCase):
         )
         bin_02 = layer.split('over "blue_sorting_bin_02"', 1)[1]
 
-        # 根矩阵保留 v48 的原始平移与缩放，避免可见料箱被甩离工作位。
+        # 根矩阵只把局部 Y 加 0.20 m 以靠近窄带，旋转/缩放和偏置补偿保持不变。
         self.assertIn(
-            "(-1.9383017274054972, -0.35331139354023133, "
+            "(-1.9383017274054972, -0.15331139354023133, "
             "-0.24833856360426954, 1.0)",
             bin_02,
         )
@@ -177,8 +177,8 @@ class ConveyorBackgroundAssetTest(unittest.TestCase):
         )
 
     @unittest.skipUnless(_HAS_PXR, "需要 pxr（usd-core）做离线组合审计")
-    def test_west_workcell_table_and_bin_move_together_for_robot_2(self) -> None:
-        """西侧桌箱沿挂载局部 +X 同移 0.75 m，东侧工位保持原位。"""
+    def test_both_workcell_tables_and_bins_move_inward_with_the_narrow_belt(self) -> None:
+        """两套桌箱各向带中心移动 0.20 m，同时保持箱底完整坐在桌面上。"""
 
         stage = Usd.Stage.Open(
             str(_ASSETS_DIR / "warehouse-simple6_v61_visual_only.usda"),
@@ -190,18 +190,53 @@ class ConveyorBackgroundAssetTest(unittest.TestCase):
             Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render]
         )
 
-        def center(name: str) -> Gf.Vec3d:
+        def bounds(name: str) -> Gf.Range3d:
             prim = stage.GetPrimAtPath(f"/Root/ConveyorBelt/{name}")
             self.assertTrue(prim, name)
-            return cache.ComputeWorldBound(prim).ComputeAlignedRange().GetMidpoint()
+            return cache.ComputeWorldBound(prim).ComputeAlignedRange()
 
-        east_bin = center("blue_sorting_bin_02")
-        west_table = center("SM_HeavyDutyPackingTable_C02_03")
-        west_bin = center("blue_sorting_bin_01")
+        def world_x_range(name: str) -> tuple[float, float]:
+            local = bounds(name)
+            # 背景挂载 pos=(-4.68, 14.39363) / yaw=+90°：world_x=-4.68-local_y。
+            return -4.68 - local.GetMax()[1], -4.68 - local.GetMin()[1]
 
-        self.assertAlmostEqual(west_table[0], west_bin[0], places=6)
+        east_table = bounds("SM_HeavyDutyPackingTable_C02_01").GetMidpoint()
+        east_bin = bounds("blue_sorting_bin_02").GetMidpoint()
+        west_table = bounds("SM_HeavyDutyPackingTable_C02_03").GetMidpoint()
+        west_bin = bounds("blue_sorting_bin_01").GetMidpoint()
+
+        self.assertAlmostEqual(east_table[1], east_bin[1], places=6)
         self.assertAlmostEqual(west_table[1], west_bin[1], places=6)
+        self.assertAlmostEqual(
+            bounds("SM_HeavyDutyPackingTable_C02_01").GetMax()[2],
+            bounds("blue_sorting_bin_02").GetMin()[2],
+            places=9,
+        )
+        self.assertAlmostEqual(
+            bounds("SM_HeavyDutyPackingTable_C02_03").GetMax()[2],
+            bounds("blue_sorting_bin_01").GetMin()[2],
+            places=9,
+        )
         self.assertAlmostEqual(west_bin[0] - east_bin[0], 0.75, places=6)
+
+        east_bin_world_x = -4.68 - east_bin[1]
+        west_bin_world_x = -4.68 - west_bin[1]
+        self.assertAlmostEqual(east_bin_world_x, -4.673292696892543, places=6)
+        self.assertAlmostEqual(west_bin_world_x, -6.566707303107458, places=6)
+        # 两只收纳箱恢复到各自机器人外侧约 66.7 mm，而不是窄带改造后遗留的 266.7 mm。
+        self.assertAlmostEqual(east_bin_world_x - (-4.74), 0.066707303107457, places=6)
+        self.assertAlmostEqual(-6.50 - west_bin_world_x, 0.066707303107458, places=6)
+
+        belt_ranges = [
+            world_x_range(name)
+            for name in ("ConveyorBelt_A08_06", "ConveyorBelt_A08_07", "ConveyorBelt_A08_08")
+        ]
+        belt_min = min(item[0] for item in belt_ranges)
+        belt_max = max(item[1] for item in belt_ranges)
+        east_min, _east_max = world_x_range("blue_sorting_bin_02")
+        _west_min, west_max = world_x_range("blue_sorting_bin_01")
+        self.assertGreaterEqual(east_min - belt_max, 0.004)
+        self.assertGreaterEqual(belt_min - west_max, 0.014)
 
     @unittest.skipUnless(_HAS_PXR, "需要 pxr（usd-core）做离线组合审计")
     def test_blue_sorting_bins_open_toward_the_same_robot_side(self) -> None:
@@ -233,7 +268,7 @@ class ConveyorBackgroundAssetTest(unittest.TestCase):
 
         self.assertGreater(opening_01 * opening_02, 0.9999)
         expected_origin_02 = Gf.Vec3d(
-            1.1539417853480611, -0.20670726210634566, 0.43127658462090845
+            1.1539417853480611, -0.00670726210634566, 0.43127658462090845
         )
         for actual, expected in zip(origin_02, expected_origin_02):
             self.assertAlmostEqual(actual, expected, places=9)

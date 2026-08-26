@@ -70,6 +70,9 @@ ISAACLAB_PEER_ROBOT_MODE=visual_lod
 `parcel_a02` 为 `0.4526 m`，两侧各至少留 `73.7 mm`。robot_1/2 同步向车道内侧平移
 `0.20 m`，保持机器人到各自箱心原有的 `0.88 m` 横向距离，双手可从箱体两侧抱住中部，
 而不是追随偏心箱位。C01/C02 资产仍可通过显式 `ISAACLAB_BELT_BOX_PATTERN` 用于回退/A-B。
+两台机器人外侧的两套支撑台与蓝色收纳箱也各向流水线中线收拢 `0.20 m`：收纳箱世界
+X 中心由 `-4.473/-6.767` 调整为 `-4.673/-6.567`，恢复为分别位于 robot_1/2 外侧
+约 `66.7 mm`，同时保持箱底与桌面完整对齐；出料端的 `blue_sorting_bin_03` 不动。
 
 流水线布局中的三个新增站位由 `ISAACLAB_SONIC_ROBOT_COUNT` 决定形态：host/viewer
 数量覆盖到该站位时，分别生成 SONIC 动力学真身或 `scene_state` 镜像；未覆盖的站位才使用
