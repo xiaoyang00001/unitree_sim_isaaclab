@@ -853,6 +853,25 @@ over "Root"
         float3 xformOp:scale = (1, 1, 1)
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
 
+        # 三段 A08 的资产局部 Y 是世界横向 X。原有效滚轮面宽 0.90 m，按 2/3
+        # 收窄为 0.60 m；各段原点恰在横向中心，因此只改 scale.y 就能保持世界中线
+        # x=-5.62 和三段沿 Y 的插接长度不变。隐藏托面/事件判据与 conveyor_drive.
+        # BELT_WIDTH=0.60 共用同一口径。
+        over "ConveyorBelt_A08_06"
+        {
+            float3 xformOp:scale = (1, 0.6666667, 1)
+        }
+
+        over "ConveyorBelt_A08_07"
+        {
+            float3 xformOp:scale = (1, 0.6666667, 1)
+        }
+
+        over "ConveyorBelt_A08_08"
+        {
+            float3 xformOp:scale = (1, 0.6666667, 1)
+        }
+
         over "SM_HeavyDutyPackingTable_C02_01"
         {
             matrix4d xformOp:transform = ( (0.004394829989768472, 0.0, 0.0, 0.0), (0.0, 0.01365120615810155, 0.0, 0.0), (0.0, 0.0, 0.004308692179620263, 0.0), (1.0265775455502195, -0.2067073031074571, -0.5770295507331438, 1.0) )

@@ -380,10 +380,10 @@ def _env_reset_sync_cfg() -> ZmqEnvResetSyncActionCfg:
 #
 #   1 = 流水线布局：17 个箱/包沿西拐 L 路径排在**入料端**，由
 #       drive_belt_boxes 事件沿路径送到第二段工位挡停；双机站第二段两侧
-#       (x=-4.54 / -6.7, y=14.398)，另有三台无物理 G1 在支线队尾、主线和支线中段分散站位，
-#       不组成面对面队列；pushcart_2 空车留在 y=19.64363
-#       （⚠️ robot_1 x=-4.54 是 2026-08-09 的对称化站位，不是 01cdfaf 的 -4.75；
-#       所有世界 y 已含整体北移 Δ=0.25）。
+#       (x=-4.74 / -6.50, y=14.398/15.148)；首批箱统一在 x=-5.62 中线上，
+#       两侧手到箱心横向距离同为 0.88 m。另有三台无物理 G1 在支线队尾、主线和
+#       支线中段分散站位，不组成面对面队列；pushcart_2 空车留在 y=19.64363。
+#       所有世界 y 已含整体北移 Δ=0.25。
 #   0 = 原布局：两筐恢复原尺寸（scale 0.01）叠放回 pushcart_2 拖车顶面
 #       (x=-5.62, y=19.0)；双机回到拖车两侧工位；筐被机器人搬上入料端后
 #       自动流到出料段停住（作业闭环）。
@@ -754,11 +754,6 @@ def _make_endless_path_support_cfg(prim_name: str) -> AssetBaseCfg:
 
 _ENDLESS_CURVE_USD = f"{NVIDIA_NUCLEUS_DIR}/{endless_intake.CURVE_ASSET_NVIDIA_RELPATH}"
 _ENDLESS_XLEG_USD = f"{NVIDIA_NUCLEUS_DIR}/{endless_intake.XLEG_ASSET_NVIDIA_RELPATH}"
-_ENDLESS_UNIT_SCALE = (
-    endless_intake.CONVEYOR_UNIT_SCALE,
-    endless_intake.CONVEYOR_UNIT_SCALE,
-    endless_intake.CONVEYOR_UNIT_SCALE,
-)
 # legacy 默认使用一体托面；surface_velocity 仍保留可单独施加 -Y 表面速度的主线
 # Cuboid（该实验后端本来就不驱动支线/弧段）。
 _USE_SEAM_FREE_PATH_SUPPORT = ENDLESS_INTAKE.enabled and CONVEYOR_DRIVE_MODE == "legacy"
@@ -770,7 +765,7 @@ def _make_endless_xleg_cfg(index: int) -> AssetBaseCfg:
         _ENDLESS_XLEG_USD,
         endless_intake.XLEG_POSITIONS[index],
         endless_intake.XLEG_YAW_DEG,
-        _ENDLESS_UNIT_SCALE,
+        endless_intake.XLEG_SCALE,
     )
 
 
@@ -837,7 +832,7 @@ def _log_scene_layout() -> None:
         f"{tag}   拖车/筐 x={PUSHCART_2_POS[0]:.3f} y={PUSHCART_2_POS[1]:.3f}"
         f" | robot_1=({ROBOT_1_X:.3f},{ROBOT_WORKSTATION_Y:.3f})"
         f" robot_2=({ROBOT_2_X:.3f},{ROBOT_2_WORKSTATION_Y:.3f})"
-        f" | 流水线中线 x={BELT_X_CENTER:.3f} 入料端 y={BELT_Y_MAX:.3f}"
+        f" | 流水线中线 x={BELT_X_CENTER:.3f} 有效宽={BELT_WIDTH:.2f}m 入料端 y={BELT_Y_MAX:.3f}"
         f" | 整体北移 Δ={CONVEYOR_NORTH_SHIFT_Y:.2f}"
         "（支线越过货架排 B 所需；wrapper 组变换/装饰/地贴同 Δ）"
     )
@@ -1435,8 +1430,8 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
     #   conveyor_stop_collider 下游静态高摩擦停止/抓取段
     # legacy + ISAACLAB_CONVEYOR_VISUAL_ONLY_ASSET=1 可让两种 backend 共用
     # visual-only 资产和同一组简化碰撞几何，用于严格 driver A/B。
-    # 顶面对齐滚轮顶 z≈0.772（板厚 0.04 → 中心 z=0.752），可用宽度
-    # x∈[-6.07,-5.17]。y_stop<=0 的循环模式不生成静态停止段，驱动段覆盖全长。
+    # 顶面对齐滚轮顶 z≈0.772（板厚 0.04 → 中心 z=0.752），窄带可用宽度
+    # x∈[-5.92,-5.32]。y_stop<=0 的循环模式不生成静态停止段，驱动段覆盖全长。
     conveyor_collider = (
         _make_endless_path_support_cfg("ConveyorCollider")
         if _USE_SEAM_FREE_PATH_SUPPORT
@@ -1524,7 +1519,8 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
 
     # ------------------------------------------------------------------
     # 看不到头的入料端（=1 且 layout 道具时生成；开关/几何见 endless_intake）：
-    # A02 弯道套住带头公头向西拐 90°，五段 A05 短直段接成 X 支线，从背景货架
+    # A02 原宽弯道套住带头公头向西拐 90°，五段横向收窄的 A05 短直段接成 X 支线，
+    # 弯道作为宽入口到 0.60 m 窄直线的过渡；支线从背景货架
     # 排 B 北侧擦过、端头伸到排 B/叉车后面（Δ=0.25 整体北移换来的通道）。
     # 全部 AssetBaseCfg（scene.extras），输送机件纯视觉（coll=0/rigid=0，
     # 裸厘米 ⇒ scale=0.01）；legacy 用一张连续静态托面覆盖主线/弧段/支线，
@@ -1537,7 +1533,7 @@ class G129SonicConveyorSceneCfg(G129SonicSceneCfg):
             _ENDLESS_CURVE_USD,
             endless_intake.CURVE_POS,
             endless_intake.CURVE_YAW_DEG,
-            _ENDLESS_UNIT_SCALE,
+            endless_intake.CURVE_SCALE,
         )
         if ENDLESS_INTAKE.enabled
         else None

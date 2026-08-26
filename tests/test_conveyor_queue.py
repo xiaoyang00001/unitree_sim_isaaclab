@@ -32,7 +32,7 @@ _HALF_D = 0.19
 _HALF_C = 0.25
 _GAP = 0.07
 _BELT_TOP_Z = 0.772
-_X_RANGE = (-6.17, -5.07)
+_X_RANGE = (-6.02, -5.22)
 _Y_RANGE = (10.19, 18.22)
 
 
@@ -474,8 +474,8 @@ _S_ARC_START = _CORNER_CENTER[0] - _S_ORIGIN_X  # 5.74
 _S_ARC_END = _S_ARC_START + _RADIUS * 3.141592653589793 / 2.0
 # 与 conveyor_env_cfg 传给事件的 extra_rects 同口径（endless_intake 常量 ±0.10）。
 _EXTRA_RECTS = (
-    (-7.12, -5.07, 18.37, 20.6034),
-    (-17.1342, -6.92, 19.5034, 20.6034),
+    (-7.12, -5.22, 18.37, 20.4534),
+    (-17.1342, -6.92, 19.6534, 20.4534),
 )
 
 
@@ -810,7 +810,7 @@ class GrabCycleStabilityTest(unittest.TestCase):
     反向写输送速度（与机器人拔河）；锁存化后翻转恰 1 次、全程不拖拽。
     """
 
-    _BOX2 = (-5.82, 14.887, 0.775)
+    _BOX2 = (-5.62, 14.887, 0.775)
     _BOX3 = (-5.62, 15.637, 0.775)
 
     _RELEASE_STEPS = 25
@@ -883,15 +883,15 @@ class GrabCycleStabilityTest(unittest.TestCase):
         return [bool(v) for v in drive.squeeze(-1).tolist()]
 
     def test_shoving_the_stopped_lead_upstream_does_not_restart_the_belt(self) -> None:
-        self.assertEqual(self._step((-5.42, _Y_STOP - 0.011, 0.775)), [False] * 3)
+        self.assertEqual(self._step((-5.62, _Y_STOP - 0.011, 0.775)), [False] * 3)
         # 抱取推挤：y 被推回停止线上游 2cm——修复前这里整带误启动且箱1 被拖拽。
-        self.assertEqual(self._step((-5.42, _Y_STOP + 0.02, 0.775)), [False] * 3)
+        self.assertEqual(self._step((-5.62, _Y_STOP + 0.02, 0.775)), [False] * 3)
 
     def test_completed_box_swinging_back_respects_restart_policy(
         self,
     ) -> None:
-        self._step((-5.42, _Y_STOP - 0.011, 0.775))  # 到位锁存
-        self._step((-5.42, _Y_STOP - 0.011, 0.955))  # 抬起（z 出窗）
+        self._step((-5.62, _Y_STOP - 0.011, 0.775))  # 到位锁存
+        self._step((-5.62, _Y_STOP - 0.011, 0.955))  # 抬起（z 出窗）
         expected = [False, self._RESTART_AFTER_DEPARTURE, self._RESTART_AFTER_DEPARTURE]
         # 横移出通道后，循环取件模式放行，单批次模式继续停线。
         self.assertEqual(self._step((-5.05, _Y_STOP - 0.01, 0.955)), expected)
@@ -902,11 +902,11 @@ class GrabCycleStabilityTest(unittest.TestCase):
 
     def test_full_grab_cycle_has_expected_belt_transitions(self) -> None:
         frames = [
-            (-5.42, _Y_STOP - 0.011, 0.775),  # 停在工位
-            (-5.42, _Y_STOP + 0.020, 0.775),  # 抱取推挤
-            (-5.42, _Y_STOP - 0.011, 0.775),  # 回位
-            (-5.42, _Y_STOP - 0.011, 0.895),  # 抬起 12cm（z 窗内）
-            (-5.42, _Y_STOP - 0.011, 0.955),  # 抬起 18cm（z 出窗）
+            (-5.62, _Y_STOP - 0.011, 0.775),  # 停在工位
+            (-5.62, _Y_STOP + 0.020, 0.775),  # 抱取推挤
+            (-5.62, _Y_STOP - 0.011, 0.775),  # 回位
+            (-5.62, _Y_STOP - 0.011, 0.895),  # 抬起 12cm（z 窗内）
+            (-5.62, _Y_STOP - 0.011, 0.955),  # 抬起 18cm（z 出窗）
             (-5.05, _Y_STOP - 0.010, 0.955),  # 横移出通道
             (-5.12, _Y_STOP + 0.020, 0.885),  # 手臂回摆
             (-5.00, _Y_STOP + 0.020, 0.900),  # 再次移出
@@ -1110,7 +1110,7 @@ class InterceptGrabStabilityTest(GrabCycleStabilityTest):
     def test_both_boxes_departing_never_restarts_the_belt(self) -> None:
         box2_lane = self._BOX2[0]
         # box1 在工位、box2 停排队位：整带停。
-        self.assertEqual(self._step((-5.42, _Y_STOP - 0.011, 0.775)), [False] * 3)
+        self.assertEqual(self._step((-5.62, _Y_STOP - 0.011, 0.775)), [False] * 3)
         # robot1 把 box1 横移出通道，首批到位锁存仍保持整带停线。
         self.assertEqual(
             self._step((-5.05, _Y_STOP - 0.01, 0.955)), [False, False, False]
@@ -1136,15 +1136,15 @@ class InterceptGrabStabilityTest(GrabCycleStabilityTest):
 
     def test_both_boxes_returning_to_belt_does_not_clear_terminal_stop(self) -> None:
         # 首批到位后两箱均离线，完成位已经锁存。
-        self._step((-5.42, _Y_STOP - 0.011, 0.775))
+        self._step((-5.62, _Y_STOP - 0.011, 0.775))
         self._step((-5.00, _Y_STOP, 0.960), (-5.00, _Y_STOP + 0.75, 0.960))
 
         # 即使两箱随后落回带面并驻留超过旧自愈窗口，也不能重新入队或启动 box3。
         drive = None
         for _ in range(self._RELEASE_STEPS + 1):
             drive = self._step(
-                (-5.42, _Y_STOP + 0.30, 0.775),
-                (-5.82, _Y_STOP + 1.05, 0.775),
+                (-5.62, _Y_STOP + 0.30, 0.775),
+                (-5.62, _Y_STOP + 1.05, 0.775),
             )
         self.assertEqual(drive, [False, False, False])
 

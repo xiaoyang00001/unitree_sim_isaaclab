@@ -32,15 +32,25 @@ from pxr import Gf, PhysxSchema, Usd, UsdPhysics
 from . import conveyor_queue
 
 # 带面判据的默认参数直接取自 conveyor_drive 的常量，避免第二处真源。
-# ⚠️ ConveyorEventsCfg 只显式传 y_stop / y_recycle / y_respawn，**不传 y_range**，
+# ⚠️ ConveyorEventsCfg 只显式传 y_stop / y_recycle / y_respawn，**不传 x/y_range**，
 #    所以下面的默认值就是运行时真正生效的判据；改 conveyor_drive 常量会自动跟随，
 #    别在这里另写字面量造第二真源。
 from .conveyor_drive import (
     BELT_TOP_Z,
+    BELT_WIDTH,
+    BELT_X_CENTER,
     BELT_Y_MAX,
     BELT_Y_MIN,
     DEFAULT_Y_RECYCLE,
     DEFAULT_Y_RESPAWN,
+)
+
+
+# 根位置判据在可用滚轮面两侧各放宽 0.10 m，容纳接触抖动；宽度随窄带常量派生。
+BELT_X_MASK_MARGIN = 0.10
+DEFAULT_BELT_X_RANGE = (
+    BELT_X_CENTER - BELT_WIDTH * 0.5 - BELT_X_MASK_MARGIN,
+    BELT_X_CENTER + BELT_WIDTH * 0.5 + BELT_X_MASK_MARGIN,
 )
 
 
@@ -346,7 +356,7 @@ def drive_belt_boxes_on_conveyor(
     enabled: bool = True,
     belt_top_z: float = BELT_TOP_Z,
     z_tolerance: float = 0.15,
-    x_range: tuple[float, float] = (-6.17, -5.07),
+    x_range: tuple[float, float] = DEFAULT_BELT_X_RANGE,
     # 带面判据跟 conveyor_drive 常量走，避免第二真源。
     y_range: tuple[float, float] = (BELT_Y_MIN, BELT_Y_MAX),
     y_stop: float | None = None,
@@ -644,7 +654,7 @@ class DriveBeltBoxesOnConveyor(ManagerTermBase):
         enabled: bool = True,
         belt_top_z: float = BELT_TOP_Z,
         z_tolerance: float = 0.15,
-        x_range: tuple[float, float] = (-6.17, -5.07),
+        x_range: tuple[float, float] = DEFAULT_BELT_X_RANGE,
         y_range: tuple[float, float] = (BELT_Y_MIN, BELT_Y_MAX),
         y_stop: float | None = None,
         queue_gap: float = 0.07,
@@ -697,7 +707,7 @@ def drive_totes_on_conveyor(
     enabled: bool = True,
     belt_top_z: float = BELT_TOP_Z,
     z_tolerance: float = 0.15,
-    x_range: tuple[float, float] = (-6.17, -5.07),
+    x_range: tuple[float, float] = DEFAULT_BELT_X_RANGE,
     y_range: tuple[float, float] = (BELT_Y_MIN, BELT_Y_MAX),
     y_stop: float | None = None,
     y_recycle: float = DEFAULT_Y_RECYCLE,
@@ -711,7 +721,7 @@ def drive_totes_on_conveyor(
 
     * ``belt_top_z`` ± ``z_tolerance``：筐原点在底面，静止时 z≈0.775。被机器人拎起
       或掉到地上就超出窗口 → 立即停止驱动，不会把抓在手里的筐硬拖走。
-    * ``x_range`` / ``y_range``：滚轮可用带面（略放宽于碰撞板 x[-6.07,-5.17]）。
+    * ``x_range`` / ``y_range``：滚轮可用带面（横向比 0.60 m 碰撞板各放宽 0.10 m）。
 
     ``y_stop`` 是机器人工位：筐一旦流到该 y 就不再驱动，靠 μd=0.6 的动摩擦自然
     停住（约 5 mm 滑行）。这里刻意**不写零速度**——每步硬写零会和机器人的抓取动作
@@ -782,7 +792,7 @@ def recycle_totes_on_surface_conveyor(
     enabled: bool = False,
     belt_top_z: float = BELT_TOP_Z,
     z_tolerance: float = 0.15,
-    x_range: tuple[float, float] = (-6.17, -5.07),
+    x_range: tuple[float, float] = DEFAULT_BELT_X_RANGE,
     y_range: tuple[float, float] = (BELT_Y_MIN, BELT_Y_MAX),
     y_recycle: float = DEFAULT_Y_RECYCLE,
     y_respawn: float = DEFAULT_Y_RESPAWN,

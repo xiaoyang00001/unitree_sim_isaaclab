@@ -557,17 +557,35 @@ def _validate_workcell_adapter(
     v61_layer = sdf.Layer.FindOrOpen(
         str(workcell_adapter.parent / _LEGACY_WAREHOUSE_SOURCE_NAME)
     )
+    clean_layer = sdf.Layer.FindOrOpen(
+        str(workcell_adapter.parent / _CLEAN_WAREHOUSE_SOURCE_NAME)
+    )
     if v61_layer:
         belt_spec = v61_layer.GetPrimAtPath("/Root/ConveyorBelt")
         translate_spec = (
             belt_spec.properties.get("xformOp:translate") if belt_spec else None
         )
         if translate_spec is not None:
-            expected_translate = translate_spec.default
+            # clean wrapper 可在不改原 v61 crate 的前提下覆写工位位移；当前
+            # CONVEYOR_NORTH_SHIFT_Y=0.25 就是这种情况。优先读取强层的作者值，
+            # 仅在它没写 translate 时回退 v61，避免把合法 override 误报为重复位移。
+            clean_belt_spec = (
+                clean_layer.GetPrimAtPath("/Root/ConveyorBelt") if clean_layer else None
+            )
+            clean_translate_spec = (
+                clean_belt_spec.properties.get("xformOp:translate")
+                if clean_belt_spec
+                else None
+            )
+            expected_translate = (
+                clean_translate_spec.default
+                if clean_translate_spec is not None
+                else translate_spec.default
+            )
             actual_translate = belt_transform.ExtractTranslation()
             if actual_translate != expected_translate:
                 raise RuntimeError(
-                    "workcell-lite 组合层丢失了 v61 的 ConveyorBelt 位移："
+                    "workcell-lite 组合层丢失了 clean-v61 的 ConveyorBelt 位移："
                     f"expected={expected_translate}, actual={actual_translate}"
                 )
 

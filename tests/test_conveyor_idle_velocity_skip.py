@@ -243,6 +243,7 @@ def _compile_manager_term(report_interval: int = 3):
         "ManagerTermBase": _FakeManagerTermBase,
         "ManagerBasedEnv": object,
         "BELT_TOP_Z": 0.772,
+        "DEFAULT_BELT_X_RANGE": (-6.02, -5.22),
         "BELT_Y_MIN": 10.19,
         "BELT_Y_MAX": 18.22,
         "_IDLE_WRITE_DIAGNOSTIC_INTERVAL_CALLS": report_interval,

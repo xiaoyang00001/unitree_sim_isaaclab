@@ -78,6 +78,17 @@ class ConveyorBackgroundAssetTest(unittest.TestCase):
         self.assertEqual(layer.count("bool physics:collisionEnabled = 0"), 30)
         self.assertEqual(layer.count("bool physics:rigidBodyEnabled = 0"), 30)
 
+    def test_three_main_belt_segments_are_narrowed_around_their_centerline(self) -> None:
+        layer = (_ASSETS_DIR / "warehouse-simple6_v61_visual_only.usda").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertEqual(layer.count("float3 xformOp:scale = (1, 0.6666667, 1)"), 3)
+        for segment in ("ConveyorBelt_A08_06", "ConveyorBelt_A08_07", "ConveyorBelt_A08_08"):
+            with self.subTest(segment=segment):
+                block = layer.split(f'over "{segment}"', 1)[1]
+                self.assertIn("float3 xformOp:scale = (1, 0.6666667, 1)", block)
+
     def test_blue_sorting_bin_02_authors_in_place_half_turn(self) -> None:
         """02 应在叶子 mesh 自身原点翻转，不能旋转偏置很大的根 Prim。"""
 

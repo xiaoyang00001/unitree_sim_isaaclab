@@ -318,6 +318,16 @@ class ConveyorPathSupportPhysicsAssetTest(unittest.TestCase):
                 ) * (c[0] - a[0])
                 self.assertGreater(signed_double_area, 0.0, "面必须非退化且法向朝 +Z")
 
+    def test_support_uses_the_same_sixty_centimetre_width_on_both_straights(self) -> None:
+        points, _faces = self._mesh_topology()
+
+        main_x = sorted({x for x, y, _z in points if y == -8.03})
+        branch_y = sorted({y for x, y, _z in points if x == -11.4142})
+        self.assertEqual(main_x, [-0.30, 0.30])
+        self.assertEqual(branch_y, [1.2834, 1.8834])
+        self.assertAlmostEqual(main_x[1] - main_x[0], 0.60, places=9)
+        self.assertAlmostEqual(branch_y[1] - branch_y[0], 0.60, places=9)
+
     def test_support_triangles_form_one_seam_free_manifold(self) -> None:
         """三角形须按共享边连成一个无洞平面，不能退回多块对接托面。"""
 

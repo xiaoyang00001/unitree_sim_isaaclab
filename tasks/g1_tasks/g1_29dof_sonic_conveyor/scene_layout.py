@@ -266,20 +266,7 @@ DEFAULT_BELT_BOX_PATTERN = _default_belt_box_keys(DEFAULT_BELT_BOX_RANDOM_SEED)
 BELT_BOX_LANE_X = -5.62
 BELT_BOX_SPAWN_Z = 0.775
 BELT_BOX_BELT_Y_MAX = _shifted(18.22)
-BELT_BOX_BELT_WIDTH = 0.90
-
-# 队首两箱（belt_box_1/2）不摆在带面正中线：两台机器人沿 Y 错开后，第一箱偏东
-# 贴近 robot_1，第二箱偏西贴近上游的 robot_2，一台一箱都能从近侧直接
-# 抱（2026-08-10 用户反馈）。偏移量 0.20 m：默认队首固定 d01/d02，带半宽
-# 0.45 − 箱半宽 0.19 − 偏移 0.20 = 0.06 m，仍留 60 mm 到带边；显式 PATTERN
-# 若把更宽的 C 型箱放到队首，下面仍会按真实半宽校验（0.50 m C 型恰好贴边，
-# 因此不作为默认队首）。带面驱动判据
-# on_belt_mask 的 x_range 半宽 0.55、主线段 s 只按 y 取值（见 conveyor_queue.
-# path_progress / endless_intake.path_s_of_point），偏移量在直线段上恒定，
-# 不会被驱动逻辑纠偏回中线，也不影响排队/防撞判据（那些只看 s，s 只看 y）。
-# 只对落在主线直段的槽位生效——弧段/支线段的 x 是路径方向不是横向偏移，
-# 见 resolve_belt_box_positions 里按 slot 是否越过 s_arc_end 传的 guard。
-BELT_BOX_FRONT_X_OFFSET = 0.20
+BELT_BOX_BELT_WIDTH = 0.60
 
 # SceneCfg 里的 belt_box_N 字段是显式声明的（configclass 需要类属性），所以数量
 # 有硬上限。调大必须同时在 conveyor_env_cfg.G129SonicConveyorSceneCfg 里补字段。
@@ -433,28 +420,6 @@ def resolve_belt_box_pattern(environ: Mapping[str, str], count: int) -> tuple[Be
     return tuple(BELT_BOX_KINDS[pattern[index % len(pattern)]] for index in range(count))
 
 
-def _apply_front_two_x_offset(
-    positions: tuple[tuple[float, float, float], ...],
-    offset: float,
-    guard: tuple[bool, ...],
-) -> tuple[tuple[float, float, float], ...]:
-    """队首两箱（下标 0/1）分别向东/西偏移 ``offset``，其余箱子不动。
-
-    ``guard`` 逐箱开关：弯道形态下箱子若落在弧段/支线（那里 x 是路径方向，不是
-    横向偏移），调用方传 False 跳过，避免破坏路径几何。
-    """
-
-    if offset <= 0.0 or not positions:
-        return positions
-    out = list(positions)
-    for index, sign in enumerate((1.0, -1.0)):
-        if index >= len(out) or not guard[index]:
-            continue
-        x, y, z = out[index]
-        out[index] = (x + sign * offset, y, z)
-    return tuple(out)
-
-
 def resolve_belt_box_positions(
     environ: Mapping[str, str],
     *,
@@ -539,21 +504,9 @@ def resolve_belt_box_positions(
                 f"箱型 {kind.key} 宽 {kind.width_x} 放不进带面宽度 {BELT_BOX_BELT_WIDTH}"
             )
 
-    # 队首两箱额外偏移，也要各自放得进带面（偏移 + 半宽 不能压出带边）。
-    if BELT_BOX_FRONT_X_OFFSET > 0.0:
-        for index in range(min(2, count)):
-            half_w = kinds[index].width_x * 0.5
-            if BELT_BOX_FRONT_X_OFFSET + half_w > half_width:
-                raise ValueError(
-                    f"BELT_BOX_FRONT_X_OFFSET={BELT_BOX_FRONT_X_OFFSET:g} 加队首箱型 "
-                    f"{kinds[index].key} 半宽 {half_w:.3f} 超出带面半宽 {half_width:.3f}"
-                )
-
     if endless:
         # —— 弯道形态：沿路径距离 s 排队 ——
-        corner_x = BELT_BOX_LANE_X - BELT_BOX_CORNER_RADIUS
         corner_y = BELT_BOX_BRANCH_LANE_Y - BELT_BOX_CORNER_RADIUS
-        s_arc_end = (corner_x - BELT_BOX_PATH_S_ORIGIN_X) + BELT_BOX_CORNER_RADIUS * math.pi / 2.0
         if y_stop >= corner_y:
             raise ValueError(
                 f"弯道形态要求工位在主线段上：y_stop={y_stop} 必须 < 拐角切线 {corner_y:.4f}"
@@ -603,12 +556,6 @@ def resolve_belt_box_positions(
         # 停稳后的队列不需要单独校验：整带节拍保持出生间距整体向下游平移，
         # 停稳队尾（s_stop − (slots[0]−slots[-1])）一定比出生队尾更靠下游。
         positions = tuple((*_path_point(s), spawn_z) for s in slots)
-        # 队首两箱偏西/偏东——仅当它们落在主线直段（s >= s_arc_end）时才生效，
-        # 弧段/支线上 x 是路径方向，偏移会破坏路径几何。
-        front_guard = tuple(
-            index < len(slots) and slots[index] >= s_arc_end for index in range(2)
-        )
-        positions = _apply_front_two_x_offset(positions, BELT_BOX_FRONT_X_OFFSET, front_guard)
         return count, positions, kinds, queue_gap
 
     # —— 直线形态（endless off / legacy_props）：沿主车道 y 直排 ——
@@ -643,8 +590,6 @@ def resolve_belt_box_positions(
     positions = tuple(
         (lane_x, y_lead + spawn_pitch * index, spawn_z) for index in range(count)
     )
-    # 直线形态里所有箱子都在同一车道 x 上，队首两箱同样偏西/偏东。
-    positions = _apply_front_two_x_offset(positions, BELT_BOX_FRONT_X_OFFSET, (True, True))
     return count, positions, kinds, queue_gap
 
 
@@ -675,18 +620,18 @@ def resolve_scene_layout(environ: Mapping[str, str]) -> ConveyorSceneLayout:
         "ISAACLAB_ROBOT_2_WORKSTATION_Y",
         robot_workstation_y + 0.75 if totes_on_conveyor else robot_workstation_y,
     )
-    # 两台机器人对称分站带两侧：带中线 x=-5.62，各距中线 1.08 m（距带边 0.63 m）。
-    # 历史值 robot_1_x=-4.75 距中线只有 0.87，比对面近 0.21——视觉上一台贴着流水线
-    # 一台离得远（2026-08-09 用户反馈），对称化取 -5.62+1.08=-4.54。
+    # 两台机器人对称分站窄带两侧：首批箱从 ±0.20 m 偏置改为全部居中后，两台机器人
+    # 也分别向中线靠近 0.20 m，保持手到箱心的横向距离仍为 0.88 m。窄带外框也约
+    # 同量内收，因此机器人相对外框的站距基本不变。
     robot_1_x = _env_float(
         environ,
         "ISAACLAB_ROBOT_1_X",
-        -4.54 if totes_on_conveyor else cart_group_x + robot_side_offset,
+        -4.74 if totes_on_conveyor else cart_group_x + robot_side_offset,
     )
     robot_2_x = _env_float(
         environ,
         "ISAACLAB_ROBOT_2_X",
-        -6.7 if totes_on_conveyor else cart_group_x - robot_side_offset,
+        -6.5 if totes_on_conveyor else cart_group_x - robot_side_offset,
     )
 
     # 只在 =1 流水线布局生成三台纯显示 G1。它们分散在 X 支线队尾、主线上游和

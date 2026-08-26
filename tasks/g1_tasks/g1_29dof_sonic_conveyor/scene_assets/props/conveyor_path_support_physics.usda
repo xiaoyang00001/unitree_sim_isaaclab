@@ -8,7 +8,8 @@
     The old main/corner/branch Cuboids met at co-planar butt joints.  Their
     hidden vertical end faces could catch a wide flat parcel exactly at the
     joint.  This single connected top mesh has no internal vertical faces.
-    Local origin: main-lane center X, main-belt north edge Y, belt top Z."""
+    Both straight corridors are 0.60 m wide. Local origin: main-lane center X,
+    main-belt north edge Y, belt top Z."""
 )
 
 def Xform "ConveyorPathSupport"
@@ -29,7 +30,7 @@ def Xform "ConveyorPathSupport"
     )
     {
         bool doubleSided = 0
-        float3[] extent = [(-11.4142, -8.03, 0), (0.45, 2.0334, 0)]
+        float3[] extent = [(-11.4142, -8.03, 0), (0.30, 1.8834, 0)]
         int[] faceVertexCounts = [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]
         int[] faceVertexIndices = [
             0, 1, 3,
@@ -46,19 +47,19 @@ def Xform "ConveyorPathSupport"
             11, 8, 12,
         ]
         point3f[] points = [
-            (-0.45, -8.03, 0),
-            (0.45, -8.03, 0),
-            (-0.45, 0, 0),
-            (0.45, 0, 0),
+            (-0.30, -8.03, 0),
+            (0.30, -8.03, 0),
+            (-0.30, 0, 0),
+            (0.30, 0, 0),
             (-1.40, 0, 0),
-            (-1.40, 1.1334, 0),
-            (-0.45, 1.1334, 0),
-            (0.45, 1.1334, 0),
-            (-1.40, 2.0334, 0),
-            (-0.45, 2.0334, 0),
-            (0.45, 2.0334, 0),
-            (-11.4142, 1.1334, 0),
-            (-11.4142, 2.0334, 0),
+            (-1.40, 1.2834, 0),
+            (-0.30, 1.2834, 0),
+            (0.30, 1.2834, 0),
+            (-1.40, 1.8834, 0),
+            (-0.30, 1.8834, 0),
+            (0.30, 1.8834, 0),
+            (-11.4142, 1.2834, 0),
+            (-11.4142, 1.8834, 0),
         ]
         bool physics:collisionEnabled = 1
         uniform token physics:approximation = "none"

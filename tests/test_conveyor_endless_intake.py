@@ -118,12 +118,29 @@ class EndlessIntakeGeometryCrossTest(unittest.TestCase):
     def test_xleg_segments_share_the_branch_lane(self) -> None:
         for tx, ty, tz in _EI.XLEG_POSITIONS:
             with self.subTest(tx=tx):
-                self.assertAlmostEqual(ty, _EI.CURVE_POS[1], places=9)
+                self.assertAlmostEqual(ty, _EI.XLEG_POS_Y, places=9)
                 self.assertAlmostEqual(tz, 0.003, places=9)
-                self.assertAlmostEqual(ty - 0.5014, _EI.BRANCH_LANE_Y, places=9)
+                self.assertAlmostEqual(
+                    ty - _EI.XLEG_SOURCE_LANE_CENTER_X * _EI.NARROW_WIDTH_SCALE,
+                    _EI.BRANCH_LANE_Y,
+                    places=9,
+                )
+
+    def test_xleg_visual_width_is_scaled_to_the_narrow_lane(self) -> None:
+        self.assertEqual(_EI.NARROW_LANE_WIDTH, _DRIVE.BELT_WIDTH)
+        self.assertAlmostEqual(_EI.NARROW_WIDTH_SCALE, 2.0 / 3.0, places=9)
+        expected_scale = (_EI.CONVEYOR_UNIT_SCALE * 2.0 / 3.0, 0.01, 0.01)
+        for actual, expected in zip(_EI.XLEG_SCALE, expected_scale, strict=True):
+            self.assertAlmostEqual(actual, expected, places=12)
+        # 托面在窄化后的 A05 外框内保持两侧近似相等的视觉余量。
+        visual_y0, visual_y1 = _EI.XLEG_VISUAL_Y_RANGE
+        support_y0, support_y1 = _EI.BRANCH_PLATE_Y_RANGE
+        self.assertGreater(support_y0, visual_y0)
+        self.assertLess(support_y1, visual_y1)
+        self.assertAlmostEqual(support_y0 - visual_y0, visual_y1 - support_y1, places=4)
 
     def test_curve_and_xleg_stay_clear_of_the_north_wall(self) -> None:
-        # 支线北缘 20.6289 距墙 2.977 m、弯道北缘 20.558 距墙 3.048 m（Δ=0.25 后）。
+        # 窄支线北缘约 20.437、弯道北缘 20.558，均距墙超过 2.9 m。
         for name, aabb in (("curve", _EI.CURVE_AABB), *(
             (f"xleg{i+1}", a) for i, a in enumerate(_EI.XLEG_AABBS)
         )):
@@ -131,7 +148,7 @@ class EndlessIntakeGeometryCrossTest(unittest.TestCase):
                 self.assertGreater(_EI.WALL_FACE_Y - aabb[1][1], 2.9)
 
     def test_branch_skims_north_of_the_existing_rack_row(self) -> None:
-        """Δ=0.25 北移让支线从排 B **北侧**擦过：x 重叠、y 净距 83.3 mm。
+        """Δ=0.25 北移让支线从排 B **北侧**通过；窄化后 y 净距约 275 mm。
 
         约束绑定项是端护板北缘 19.3946（mesh 实测）；架板北缘 19.3457、钢架柱
         北缘 19.3073 更靠南，净距只会更大。五段端头 -17.038 已越过护板东缘
@@ -142,10 +159,10 @@ class EndlessIntakeGeometryCrossTest(unittest.TestCase):
         south = _EI.XLEG_AABBS[-1][1][0]
         gap = south - _EI.RACK_B_GUARD_NORTH_Y
         self.assertGreaterEqual(gap, 0.05)
-        self.assertAlmostEqual(gap, 0.0833, places=3)
+        self.assertAlmostEqual(gap, 0.2751, places=3)
         # 端护板北缘在架板/钢架柱之北（绑定项排序），排 B 本体更不构成约束。
         self.assertGreater(_EI.RACK_B_GUARD_NORTH_Y, _EI.RACK_B_NORTH_Y)
-        # 托面条带南缘离护板北缘 208.8 mm（x 现已重叠，靠 y 让开）。
+        # 托面条带南缘离护板北缘 358.8 mm（x 现已重叠，靠 y 让开）。
         self.assertGreaterEqual(
             _EI.BRANCH_PLATE_Y_RANGE[0] - _EI.RACK_B_GUARD_NORTH_Y, 0.15
         )
@@ -153,7 +170,7 @@ class EndlessIntakeGeometryCrossTest(unittest.TestCase):
         self.assertGreater(south, _EI.RACK_B_NORTH_Y)
 
     def test_branch_clears_the_forklift_fork_tips(self) -> None:
-        """段 4/5 与叉车 x 重叠：南缘对货叉尖（北伸最远件）净距 156.9 mm。"""
+        """段 4/5 与叉车 x 重叠：窄化后南缘对货叉尖净距约 349 mm。"""
 
         south = _EI.XLEG_AABBS[-1][1][0]
         # x 确有重叠（叉车在段 4/5 下方），才有必要验 y 净距。
@@ -163,14 +180,14 @@ class EndlessIntakeGeometryCrossTest(unittest.TestCase):
         self.assertGreater(overlap, 0.5)
         gap = south - _EI.FORKLIFT_FORK_NORTH_Y
         self.assertGreaterEqual(gap, 0.15)
-        self.assertAlmostEqual(gap, 0.1569, places=3)
+        self.assertAlmostEqual(gap, 0.3487, places=3)
 
     def test_cone4_clears_the_branch(self) -> None:
         (cx0, cx1), (cy0, _cy1) = _EI.CONE_4_AABB
         xleg3 = _EI.XLEG_AABBS[2]
         x_overlap = min(cx1, xleg3[0][1]) - max(cx0, xleg3[0][0])
         y_gap = cy0 - xleg3[1][1]
-        # x 上几乎相切（允许有重叠），但 y 净距必须 > 0.55（实测 0.597）。
+        # x 上几乎相切（允许有重叠），窄化后 y 净距约 0.793 m。
         self.assertGreater(y_gap, 0.55)
         self.assertTrue(x_overlap < 0.05 or y_gap > 0.0)
 

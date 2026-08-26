@@ -46,10 +46,13 @@ DRIVE_MODES = (DRIVE_MODE_LEGACY, DRIVE_MODE_SURFACE_VELOCITY)
 #    tests/test_conveyor_endless_intake.py 的交叉断言里。
 CONVEYOR_NORTH_SHIFT_Y = 0.25
 
-# Measured usable top surface of the three ConveyorBelt_A08 visual sections.
-# BELT_Y_*_BASE 是北移前的实测值，运行值 = 基准 + Δ。
+# 三段 ConveyorBelt_A08 原始可用滚轮面宽 0.90 m。本任务把三段视觉沿横向等比
+# 收窄到 0.60 m：最宽 C01/C02 箱为 0.50 m，居中后两侧各留 50 mm；同时缩短
+# 双机手到箱心的无效跨距。BELT_Y_*_BASE 是北移前的实测值，运行值 = 基准 + Δ。
 BELT_X_CENTER = -5.62
-BELT_WIDTH = 0.90
+BELT_SOURCE_WIDTH = 0.90
+BELT_WIDTH = 0.60
+BELT_VISUAL_WIDTH_SCALE = BELT_WIDTH / BELT_SOURCE_WIDTH
 BELT_Y_MIN_BASE = 10.19
 BELT_Y_MAX_BASE = 18.22
 BELT_Y_MIN = round(BELT_Y_MIN_BASE + CONVEYOR_NORTH_SHIFT_Y, 6)  # 10.44
