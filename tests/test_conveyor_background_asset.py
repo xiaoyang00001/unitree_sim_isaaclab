@@ -89,6 +89,38 @@ class ConveyorBackgroundAssetTest(unittest.TestCase):
                 block = layer.split(f'over "{segment}"', 1)[1]
                 self.assertIn("float3 xformOp:scale = (1, 0.6666667, 1)", block)
 
+    def test_robot_2_workcell_keeps_original_side_without_half_turn(self) -> None:
+        """robot_2 的支撑台和 bin_01 应恢复换边前的变换。"""
+
+        layer = (_ASSETS_DIR / "warehouse-simple6_v61_visual_only.usda").read_text(
+            encoding="utf-8"
+        )
+        table_03 = layer.split('over "SM_HeavyDutyPackingTable_C02_03"', 1)[1].split(
+            'over "blue_sorting_bin_01"', 1
+        )[0]
+        bin_01 = layer.split('over "blue_sorting_bin_01"', 1)[1].split(
+            'over "blue_sorting_bin_02"', 1
+        )[0]
+
+        self.assertIn(
+            "double3 xformOp:translate = (1.6539417853480621, "
+            "2.086707303107458, -0.577029550733144)",
+            table_03,
+        )
+        self.assertIn(
+            "float3 xformOp:rotateXYZ = (0.0, 0.0, 0.0)",
+            table_03,
+        )
+        self.assertNotIn(
+            "float3 xformOp:rotateXYZ = (0.0, 0.0, 180.0)",
+            table_03,
+        )
+        self.assertIn(
+            "(8.31997747620902, -8.62928249104018, "
+            "-0.6416343162044926, 1.0)",
+            bin_01,
+        )
+
     def test_blue_sorting_bin_02_authors_in_place_half_turn(self) -> None:
         """02 应在叶子 mesh 自身原点翻转，不能旋转偏置很大的根 Prim。"""
 
@@ -111,41 +143,9 @@ class ConveyorBackgroundAssetTest(unittest.TestCase):
             1,
         )
 
-    def test_robot_2_workcell_authors_robot_relative_half_turn(self) -> None:
-        """robot_2 的支撑台和 bin_01 应共用机器人相对半周变换。"""
-
-        layer = (_ASSETS_DIR / "warehouse-simple6_v61_visual_only.usda").read_text(
-            encoding="utf-8"
-        )
-        table_03 = layer.split('over "SM_HeavyDutyPackingTable_C02_03"', 1)[1].split(
-            'over "blue_sorting_bin_01"', 1
-        )[0]
-        bin_01 = layer.split('over "blue_sorting_bin_01"', 1)[1].split(
-            'over "blue_sorting_bin_02"', 1
-        )[0]
-
-        self.assertIn(
-            "double3 xformOp:translate = (-0.6452017853480621, "
-            "2.086707303107458, -0.577029550733144)",
-            table_03,
-        )
-        self.assertIn(
-            "float3 xformOp:rotateXYZ = (0.0, 0.0, 180.0)",
-            table_03,
-        )
-        self.assertIn(
-            "(-7.311237476209021, 12.802697097255098, "
-            "-0.6416343162044926, 1.0)",
-            bin_01,
-        )
-        self.assertNotIn(
-            "double3 xformOp:rotateXYZ = (0.0, 0.0, 180.0)",
-            bin_01,
-        )
-
     @unittest.skipUnless(_HAS_PXR, "需要 pxr（usd-core）做离线组合审计")
-    def test_robot_2_workcell_switches_sides_with_clearance(self) -> None:
-        """桌箱应相对 robot_2 换边，且箱底贴桌、不侵入流水线。"""
+    def test_west_workcell_table_and_bin_move_together_for_robot_2(self) -> None:
+        """西侧桌箱沿挂载局部 +X 同移 0.75 m，东侧工位保持原位。"""
 
         stage = Usd.Stage.Open(
             str(_ASSETS_DIR / "warehouse-simple6_v61_visual_only.usda"),
@@ -157,52 +157,22 @@ class ConveyorBackgroundAssetTest(unittest.TestCase):
             Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render]
         )
 
-        def bounds(name: str) -> Gf.Range3d:
+        def center(name: str) -> Gf.Vec3d:
             prim = stage.GetPrimAtPath(f"/Root/ConveyorBelt/{name}")
             self.assertTrue(prim, name)
-            return cache.ComputeWorldBound(prim).ComputeAlignedRange()
+            return cache.ComputeWorldBound(prim).ComputeAlignedRange().GetMidpoint()
 
-        robot_2_table = bounds("SM_HeavyDutyPackingTable_C02_03")
-        robot_2_bin = bounds("blue_sorting_bin_01")
-        table_center = robot_2_table.GetMidpoint()
-        bin_center = robot_2_bin.GetMidpoint()
+        east_bin = center("blue_sorting_bin_02")
+        west_table = center("SM_HeavyDutyPackingTable_C02_03")
+        west_bin = center("blue_sorting_bin_01")
 
-        for axis in range(2):
-            self.assertAlmostEqual(table_center[axis], bin_center[axis], places=9)
-        self.assertAlmostEqual(
-            robot_2_table.GetMax()[2], robot_2_bin.GetMin()[2], places=9
-        )
-
-        # 背景挂载在 world=(-4.68, 14.39363) 并绕 Z +90°：
-        # world_x=-4.68-asset_y，world_y=14.39363+asset_x。
-        world_center = Gf.Vec3d(
-            -4.68 - bin_center[1], 14.39363 + bin_center[0], bin_center[2]
-        )
-        expected_world_center = Gf.Vec3d(
-            -6.766707303107462, 13.998428214651938, 0.6152765818312004
-        )
-        for actual, expected in zip(world_center, expected_world_center):
-            self.assertAlmostEqual(actual, expected, places=9)
-        self.assertAlmostEqual(
-            15.148 - (14.39363 + robot_2_bin.GetMax()[0]),
-            0.4514505780354008,
-            places=9,
-        )
-
-        belt_west_asset_y = max(
-            bounds(name).GetMax()[1]
-            for name in (
-                "ConveyorBelt_A08_06",
-                "ConveyorBelt_A08_07",
-                "ConveyorBelt_A08_08",
-            )
-        )
-        self.assertGreater(robot_2_table.GetMin()[1] - belt_west_asset_y, 0.05)
-        self.assertGreater(robot_2_bin.GetMin()[1] - belt_west_asset_y, 0.02)
+        self.assertAlmostEqual(west_table[0], west_bin[0], places=6)
+        self.assertAlmostEqual(west_table[1], west_bin[1], places=6)
+        self.assertAlmostEqual(west_bin[0] - east_bin[0], 0.75, places=6)
 
     @unittest.skipUnless(_HAS_PXR, "需要 pxr（usd-core）做离线组合审计")
-    def test_sorting_bins_open_toward_their_robots(self) -> None:
-        """robot_2 桌箱换边后，两只料箱的缺口仍分别朝向所属机器人。"""
+    def test_blue_sorting_bins_open_toward_the_same_robot_side(self) -> None:
+        """组合后两只料箱的可见中心不漂移，局部 -Y 缺口方向保持一致。"""
 
         stage = Usd.Stage.Open(
             str(_ASSETS_DIR / "warehouse-simple6_v61_visual_only.usda"),
@@ -225,29 +195,13 @@ class ConveyorBackgroundAssetTest(unittest.TestCase):
             opening = transform.TransformDir(Gf.Vec3d(0.0, -1.0, 0.0)).GetNormalized()
             return origin, opening
 
-        origin_01, opening_01 = mesh_pose("blue_sorting_bin_01")
+        _, opening_01 = mesh_pose("blue_sorting_bin_01")
         origin_02, opening_02 = mesh_pose("blue_sorting_bin_02")
 
-        robot_2 = Gf.Vec3d(0.75437, 2.02, 0.0)
-        robot_1 = Gf.Vec3d(0.00437, -0.14, 0.0)
-        toward_robot_2 = Gf.Vec3d(
-            robot_2[0] - origin_01[0], robot_2[1] - origin_01[1], 0.0
-        ).GetNormalized()
-        toward_robot_1 = Gf.Vec3d(
-            robot_1[0] - origin_02[0], robot_1[1] - origin_02[1], 0.0
-        ).GetNormalized()
-
-        self.assertLess(opening_01 * opening_02, -0.9999)
-        self.assertGreater(opening_01 * toward_robot_2, 0.998)
-        self.assertGreater(opening_02 * toward_robot_1, 0.998)
-        expected_origin_01 = Gf.Vec3d(
-            -0.3952017853480603, 2.0867072621063463, 0.4312765846209089
-        )
+        self.assertGreater(opening_01 * opening_02, 0.9999)
         expected_origin_02 = Gf.Vec3d(
             1.1539417853480611, -0.20670726210634566, 0.43127658462090845
         )
-        for actual, expected in zip(origin_01, expected_origin_01):
-            self.assertAlmostEqual(actual, expected, places=9)
         for actual, expected in zip(origin_02, expected_origin_02):
             self.assertAlmostEqual(actual, expected, places=9)
 
