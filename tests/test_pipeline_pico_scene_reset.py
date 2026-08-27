@@ -19,10 +19,14 @@ class PipelinePicoSceneResetTest(unittest.TestCase):
         """Run only the non-destructive prefix ending before filesystem checks."""
 
         prefix = self.source[: self.source.index('if [ ! -d "$SIM_DIR" ]')]
+        # bash -c has no top-level BASH_SOURCE[0].  Resolve the same path the
+        # real executable script would see so preflight stderr stays meaningful.
+        prefix = prefix.replace('${BASH_SOURCE[0]}', str(BRINGUP))
         env = os.environ.copy()
         for name in (
             "PIPELINE_SONIC_MERGE_ACTUATORS",
             "PIPELINE_SONIC_VALIDATE_ACTUATORS",
+            "PIPELINE_HOST_LATE_RENDER_INTERVAL",
         ):
             env.pop(name, None)
         env.update(overrides)
@@ -126,10 +130,16 @@ class PipelinePicoSceneResetTest(unittest.TestCase):
         self.assertIn("--enable_isaac_scene_reset", single_manager)
         self.assertIn("UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo", single_manager)
 
-    def test_three_robot_default_and_staged_count_are_forwarded(self) -> None:
-        self.assertIn('SONIC_ROBOT_COUNT="${PIPELINE_SONIC_ROBOT_COUNT:-3}"', self.source)
+    def test_dual_robot_default_and_staged_count_are_forwarded(self) -> None:
+        self.assertIn('SONIC_ROBOT_COUNT="${PIPELINE_SONIC_ROBOT_COUNT:-2}"', self.source)
         self.assertIn('ISAACLAB_SONIC_ROBOT_COUNT="$SONIC_ROBOT_COUNT"', self.source)
         self.assertIn("2|3|4|5", self.source)
+        self.assertIn('if [ "$SONIC_ROBOT_COUNT" -ge 3 ]; then', self.source)
+        self.assertIn(
+            'BRINGUP_DONE (dual Pico: robot#1/#2 等操作者发车)',
+            self.source,
+        )
+        self.assertNotIn("robot#3..#2", self.source)
 
     def test_handcmd_rate_is_validated_and_forwarded_to_every_deploy(self) -> None:
         self.assertIn(
@@ -148,6 +158,45 @@ class PipelinePicoSceneResetTest(unittest.TestCase):
             self.source.index('bash deploy.sh --help 2>&1'), destructive_start
         )
         self.assertIn("至少包含提交 0f4e0b4", self.source)
+
+    def test_host_preview_decimation_preserves_a_configurable_publish_budget(self) -> None:
+        self.assertIn(
+            'HOST_LATE_RENDER_INTERVAL="${PIPELINE_HOST_LATE_RENDER_INTERVAL:-4}"',
+            self.source,
+        )
+        self.assertIn(
+            '--late-render-interval "$HOST_LATE_RENDER_INTERVAL"', self.source
+        )
+        self.assertIn("Host 本地预览间隔，不节流 ZMQ 发布", self.source)
+        destructive_start = self.source.index('echo "== stop old processes (hard) =="')
+        self.assertLess(
+            self.source.index('[[ "$HOST_LATE_RENDER_INTERVAL" =~'),
+            destructive_start,
+        )
+        host_command = self.source.split(
+            'echo "== start host sim', maxsplit=1
+        )[1].split("SIM_PID=$!", maxsplit=1)[0]
+        self.assertEqual(
+            host_command.count(
+                '--late-render-interval "$HOST_LATE_RENDER_INTERVAL"'
+            ),
+            1,
+        )
+
+        for value in ("1", "4", "27"):
+            completed = self._run_preflight(
+                PIPELINE_HOST_LATE_RENDER_INTERVAL=value
+            )
+            self.assertEqual(completed.returncode, 0, value)
+        for value in ("0", "-1", "1.5", "true", " 4", "4 "):
+            completed = self._run_preflight(
+                PIPELINE_HOST_LATE_RENDER_INTERVAL=value
+            )
+            self.assertEqual(completed.returncode, 2, value)
+            self.assertIn(
+                "ERROR: PIPELINE_HOST_LATE_RENDER_INTERVAL 只接受正整数",
+                completed.stderr,
+            )
 
     def test_handcmd_rate_validator_accepts_only_finite_supported_values(self) -> None:
         start = self.source.index("validate_isaac_handcmd_hz() {")
@@ -245,7 +294,15 @@ class PipelinePicoSceneResetTest(unittest.TestCase):
         self.assertIn('[ "$current" -gt "$baseline" ]', self.source)
         self.assertIn('GR00T_WBC_ROOT="$GR00T_ROOT" PYTHONUNBUFFERED=1', self.source)
         self.assertIn("--profile_interval 25", self.source)
-        self.assertIn("--sim-state-export-hz 0", self.source)
+        # sim_main must decide 0 vs 5 Hz after the ZMQ PUB socket actually
+        # initializes; the wrapper must not masquerade 0 as a user override.
+        host_command_start = self.source.index('env DISPLAY="$DISPLAY_TARGET"')
+        host_command_end = self.source.index(
+            '> "$LOG_DIR/host_dual.log"', host_command_start
+        )
+        host_command = self.source[host_command_start:host_command_end]
+        self.assertNotIn("--sim-state-export-hz", host_command)
+        self.assertNotIn("--sim_state_export_hz", host_command)
         self.assertIn("--lowstate-pub-hz 55", self.source)
         self.assertIn("--handstate-pub-hz 10", self.source)
 

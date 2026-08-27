@@ -32,7 +32,7 @@ EXTRA_SONIC_ROBOT_ROOT_Z = 0.76
 # 保留旧导入名仅为仓外布局工具兼容；它不会恢复静态机器人生成。
 STANDBY_ROBOT_ROOT_Z = EXTRA_SONIC_ROBOT_ROOT_Z
 
-# robot_3..5 使用额外站位时的固定映射。三机生产默认让 robot_3 优先使用
+# robot_3..5 使用额外站位时的固定映射。显式启用 robot_3 时优先使用
 # 靠近 robot_1/2 的 pose[1]；robot_4/5 分别使用 pose[0]/pose[2] 的唯一槽位。
 SONIC_EXTRA_ROBOT_POSE_ORDER = (1, 0, 2)
 

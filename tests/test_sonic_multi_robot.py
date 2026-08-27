@@ -653,6 +653,90 @@ class FiveRobotWiringSourceTest(unittest.TestCase):
         source = SCENE_SYNC_ENV_PATH.read_text(encoding="utf-8")
         self.assertIn("ISAACLAB_SONIC_ROBOT_COUNT=2", source)
 
+    def test_manual_multi_robot_host_uses_production_performance_defaults(self) -> None:
+        """Manual Host launches must not fall back to the expensive debug path."""
+
+        self.assertIn(
+            "online_scene_sync_host = is_scene_sync_host and not args_cli.replay_data",
+            self.sim_source,
+        )
+        self.assertIn("if online_scene_sync_host:", self.sim_source)
+        self.assertIn(
+            'if "ISAACLAB_SONIC_MERGE_ACTUATORS" not in os.environ:',
+            self.sim_source,
+        )
+        self.assertIn(
+            'os.environ["ISAACLAB_SONIC_MERGE_ACTUATORS"] = "1"',
+            self.sim_source,
+        )
+        self.assertIn("args_cli.lowstate_pub_hz = 55.0", self.sim_source)
+        self.assertIn("args_cli.handstate_pub_hz = 10.0", self.sim_source)
+        late_render_guard_start = self.sim_source.index(
+            "    if (\n        args_cli.late_render_interval is None"
+        )
+        late_render_assignment = self.sim_source.index(
+            "args_cli.late_render_interval = 4", late_render_guard_start
+        )
+        late_render_guard = self.sim_source[
+            late_render_guard_start:late_render_assignment
+        ]
+        for required_guard in (
+            'not bool(getattr(args_cli, "xr", False))',
+            'args_cli.teleop_device == "none"',
+            "not args_cli.no_late_render",
+            "not args_cli.no_render",
+            'not bool(getattr(args_cli, "headless", False))',
+            "args_cli.livestream_type == 0",
+            "args_cli.render_interval is None",
+        ):
+            self.assertIn(required_guard, late_render_guard)
+        self.assertIn(
+            "use --late-render-interval 1 to restore every-loop rendering",
+            self.sim_source,
+        )
+        self.assertIn(
+            "online_scene_sync_host and args_cli.sim_state_export_hz is None",
+            self.sim_source,
+        )
+        self.assertIn(
+            'getattr(scene_sync_term, "publishing_enabled", False)',
+            self.sim_source,
+        )
+        self.assertIn("args_cli.sim_state_export_hz = 0.0", self.sim_source)
+        self.assertIn("args_cli.sim_state_export_hz = 5.0", self.sim_source)
+        self.assertIn(
+            "use --sim-state-export-hz 5 to restore it", self.sim_source
+        )
+        self.assertIn(
+            "ZMQ scene publisher is unavailable; retaining",
+            self.sim_source,
+        )
+        sim_state_resolution_start = self.sim_source.index(
+            "    if defer_host_sim_state_default:"
+        )
+        sim_state_resolution_end = self.sim_source.index(
+            "\n    # isaacsim 的 SimulationContext", sim_state_resolution_start
+        )
+        sim_state_resolution = self.sim_source[
+            sim_state_resolution_start:sim_state_resolution_end
+        ]
+        self.assertIn(
+            'if bool(getattr(scene_sync_term, "publishing_enabled", False)):',
+            sim_state_resolution,
+        )
+        self.assertLess(
+            sim_state_resolution.index("args_cli.sim_state_export_hz = 0.0"),
+            sim_state_resolution.index("else:"),
+        )
+        self.assertGreater(
+            sim_state_resolution.index("args_cli.sim_state_export_hz = 5.0"),
+            sim_state_resolution.index("else:"),
+        )
+        self.assertIn(
+            'f"{late_render_interval} control loop(s), after env.step"',
+            self.sim_source,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

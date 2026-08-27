@@ -9,9 +9,9 @@
 > 自动倒地、Ubuntu F12 和 Pico 左 X 的统一 reset 说明见
 > [Isaac/SONIC 场景复位说明](scene_reset_zh.md)。
 >
-> 2026-08-20 起生产 bringup 收敛为三台 SONIC 动力学机器人：本手册的 Pico 主链仍聚焦
-> robot_1/2，robot_3 默认走独立 keyboard deploy；robot_4/5 站位保持为空。
-> 四/五路仍可显式启用，完整 DDS/端口和历史性能说明见
+> 2026-08-26 起生产 bringup 为提高发布端帧率收敛为两台 SONIC 动力学机器人：
+> robot_1/2 是默认真身，robot_3..5 站位保持为空。三/四/五路仍可显式启用，
+> 完整 DDS/端口和历史性能说明见
 > [流水线多机器人 SONIC 控制](pipeline_five_robot_sonic_zh.md)。
 
 ## 0. 链路一图流
@@ -28,10 +28,8 @@
        └─ DDS rt/* 锁步 ↔ host sim（Isaac 段零改动）
      deploy#2 --input-type keyboard（默认）
        └─ 双 Pico模式改为 zmq_manager :5566 ← Pico#2 UDP :63902
-     deploy#3 --input-type keyboard（生产默认）
-       └─ DDS rt/r3/*（独立输入/调试端口；三路 ack AND）
-     robot_4/5 站位为空（不生成机器人）
-       └─ 显式 PIPELINE_SONIC_ROBOT_COUNT=4|5 时才增加 deploy 与 rt/r4..r5/*
+     robot_3..5 站位默认为空（不生成机器人）
+       └─ 显式 PIPELINE_SONIC_ROBOT_COUNT=3|4|5 时才增加 keyboard deploy 与 rt/r3..r5/*
      win 侧 AR viewer（观看链，与控制链完全并行独立）
 ```
 
@@ -115,20 +113,23 @@ JSON 只会保留到下一次启动。
 一键（推荐，日志落 `/tmp/pipeline_pico/`，`PIPELINE_LOG_DIR` 可覆盖）：
 
 ```bash
-# 生产默认三机：单 Pico 控 robot_1 + keyboard 控 robot_2/3
+# 生产默认双机：单 Pico 控 robot_1 + keyboard 控 robot_2
 bash tools/pipeline_pico_bringup.sh
 
 # 双 Pico：两套 manager 分别控制 robot_1/robot_2
 PIPELINE_DUAL_PICO=1 bash tools/pipeline_pico_bringup.sh
 
-# 回退历史双机：
-PIPELINE_SONIC_ROBOT_COUNT=2 bash tools/pipeline_pico_bringup.sh
+# 显式三机（robot_3 使用独立 keyboard deploy）：
+PIPELINE_SONIC_ROBOT_COUNT=3 bash tools/pipeline_pico_bringup.sh
 
 # 显式四/五机联调（在 robot_4/5 空站位创建 SONIC 真身）
 PIPELINE_SONIC_ROBOT_COUNT=5 bash tools/pipeline_pico_bringup.sh
 
 # HandCmd 兼容性回滚：必须重启完整 bringup，不是热更新
 PIPELINE_ISAAC_HANDCMD_HZ=500 bash tools/pipeline_pico_bringup.sh
+
+# 回退 Host 本地每圈渲染（会重新占用发布主循环预算）
+PIPELINE_HOST_LATE_RENDER_INTERVAL=1 bash tools/pipeline_pico_bringup.sh
 
 # 双 Pico 回滚时保留原来的双 Pico 变量
 PIPELINE_DUAL_PICO=1 PIPELINE_ISAAC_HANDCMD_HZ=500 \
@@ -152,14 +153,14 @@ Dex3 HandCmd；LowCmd、锁步 ACK、Control 和 Planner 仍保持 500 Hz，外�
 Isaac 默认及非 Isaac/实机路径也仍为 500 Hz。`PIPELINE_ISAAC_HANDCMD_HZ` 只在启动时
 读取；回滚到 500 Hz 必须重启完整 bringup。
 
-### 2.1 当前生产默认的五终端手工命令
+### 2.1 当前生产默认的四终端手工命令
 
-下面是当前分支生产默认的手工等价命令（2026-08-21 核对）：三台 SONIC 真身中，
-`robot_1` 由 Pico 控制，`robot_2/3` 使用各自隔离的 keyboard deploy。五个终端依次为
-`host sim + deploy#1 + deploy#2 + deploy#3 + manager#1`。不要把历史“双机器人五终端”
-与这套拓扑混用；三路 LowCmd ACK 是 AND 门，少启动任意一个 deploy 都会卡住整场景物理步。
+下面是当前分支生产默认的手工等价命令（2026-08-26 核对）：两台 SONIC 真身中，
+`robot_1` 由 Pico 控制，`robot_2` 使用隔离的 keyboard deploy。四个终端依次为
+`host sim + deploy#1 + deploy#2 + manager#1`。两路 LowCmd ACK 是 AND 门，
+少启动任意一个 deploy 都会卡住整场景物理步。
 
-**终端 1：三机器人 host sim**
+**终端 1：双机器人 host sim**
 
 ```bash
 cd /home/nolovr/Documents/unitree_sim_isaaclab
@@ -170,7 +171,7 @@ env DISPLAY=:1 \
   UNITREE_DDS_INTERFACE=lo \
   ISAACLAB_LOCAL_ROBOT_ID=1 \
   ISAACLAB_HOST_BOTH_ROBOTS=1 \
-  ISAACLAB_SONIC_ROBOT_COUNT=3 \
+  ISAACLAB_SONIC_ROBOT_COUNT=2 \
   ISAACLAB_SONIC_MERGE_ACTUATORS=1 \
   ISAACLAB_TOTES_ON_CONVEYOR=1 \
   ISAACLAB_SCENE_SYNC_PEER_IP=127.0.0.1 \
@@ -185,15 +186,17 @@ env DISPLAY=:1 \
   --hide_ui \
   --stats_interval 10 \
   --profile_interval 25 \
-  --sim-state-export-hz 0 \
   --lowstate-pub-hz 55 \
-  --handstate-pub-hz 10
+  --handstate-pub-hz 10 \
+  --late-render-interval 4
 ```
 
 需要同步到远端 Viewer 时，把 `ISAACLAB_SCENE_SYNC_PEER_IP=127.0.0.1` 改成 Viewer IP；
 纯 SSH、没有可用 X 桌面时，去掉 `DISPLAY=:1` 并把 `--hide_ui` 换成 `--no_render`。
 上述命令显式写出流水线布局、机器人数量和执行器合并开关，不依赖
-`configs/scene_sync.env` 中对应项目或核心默认值。
+`configs/scene_sync.env` 中对应项目或核心默认值。它与生产一键脚本一样不显式传入
+`--sim-state-export-hz`：ZMQ PUB socket 就绪时自动关闭重复 DDS 导出，初始化失败时保留
+5 Hz。专项性能测试若明确不需要该回退，才额外传 `--sim-state-export-hz 0`。
 
 **终端 2：deploy#1（Pico / `rt/*`）**
 
@@ -220,7 +223,7 @@ G1_LOCAL_ROBOT_ID=2 bash deploy.sh \
   isaac
 ```
 
-**终端 4：deploy#3（keyboard / `rt/r3/*`）**
+**显式三机时的附加终端：deploy#3（keyboard / `rt/r3/*`）**
 
 ```bash
 cd /home/nolovr/GR00T-WholeBodyControl/gear_sonic_deploy
@@ -238,12 +241,13 @@ bash deploy.sh \
   isaac
 ```
 
-三个 deploy 都出现 `Proceed with deployment? [Y/n]:` 时直接回车确认，并在约 10–20 秒
-间隔内全部启动；不要等前一个完整 `Init Done` 后才启动下一个。`robot_3` 的
+这个附加终端只对显式 `PIPELINE_SONIC_ROBOT_COUNT=3..5` 有效。所有已启用 deploy
+都出现 `Proceed with deployment? [Y/n]:` 时直接回车确认，并在约 10–20 秒间隔内
+全部启动；不要等前一个完整 `Init Done` 后才启动下一个。`robot_3` 的
 `SONIC_DDS_TOPIC_PREFIX` 和 5576/5577 调试端口不能省略，否则外部 `deploy.sh` 会静默
 落回 `robot_1` 的 `rt/*` 和默认调试端口。
 
-**终端 5：manager#1（Pico UDP 63901 → deploy#1 ZMQ 5556）**
+**终端 4：manager#1（Pico UDP 63901 → deploy#1 ZMQ 5556）**
 
 ```bash
 cd /home/nolovr/GR00T-WholeBodyControl
@@ -262,16 +266,16 @@ gear_sonic/scripts/pico_manager_thread_server.py \
 ```
 
 manager 看到 Pico 第一帧后才 bind 5556，所以它可在 deploy 前后启动。`robot_1` 由头显
-`A+B+X+Y` 发车；`robot_2/3` 分别在自己的 deploy 终端输入 `]`、回车、`2` 进入行走
-模式，之后用 WASD 控制。manager#1 是这套五终端中唯一的 Pico 整场景 reset 权威。
+`A+B+X+Y` 发车；`robot_2` 在自己的 deploy 终端输入 `]`、回车、`2` 进入行走
+模式，之后用 WASD 控制。manager#1 是这套四终端中唯一的 Pico 整场景 reset 权威。
 
-双 Pico 不是这套五终端：把 deploy#2 改为 `--input-type zmq_manager --zmq-port 5566`
-后，还必须增加监听 UDP 63902、发布 ZMQ 5566 的 `manager#2`；`deploy#3` 仍然保留，
-因此当前三机器人生产默认下合计是**六个终端**。只有显式回退
-`ISAACLAB_SONIC_ROBOT_COUNT=2`、不启动 deploy#3 时，双 Pico 才是历史上的五终端。
+双 Pico 时把 deploy#2 改为 `--input-type zmq_manager --zmq-port 5566`，并增加
+监听 UDP 63902、发布 ZMQ 5566 的 `manager#2`；生产默认双机下合计是
+**五个终端**。显式三机时再附加 deploy#3，合计六个终端。
 
 真身执行器的生产一键默认是 `PIPELINE_SONIC_MERGE_ACTUATORS=1`、
-`PIPELINE_SONIC_VALIDATE_ACTUATORS=0`；核心直接启动的两个 `ISAACLAB_*` 开关仍默认关闭。
+`PIPELINE_SONIC_VALIDATE_ACTUATORS=0`。核心 EnvCfg 的 merge 回退值仍为 `0`，但在线多机器人
+Host 未显式覆盖时 `sim_main.py` 会选择 `1`；validate 仍默认 `0`。
 `validate=1` 只用于首次/升级后单次启动的 GPU→CPU tensor 契约验收，核对 hash 后下一次
 完整 bringup 恢复 `0`。`merge` 不是热开关；回滚必须按上面的 `merge=0 validate=0` 命令
 完整重启，不能只给正在运行的 shell 重新赋值。两个变量只接受字面 `0/1`，非法值会在
@@ -286,12 +290,12 @@ rg -n "Dex3 HandCmd Rate: 100 Hz|Isaac Dex3 HandCmd publish rate: 100 Hz" \
 
 脚本做的事（手动分步照此复刻）：硬清残余 → host sim（HOST_MODE，CRC 两刀）→
 **全部 deploy 并行存活**（错峰启动）→ manager UDP receiver 就绪 → 全部 deploy Init →
-STARTUP HOLD。生产默认模式的 deploy#2/3 是 keyboard，脚本继续给对应 channel 发 `]` 并预激活
+STARTUP HOLD。生产默认模式的 deploy#2 是 keyboard，脚本继续给对应 channel 发 `]` 并预激活
 planner；双 Pico 模式的 deploy#2 接 `zmq_manager:5566`，另起
 `pico_manager_r2.log`，两路都只等各自操作者 A+B+X+Y，脚本不代按。
 
-默认数量的选择来自 `PIPELINE_SONIC_ROBOT_COUNT=3`；显式设为 `4` 或 `5` 时，脚本才会
-为 robot_4/5 创建真身、DDS 与额外 keyboard deploy。数量切换不是热更新，必须完整重启
+默认数量为 `PIPELINE_SONIC_ROBOT_COUNT=2`；显式设为 `3`、`4` 或 `5` 时，脚本才会
+为 robot_3..5 创建真身、DDS 与额外 keyboard deploy。数量切换不是热更新，必须完整重启
 bringup。空闲纸箱 velocity 写入候选仅提升 1.057%，未达到 5% 门槛，生产未启用；核心
 `ISAACLAB_CONVEYOR_SKIP_IDLE_VELOCITY_WRITES` 默认仍为 `0`；
 `ISAACLAB_CONVEYOR_CONTACT_HISTORY_LENGTH` 默认仍为 `4`。
@@ -429,8 +433,7 @@ STARTUP HOLD 就绪检查和 renice，但不等待头显首帧、不代替任何
 4. ⚠️ **端口配错的故障模式是静默混流不是报错**：两台头显都发 63901 时，
    `xr_client` 只留"最新一帧"，两人身体数据交替覆盖、机器人抽搐。防呆判据见 5.3-①。
 
-**B. 两套 manager 隔离启动**（三机器人生产默认下 #2 是新增的第六终端；只有回退
-历史双机时才是第五终端）：
+**B. 两套 manager 隔离启动**（生产默认双机下 manager#2 是第五终端）：
 
 ```bash
 cd <GR00T路径>

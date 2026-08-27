@@ -143,6 +143,33 @@ parser.add_argument(
 )
 parser.add_argument("--enable_profiling", action="store_true", default=True, help="enable performance analysis")
 parser.add_argument("--profile_interval", type=int, default=500, help="performance analysis report interval (steps)")
+scene_sync_profile_group = parser.add_mutually_exclusive_group()
+scene_sync_profile_group.add_argument(
+    "--scene_sync_profile",
+    "--scene-sync-profile",
+    dest="scene_sync_profile",
+    action="store_true",
+    help=(
+        "collect bounded scene-sync pump/publish/receive/decode/apply timings; "
+        "p50/p95/p99 are printed with --stats_interval"
+    ),
+)
+scene_sync_profile_group.add_argument(
+    "--no_scene_sync_profile",
+    "--no-scene-sync-profile",
+    dest="scene_sync_profile",
+    action="store_false",
+    help="disable scene-sync percentile profiling even if the environment enables it",
+)
+parser.set_defaults(scene_sync_profile=None)
+parser.add_argument(
+    "--scene_sync_profile_max_samples",
+    "--scene-sync-profile-max-samples",
+    dest="scene_sync_profile_max_samples",
+    type=int,
+    default=None,
+    help="bounded retained sample count per scene-sync phase (default 4096)",
+)
 
 parser.add_argument("--model_path", type=str, default="assets/model/policy.onnx", help="model path")
 parser.add_argument("--reward_interval", type=int, default=10, help="step interval for reward calculation")
@@ -244,7 +271,8 @@ parser.add_argument(
     type=float,
     default=None,
     help=(
-        "manual rt/lowstate DDS publish rate override (default: keep 100 Hz; "
+        "manual rt/lowstate DDS publish rate override (generic default: 100 Hz; "
+        "online multi-robot scene-sync Host default: 55 Hz; "
         "SONIC lock-step already publishes fresh samples immediately via an "
         "event-driven wake-up, so raising this is normally unnecessary)"
     ),
@@ -256,8 +284,9 @@ parser.add_argument(
     type=float,
     default=None,
     help=(
-        "manual Dex3 HandState idle-heartbeat rate override (default: keep "
-        "100 Hz); fresh PhysX hand samples are still published immediately"
+        "manual Dex3 HandState idle-heartbeat rate override (generic default: "
+        "100 Hz; online multi-robot scene-sync Host default: 10 Hz); fresh "
+        "PhysX hand samples are still published immediately"
     ),
 )
 parser.add_argument(
@@ -267,8 +296,9 @@ parser.add_argument(
     type=float,
     default=None,
     help=(
-        "full scene-state DDS export rate; SONIC defaults to 5 Hz, other tasks "
-        "retain every-loop export, 0 disables export"
+        "full scene-state DDS export rate; SONIC defaults to 5 Hz, an online "
+        "multi-robot Host with a working ZMQ scene publisher defaults to 0, "
+        "other tasks retain every-loop export, 0 disables export"
     ),
 )
 
@@ -444,17 +474,22 @@ parser.add_argument(
 )
 parser.add_argument(
     "--late_render_interval",
+    "--late-render-interval",
+    dest="late_render_interval",
     type=int,
     default=None,
     help=(
-        "render once every N control loops in late-render mode. Default 1 "
-        "(GUI 画面与物理同频 50 fps): 实测非 AR 闭环下 A+E+R 约 13-14 ms, "
-        "20 ms 预算里还剩 5-7 ms 余量,每圈渲染不掉主循环。设 2 可把渲染成本 "
-        "再摊薄一半(画面 25 fps),留给场景更重、余量吃紧的情况。XR 下默认同样 "
-        "每圈,且**不建议改**:实测设 2 无法锁住匀速档——非渲染圈由 step_hz "
-        "deadline 网格定拍、渲染圈由 xrWaitFrame 帧槽网格定拍,两套时钟不整除 "
-        "会打拍(50Hz 对 72Hz:每对循环相位漂 ~12ms),画面仍在 2/3 帧槽间交替。 "
-        "保留此旋钮只为不静默覆盖用户输入与留档该负结论"
+        "render once every N control loops in late-render mode. Generic/XR "
+        "default 1; an online multi-robot scene-sync Host defaults to 4, so "
+        "a 50 Hz Host renders its local diagnostic preview at about 12.5 fps "
+        "while physics and ZMQ publishing still run every control loop. Use "
+        "1 to restore every-loop rendering. XR keeps the generic default and "
+        "changing it is not recommended: interval 2 could not lock to an even "
+        "cadence because non-render loops use the step_hz deadline grid while "
+        "render loops use the xrWaitFrame slot grid. The two clocks do not divide "
+        "evenly (50 Hz vs 72 Hz), so their phase drifts by about 12 ms per pair "
+        "and the display alternates between 2/3 slots. This option remains "
+        "available for explicit diagnostics and to avoid overriding user input"
     ),
 )
 parser.add_argument("--public_ip",type=str,default="127.0.0.1",help="public ip")
@@ -550,11 +585,49 @@ else:
     scene_sonic_robot_count = 1
 if is_scene_sync_viewer:
     print("[viewer] Pure-mirror viewer mode (ISAACLAB_LOCAL_ROBOT_ID=0)")
-if is_scene_sync_host:
+online_scene_sync_host = is_scene_sync_host and not args_cli.replay_data
+if online_scene_sync_host:
     print(
         "[host] Multi-robot host mode "
         f"(ISAACLAB_HOST_BOTH_ROBOTS=1, count={scene_sonic_robot_count})"
     )
+    # Multi-robot publisher performance defaults.  The production bring-up has
+    # already used these settings explicitly; apply the same proven bundle to
+    # manual Host launches so the short `python sim_main.py ...` command does
+    # not silently fall back to the expensive six-actuator/100 Hz heartbeat
+    # path.  Every item remains independently reversible through an explicit
+    # environment variable or CLI option.
+    if "ISAACLAB_SONIC_MERGE_ACTUATORS" not in os.environ:
+        os.environ["ISAACLAB_SONIC_MERGE_ACTUATORS"] = "1"
+        print(
+            "[host perf] defaulting ISAACLAB_SONIC_MERGE_ACTUATORS=1 "
+            "(set 0 to restore six groups per robot)"
+        )
+    if args_cli.lowstate_pub_hz is None:
+        args_cli.lowstate_pub_hz = 55.0
+        print("[host perf] defaulting LowState idle heartbeat to 55 Hz")
+    if args_cli.handstate_pub_hz is None and not args_cli.replay_data:
+        args_cli.handstate_pub_hz = 10.0
+        print("[host perf] defaulting HandState idle heartbeat to 10 Hz")
+    if (
+        args_cli.late_render_interval is None
+        and not bool(getattr(args_cli, "xr", False))
+        and args_cli.teleop_device == "none"
+        and not args_cli.no_late_render
+        and not args_cli.no_render
+        and not bool(getattr(args_cli, "headless", False))
+        and args_cli.livestream_type == 0
+        and args_cli.render_interval is None
+    ):
+        # Cafe's validated Host kept physics/ZMQ at 50 Hz while its local GUI
+        # rendered at 12.5 Hz.  The publisher preview is diagnostic only; the
+        # remote Viewer renders independently from every scene-state update.
+        args_cli.late_render_interval = 4
+        print(
+            "[host perf] defaulting local preview to one render per 4 control "
+            "loops so physics/ZMQ publishing keep their 50 Hz budget "
+            "(use --late-render-interval 1 to restore every-loop rendering)"
+        )
 # 只有 host 注册多套 G1/Dex3 DDS；viewer 的镜像数量由 cfg 单独读取同一 count，
 # 本机 ghost 不参与 Unitree DDS，只由 hold provider 维持在场外。
 args_cli.sonic_robot_count = scene_sonic_robot_count if is_scene_sync_host else 1
@@ -567,6 +640,9 @@ sonic_host_channel_specs = sonic_robot_channel_specs(args_cli.sonic_robot_count)
 # dds.dds_master 被 tasks 的 import-time 注册间接导入前就位。
 runtime_dds_enabled = not is_scene_sync_viewer
 os.environ["UNITREE_SIM_DISABLE_DDS"] = "0" if runtime_dds_enabled else "1"
+defer_host_sim_state_default = (
+    online_scene_sync_host and args_cli.sim_state_export_hz is None
+)
 if is_scene_sync_viewer:
     if args_cli.action_source != "hold":
         print(
@@ -623,7 +699,7 @@ if is_scene_sync_viewer:
     # Viewer receives the authoritative complete scene over ZMQ and must not
     # publish a second, stale DDS scene state.
     args_cli.sim_state_export_hz = 0.0
-elif args_cli.sim_state_export_hz is None and is_sonic_task:
+elif args_cli.sim_state_export_hz is None and is_sonic_task and not defer_host_sim_state_default:
     args_cli.sim_state_export_hz = 5.0
 
 if args_cli.step_hz is None:
@@ -1176,9 +1252,10 @@ def main():
             and not args_cli.replay_data
             and args_cli.render_interval is None
         )
-        # 渲染间隔默认每圈(非 AR 画面=物理=50fps;XR 每圈撞 xrWaitFrame,全环
-        # 单时钟才能锁相)。此前 XR 下硬编码为 1、静默丢弃用户输入,现改为接受
-        # 显式覆盖——但 XR 下改它救不了抖动:2026-07-29 实测 interval=2 仍抖,
+        # 通用/XR 渲染间隔默认每圈；在线多机发布 Host 已在参数解析后默认填入 4。
+        # XR 每圈撞 xrWaitFrame，全环单时钟才能锁相。此前 XR 下硬编码为 1、
+        # 静默丢弃用户输入，现改为接受显式覆盖——但 XR 下改它救不了抖动：
+        # 2026-07-29 实测 interval=2 仍抖，
         # 因为非渲染圈走 step_hz deadline 网格、渲染圈走帧槽网格,两套刚性时钟
         # 不整除必打拍。AR 卡顿的真因是全链无重投影(见 doc/xr_ar_judder_*.md)。
         late_render_interval = (
@@ -1331,7 +1408,10 @@ def main():
                 # 初始化完毕,这里只影响 ManagerBasedEnv.step 的取模检查(现读
                 # cfg),env.step 从此不再内嵌渲染,渲染由控制器显式调用。
                 env.cfg.sim.render_interval = 1_000_000
-                print("[sim] GUI rendering: once per control loop, after env.step")
+                print(
+                    "[sim] GUI rendering: once every "
+                    f"{late_render_interval} control loop(s), after env.step"
+                )
             else:
                 print(
                     "[sim] GUI rendering every "
@@ -1465,6 +1545,33 @@ def main():
         )
     env.sim.reset()
     env.reset()
+
+    # Resolve the scene-sync term before DDS objects are created.  The Host may
+    # replace generic SimState DDS only when its authoritative ZMQ PUB socket
+    # actually initialized; scene-sync-off, missing pyzmq and bind failures all
+    # retain the normal SONIC 5 Hz export instead of silently losing both paths.
+    def _get_scene_sync_term(term_name: str):
+        try:
+            return env.action_manager.get_term(term_name)
+        except (AttributeError, KeyError, ValueError):
+            return None
+
+    scene_sync_term = _get_scene_sync_term("scene_state_sync")
+    env_reset_sync_term = _get_scene_sync_term("env_reset_sync")
+    if defer_host_sim_state_default:
+        if bool(getattr(scene_sync_term, "publishing_enabled", False)):
+            args_cli.sim_state_export_hz = 0.0
+            print(
+                "[host perf] disabling duplicate full SimState DDS export "
+                "because the ZMQ scene publisher is live "
+                "(use --sim-state-export-hz 5 to restore it)"
+            )
+        else:
+            args_cli.sim_state_export_hz = 5.0
+            print(
+                "[host perf] ZMQ scene publisher is unavailable; retaining "
+                "the generic 5 Hz SimState DDS export"
+            )
 
     # isaacsim 的 SimulationContext 会把 kit loop runner 设成 manual mode,
     # 每次 app.update()(即每次 sim.render())都被墙钟定步到 rendering_dt=20ms,
@@ -1930,14 +2037,25 @@ def main():
     # ZMQ 双机场景同步（Isaac-G1-29DoF-Sonic-Conveyor 任务才有这两个 term）。
     # 复位编排：ID=1 是复位权威，本机整环境复位后广播 reset_id；镜像端（ID=2）
     # 在主循环里消费该事件并跟随复位，scene_state 帧按 reset_id 门控丢弃复位前旧帧。
-    def _get_scene_sync_term(term_name: str):
-        try:
-            return env.action_manager.get_term(term_name)
-        except (AttributeError, KeyError, ValueError):
-            return None
-
-    scene_sync_term = _get_scene_sync_term("scene_state_sync")
-    env_reset_sync_term = _get_scene_sync_term("env_reset_sync")
+    if scene_sync_term is not None and hasattr(scene_sync_term, "set_profiling"):
+        profile_enabled = (
+            scene_sync_term.profiling_enabled
+            if args_cli.scene_sync_profile is None
+            else bool(args_cli.scene_sync_profile)
+        )
+        if (
+            args_cli.scene_sync_profile is not None
+            or args_cli.scene_sync_profile_max_samples is not None
+        ):
+            scene_sync_term.set_profiling(
+                profile_enabled,
+                args_cli.scene_sync_profile_max_samples,
+            )
+        if scene_sync_term.profiling_enabled:
+            print(
+                "[Scene Sync Profile] enabled: bounded pump/publish/receive/"
+                "decode/apply percentiles will follow each statistics window"
+            )
 
     def broadcast_sync_reset() -> None:
         """权威端（复位事件 term 为 publisher 角色）广播一次整环境复位。"""
@@ -2085,6 +2203,10 @@ def main():
         print("========= start controller =========")
         controller.start()
         print("========= start controller success =========")
+        if scene_sync_term is not None and hasattr(
+            scene_sync_term, "reset_profile_stats"
+        ):
+            scene_sync_term.reset_profile_stats()
         
         # main loop - execute in main thread to support rendering
         monotonic = time.monotonic
@@ -2291,12 +2413,29 @@ def main():
                     
                     # calculate moving average frequency (based on recent loop times)
                     if recent_loop_times:
-                        avg_loop_time = sum(recent_loop_times) / len(recent_loop_times)
+                        sorted_loop_times = sorted(recent_loop_times)
+                        avg_loop_time = sum(sorted_loop_times) / len(sorted_loop_times)
                         moving_avg_frequency = 1.0 / avg_loop_time if avg_loop_time > 0 else 0
-                        min_loop_time = min(recent_loop_times)
-                        max_loop_time = max(recent_loop_times)
+                        min_loop_time = sorted_loop_times[0]
+                        max_loop_time = sorted_loop_times[-1]
                         max_freq = 1.0 / min_loop_time if min_loop_time > 0 else 0
                         min_freq = 1.0 / max_loop_time if max_loop_time > 0 else 0
+
+                        def recent_loop_percentile_ms(percentile: float) -> float:
+                            position = (len(sorted_loop_times) - 1) * percentile
+                            lower = math.floor(position)
+                            upper = math.ceil(position)
+                            if lower == upper:
+                                return 1000.0 * sorted_loop_times[lower]
+                            fraction = position - lower
+                            return 1000.0 * (
+                                sorted_loop_times[lower]
+                                + (
+                                    sorted_loop_times[upper]
+                                    - sorted_loop_times[lower]
+                                )
+                                * fraction
+                            )
                     else:
                         moving_avg_frequency = 0
                         min_freq = max_freq = 0
@@ -2310,6 +2449,13 @@ def main():
                     print(f"average loop time: {(elapsed_time/loop_count*1000):.2f} ms")
                     if recent_loop_times:
                         print(f"recent loop time: {(avg_loop_time*1000):.2f} ms")
+                        print(
+                            f"recent loop pacing (last {len(sorted_loop_times)}): "
+                            f"p50={recent_loop_percentile_ms(0.50):.2f} ms, "
+                            f"p95={recent_loop_percentile_ms(0.95):.2f} ms, "
+                            f"p99={recent_loop_percentile_ms(0.99):.2f} ms, "
+                            f"max={1000.0 * max_loop_time:.2f} ms"
+                        )
                     stats_window_s = stats_now - last_stats_time
                     sim_state_rate = (
                         sim_state_update_count / stats_window_s if stats_window_s > 0.0 else 0.0
@@ -2332,6 +2478,13 @@ def main():
                             f"{render_frames / stats_window_s:.2f} fps, "
                             f"mean {1000.0 * render_work_s / render_frames:.2f} ms/frame"
                         )
+                    if scene_sync_term is not None and hasattr(
+                        scene_sync_term, "pop_profile_stats"
+                    ):
+                        sync_profile = scene_sync_term.pop_profile_stats()
+                        if sync_profile is not None:
+                            for profile_line in sync_profile.format_lines():
+                                print(profile_line)
                     if args_cli.xr:
                         # /xr/status/fps 由 omni.kit.xr C++ 侧每帧写入,是 XR 侧
                         # 自己的帧率口径,与主循环 Hz / GUI render fps 分列对照

@@ -224,7 +224,8 @@ ACTIVE_SONIC_ROBOT_COUNT = (
     else 2
 )
 ACTIVE_SONIC_CHANNEL_SPECS = sonic_robot_channel_specs(ACTIVE_SONIC_ROBOT_COUNT)
-# 主动力学执行器合并只作为显式 A/B 候选；默认仍保留已验过的原始六组。
+# EnvCfg 原始默认保留已验过的六组；在线多机器人 Host 会由 sim_main 在 import
+# 本模块前默认注入 1，直接 import 配置的工具和普通/Viewer 启动不受影响。
 SONIC_MERGE_ACTUATORS = _env_bool("ISAACLAB_SONIC_MERGE_ACTUATORS", False)
 # 真实 actuator tensor 校验会触发 GPU→CPU 同步，只允许显式 A/B 启用。
 SONIC_VALIDATE_ACTUATORS = _env_bool("ISAACLAB_SONIC_VALIDATE_ACTUATORS", False)
@@ -290,6 +291,13 @@ SYNC_OBJECT_NAMES = _env_str_tuple(
 # deploy 停发 lowcmd 时 env.step 停摆，ActionTerm 挂载的同步会随之冻结；主循环
 # 挂载不受影响。置 0 退回方案 a（ActionTerm 每物理步收发、发布按 decimation 节流）。
 SCENE_SYNC_MAINLOOP = _env_bool("ISAACLAB_SCENE_SYNC_MAINLOOP", True)
+SCENE_SYNC_PUBLISH_DECIMATION = max(
+    1,
+    _env_int(
+        "ISAACLAB_SCENE_SYNC_PUBLISH_DECIMATION",
+        1 if SCENE_SYNC_MAINLOOP else 4,
+    ),
+)
 
 
 def _scene_state_sync_cfg() -> ZmqSceneStateSyncActionCfg:
@@ -349,11 +357,15 @@ def _scene_state_sync_cfg() -> ZmqSceneStateSyncActionCfg:
         apply_object_names=() if OBJECT_AUTHORITY else SYNC_OBJECT_NAMES,
         external_pump=SCENE_SYNC_MAINLOOP,
         # 主循环模式 pump 频率本身就是 step_hz（50Hz），不再需要 4:1 节流。
-        publish_decimation=_env_int("ISAACLAB_SCENE_SYNC_PUBLISH_DECIMATION", 1 if SCENE_SYNC_MAINLOOP else 4),
+        publish_decimation=SCENE_SYNC_PUBLISH_DECIMATION,
         send_hwm=_env_int("ISAACLAB_SCENE_SYNC_SEND_HWM", 3),
         receive_hwm=_env_int("ISAACLAB_SCENE_SYNC_RECEIVE_HWM", 3),
         stale_timeout_s=_env_float("ISAACLAB_SCENE_SYNC_STALE_TIMEOUT_S", 0.5),
         stale_log_interval_s=_env_float("ISAACLAB_SCENE_SYNC_STALE_LOG_INTERVAL_S", 2.0),
+        profile_enabled=_env_bool("ISAACLAB_SCENE_SYNC_PROFILE", False),
+        profile_max_samples=_env_int(
+            "ISAACLAB_SCENE_SYNC_PROFILE_MAX_SAMPLES", 4096
+        ),
     )
 
 
@@ -791,9 +803,18 @@ def _log_scene_layout() -> None:
             f"（物体权威={'是' if OBJECT_AUTHORITY else '否'}，物体镜像={'是' if MIRROR_OBJECTS else '否'}）"
         )
     if SCENE_SYNC_ENABLED:
+        effective_bind = SCENE_SYNC_BIND_ENDPOINT or "-"
+        effective_connect = ("" if HOST_MODE else SCENE_SYNC_CONNECT_ENDPOINT) or "-"
+        if VIEWER_MODE:
+            publish_detail = "发布=关（只收）"
+        else:
+            publish_clock = "控制主循环" if SCENE_SYNC_MAINLOOP else "物理步"
+            publish_detail = (
+                f"发布节流=每{SCENE_SYNC_PUBLISH_DECIMATION}个{publish_clock}一帧"
+            )
         print(
-            f"{tag} 场景同步: bind={SCENE_SYNC_BIND_ENDPOINT} connect={SCENE_SYNC_CONNECT_ENDPOINT}"
-            f" 发布节流=每{_env_int('ISAACLAB_SCENE_SYNC_PUBLISH_DECIMATION', 4)}物理步一帧"
+            f"{tag} 场景同步: bind={effective_bind} connect={effective_connect} "
+            f"{publish_detail}"
         )
     else:
         print(f"{tag} 场景同步: 关 [ISAACLAB_SCENE_SYNC=0]")
@@ -1197,8 +1218,8 @@ def _make_local_robot_cfg() -> ArticulationCfg:
 def _make_additional_local_robot_cfg(robot_id: int) -> ArticulationCfg:
     """Create host robot_2..5 with the same full SONIC dynamics as robot_1.
 
-    主动力学默认仍保持原六组；显式 A/B 开关开启时与 robot_1 一起走严格的 43 关节
-    单组合并，机器人数量门控与 DDS 通道拓扑不变。
+    EnvCfg 原始默认保持六组；在线多机器人 Host 默认注入合并开关，与 robot_1 一起
+    走严格的 43 关节单组。显式设 0 可回滚，机器人数量门控与 DDS 通道拓扑不变。
     """
     if robot_id < 2:
         raise ValueError("additional local robot id must be >= 2")

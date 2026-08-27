@@ -1,8 +1,8 @@
 # Isaac-G1-29DoF-Sonic-Conveyor
 
 SONIC DDS 控制的 2..5 台 G1 + warehouse 流水线场景 + ZMQ host/viewer 场景同步。
-生产默认启用 `robot_1..3` 三路 SONIC，`robot_4/5` 站位保持为空；
-四/五路仍可显式启用。
+生产默认启用 `robot_1/2` 双路 SONIC，`robot_3..5` 站位保持为空；
+三/四/五路仍可显式启用。
 
 完整五路能力的通道表、启动方式、GR00T deploy 陷阱和验收入口见
 [流水线多机器人 SONIC 控制](../../../doc/pipeline_five_robot_sonic_zh.md)。
@@ -89,10 +89,9 @@ EnvCfg、DDS 和 provider 会一致自动回退为双机。
 robot_4 使用远端站位，robot_5 使用支线北侧站位。因而三机模式只生成近位 SONIC，
 另外两个站位为空。
 
-共享配置当前默认数量为 `2`；生产一键 bringup 仍独立默认为 `3`。手工 host 需要三路时传
-`ISAACLAB_SONIC_ROBOT_COUNT=3`；需要四/五路能力时显式传
-`PIPELINE_SONIC_ROBOT_COUNT=4|5`；手动 host 使用对应的
-`ISAACLAB_SONIC_ROBOT_COUNT=4|5`。该切换会重建场景与 deploy，不是运行期热更新。
+共享配置与生产一键 bringup 当前都默认为 `2`。需要三/四/五路能力时
+显式传 `PIPELINE_SONIC_ROBOT_COUNT=3|4|5`；手动 host 使用对应的
+`ISAACLAB_SONIC_ROBOT_COUNT=3|4|5`。该切换会重建场景与 deploy，不是运行期热更新。
 
 默认的 `ISAACLAB_CONVEYOR_PROPS=layout` 会真正不生成当前布局用不到的道具：
 
@@ -388,8 +387,9 @@ Dex3 对 C 型 0.5 m 大箱的实抓验收。
 | 整环境复位 | ID=1 | 广播 reset_id，ID=2 跟随；ID=2 本地复位不回传 |
 
 端口：ID=1 绑 `15555`、ID=2 绑 `15556`（base+id-1），双方互连对方端口。
-发布节流默认每 4 个物理步一帧（按 200 Hz 物理时钟计算的名义 50 Hz）；
-wall-clock 发布频率仍受实际物理步速度限制。
+默认方案 b 把同步挂在 50 Hz 控制主循环，`publish_decimation=1`，因此每个主循环发布
+一帧；回退方案 a 才按 200 Hz 物理步计数并默认每 4 步一帧。两种方案的 wall-clock
+发布频率都受实际主循环/物理步速度限制。
 
 ## 多机器人 host 形态
 
@@ -399,17 +399,37 @@ wall-clock 发布频率仍受实际物理步速度限制。
 `N × 129` 维，所有已配置通道的 LowCmd ack 都匹配后才推进环境。完整启动与端口表见
 [多机器人 SONIC 手册](../../../doc/pipeline_five_robot_sonic_zh.md)。
 
-生产 bringup 当前选择三台真身；第 4、5 个站位保持为空，不创建对应机器人、
-DDS 或 deploy。四/五机仅在显式
-`PIPELINE_SONIC_ROBOT_COUNT=4|5` 时启用。
+生产 bringup 当前选择两台真身；第 3..5 个站位保持为空，不创建对应机器人、
+DDS 或 deploy。三/四/五机仅在显式
+`PIPELINE_SONIC_ROBOT_COUNT=3|4|5` 时启用。
 
-核心的 `ISAACLAB_SONIC_MERGE_ACTUATORS` 与 `ISAACLAB_SONIC_VALIDATE_ACTUATORS` 都默认
-关闭，通用/对等启动保持原行为；生产一键脚本显式采用
-`PIPELINE_SONIC_MERGE_ACTUATORS=1`、`PIPELINE_SONIC_VALIDATE_ACTUATORS=0`。手动 host
-要显式传 `ISAACLAB_SONIC_MERGE_ACTUATORS=1` 才与一键一致；`validate=1` 只用于首次或
-升级后的单次运行时 tensor 契约验收。合并不是热切换：回滚必须完整停止并以
+`ISAACLAB_SONIC_VALIDATE_ACTUATORS` 默认关闭。多机器人 Host 在没有显式覆盖时，
+`sim_main.py` 会采用与生产一键脚本一致的发布端性能默认值：
+`ISAACLAB_SONIC_MERGE_ACTUATORS=1`、LowState 空闲保活 55 Hz、HandState 空闲保活
+10 Hz、本地诊断预览每 4 个控制圈渲染一次，并在 ZMQ 权威发布 socket 实际就绪时
+关闭重复的完整 SimState DDS 导出。预览间隔只降低 Host 本地 GUI（目标约 12.5 fps），
+不节流每个主循环执行的物理和 ZMQ scene-state 发布；显式
+`--late-render-interval 1` 可回退每圈渲染，XR/teleop Host 不自动采用该预设。
+scene-sync 关闭、缺少 pyzmq 或 bind 失败时保留普通 5 Hz 导出。通用/对等/回放启动仍保持
+原行为；merge 的显式环境变量以及各 rate/render CLI 参数都优先于这些 Host 默认值。
+`validate=1` 只用于首次或
+升级后的单次运行时 tensor 契约验收。执行器合并不是热切换：回滚必须完整停止并以
 `ISAACLAB_SONIC_MERGE_ACTUATORS=0 ISAACLAB_SONIC_VALIDATE_ACTUATORS=0` 重启，恢复
 每台原始 6 个执行器组。
+
+需要定位 Host 发布帧率时，在命令上增加 `--scene-sync-profile`。每个
+`--stats-interval` 窗口会输出 `pump`、`publish_snapshot`、`publish_encode`、
+`publish_send` 及完整 `publish` 的 mean/p50/p95/p99/max；每相位默认最多保留
+4096 个样本。`send_enqueued_hz` 只表示本地 ZMQ PUB socket 接受入队的速率，
+端到端以 Viewer 窗口的 `accepted_hz` 为准。完整 `publish` 还包含诊断探针本身的
+少量开销，因此不应把它与三个子项的微小差值解读为新的业务瓶颈。
+生产默认关闭该诊断；显式 `--no-scene-sync-profile` 可覆盖 env 预设。
+
+2026-08-27 双机器人、17 箱、GUI Host 的外部 ZMQ 验收中，发布优先默认组合在
+3×20 秒窗口分别达到 49.900、49.850、49.950 Hz，总计 `2994 / 60s = 49.900 Hz`，
+frame-id 零缺失、零乱序；Host 本地诊断预览为 12.47-12.50 fps。相对 2026-08-26
+同机旧路径 `810 / 20.0079s = 40.484 Hz` 提升 23.26%。该数字是执行器合并、状态心跳、
+重复 SimState 关闭和本地预览 4:1 的组合收益，不能拆分归因给单项。
 
 四机 clean-load 同负载 A/B 中，原始 6 组的 21.049131 Hz 提升到单组的
 24.299376 Hz（+15.44%），四台的 43 关节运行时属性 hash 在合并前后完全一致；健康门禁
@@ -419,7 +439,7 @@ DDS 或 deploy。四/五机仅在显式
 后续 clean-load 收敛测试中，四机完整 velocity 写入基线为
 `2705 / 120.28 = 22.489192 Hz`；空闲纸箱写入跳过候选为
 `2732 / 120.21 = 22.726895 Hz`，仅提升 1.057%，未达到 5% 采用门槛，因此核心
-`ISAACLAB_CONVEYOR_SKIP_IDLE_VELOCITY_WRITES` 仍默认 `0`。三机生产配置达到
+`ISAACLAB_CONVEYOR_SKIP_IDLE_VELOCITY_WRITES` 仍默认 `0`。历史三机 clean-load 配置达到
 `3929 / 120.15 = 32.700791 Hz`，比该四机基线提升 45.41%；三路 timeout、stale、
 `sync_waits` 均为 0 且姿态健康。足底 ContactSensor 的
 `ISAACLAB_CONVEYOR_CONTACT_HISTORY_LENGTH` 默认也仍为 `4`，`0` 只作为实验候选。
@@ -437,8 +457,8 @@ LowState 对新 PhysX 样本使用事件唤醒立即发布，无新样本时按�
 
 ### 双机器人链路
 
-下图描述双 Pico/前两台机器人的 VR 路径；生产默认的 robot_3 使用相同 DDS 链并由独立
-keyboard deploy 控制。显式四/五机时，robot_4/5 也采用同样的隔离 keyboard 链。
+下图描述生产默认的双 Pico/双机器人 VR 路径。显式三/四/五机时，
+robot_3..5 使用相同 DDS 链并由各自的隔离 keyboard deploy 控制。
 
 ```text
 Pico 左右控制器 trigger

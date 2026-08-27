@@ -40,6 +40,8 @@ except ModuleNotFoundError:
 from isaaclab.managers.action_manager import ActionTerm, ActionTermCfg
 from isaaclab.utils import configclass
 
+from .timing_stats import SceneSyncTimingWindow, TimingSnapshot
+
 if TYPE_CHECKING:
     from isaaclab.envs.manager_based_env import ManagerBasedEnv
 
@@ -148,6 +150,12 @@ class ZmqSceneStateSyncActionCfg(ActionTermCfg):
     pump()。SONIC 锁步下 deploy 停发 lowcmd 时 env.step 停摆，ActionTerm 挂载的
     同步会随之冻结；主循环挂载不受影响（方案 b）。"""
 
+    profile_enabled: bool = False
+    """Collect bounded pump/publish/receive/decode/apply wall-time samples."""
+
+    profile_max_samples: int = 4096
+    """Maximum retained samples per phase between statistics reports."""
+
     def __post_init__(self):
         self.class_type = ZmqSceneStateSyncAction
 
@@ -163,6 +171,12 @@ class ZmqSceneStateSyncAction(ActionTerm):
         self._raw_actions = torch.zeros((self.num_envs, 0), device=self.device)
         self._processed_actions = torch.zeros_like(self._raw_actions)
         self._export_IO_descriptor = False
+        self._perf_counter = time.perf_counter
+        self._timing = SceneSyncTimingWindow(
+            enabled=cfg.profile_enabled,
+            max_samples=cfg.profile_max_samples,
+            clock=self._perf_counter,
+        )
 
         self._publish_robots = {
             global_name: self._env.scene[entity] for global_name, entity in dict(cfg.publish_robots).items()
@@ -337,6 +351,31 @@ class ZmqSceneStateSyncAction(ActionTerm):
 
         return self._publisher_reset_id if self._publish_enabled else self._active_reset_id
 
+    @property
+    def profiling_enabled(self) -> bool:
+        return self._timing.enabled
+
+    @property
+    def publishing_enabled(self) -> bool:
+        """Whether this term has a live authoritative PUB socket."""
+
+        return bool(self._publish_enabled and self._pub_socket is not None)
+
+    def set_profiling(self, enabled: bool, max_samples: int | None = None) -> None:
+        """Configure scene-sync profiling and discard any partial old window."""
+
+        self._timing.configure(enabled, max_samples)
+
+    def reset_profile_stats(self) -> None:
+        """Start a clean timing window without changing whether profiling is enabled."""
+
+        self._timing.reset()
+
+    def pop_profile_stats(self) -> TimingSnapshot | None:
+        """Return and clear the current bounded timing window."""
+
+        return self._timing.pop()
+
     def process_actions(self, actions: torch.Tensor):
         self._raw_actions = actions
         self._processed_actions = actions
@@ -372,36 +411,66 @@ class ZmqSceneStateSyncAction(ActionTerm):
     def pump(self):
         """执行一轮收发。ActionTerm 模式下由 apply_actions 每物理步调用；
         主循环模式（external_pump=True）下由 sim_main 每迭代（step_hz）调用。"""
-
-        if self._publish_enabled and self._pub_socket is not None:
-            # 计数节流：ActionTerm 模式 = 物理 200 Hz、decimation=4 → 50 Hz 发布；
-            # 主循环模式 = pump 本身就是 step_hz（50 Hz），decimation 默认 1。
-            self._publish_tick += 1
-            if self._publish_tick >= self._publish_decimation:
-                self._publish_tick = 0
-                self._publish_scene_frame()
-        if self._apply_enabled and self._sub_socket is not None:
-            # 门控超时放行：等不到期望 reset_id（事件错过/连环复位）时不能永久冻结镜像。
-            if self._expected_reset_id is not None:
-                gate_timeout = max(0.1, float(self.cfg.reset_gate_timeout_s))
-                if time.monotonic() - self._expected_reset_set_time > gate_timeout:
-                    logger.warning(
-                        "[ZMQ Scene Sync] reset_id=%s 等待超过 %.1fs，放行门控（可能错过了复位事件）",
-                        self._expected_reset_id,
-                        gate_timeout,
+        profiling = self._timing.enabled
+        pump_start = self._perf_counter() if profiling else 0.0
+        if profiling:
+            self._timing.increment("pump_calls")
+        try:
+            if self._publish_enabled and self._pub_socket is not None:
+                # 计数节流：ActionTerm 模式 = 物理 200 Hz、decimation=4 → 50 Hz 发布；
+                # 主循环模式 = pump 本身就是 step_hz（50 Hz），decimation 默认 1。
+                self._publish_tick += 1
+                if self._publish_tick >= self._publish_decimation:
+                    self._publish_tick = 0
+                    publish_start = self._perf_counter() if profiling else 0.0
+                    if profiling:
+                        self._timing.increment("publish_attempts")
+                    published = self._publish_scene_frame(profiling=profiling)
+                    if profiling:
+                        self._timing.record_seconds(
+                            "publish", self._perf_counter() - publish_start
+                        )
+                        if published:
+                            # This means the local PUB socket accepted the
+                            # message.  End-to-end delivery is measured by the
+                            # subscriber's accepted_frames, not here.
+                            self._timing.increment("send_enqueued_frames")
+            if self._apply_enabled and self._sub_socket is not None:
+                # 门控超时放行：等不到期望 reset_id（事件错过/连环复位）时不能永久冻结镜像。
+                if self._expected_reset_id is not None:
+                    gate_timeout = max(0.1, float(self.cfg.reset_gate_timeout_s))
+                    if time.monotonic() - self._expected_reset_set_time > gate_timeout:
+                        logger.warning(
+                            "[ZMQ Scene Sync] reset_id=%s 等待超过 %.1fs，放行门控（可能错过了复位事件）",
+                            self._expected_reset_id,
+                            gate_timeout,
+                        )
+                        self._expected_reset_id = None
+                receive_start = self._perf_counter() if profiling else 0.0
+                if profiling:
+                    self._timing.increment("receive_polls")
+                received = self._receive_latest_scene_frame(profiling=profiling)
+                if profiling:
+                    self._timing.record_seconds(
+                        "receive", self._perf_counter() - receive_start
                     )
-                    self._expected_reset_id = None
-            received = self._receive_latest_scene_frame()
-            now = time.monotonic()
-            if received:
-                if self._stale_reported:
-                    logger.info("[ZMQ Scene Sync] Stream recovered endpoint=%s", self.cfg.connect_endpoint)
-                self._last_receive_time = now
-                self._stale_reported = False
-            else:
-                self._warn_if_stale(now)
+                now = time.monotonic()
+                if received:
+                    if self._stale_reported:
+                        logger.info(
+                            "[ZMQ Scene Sync] Stream recovered endpoint=%s",
+                            self.cfg.connect_endpoint,
+                        )
+                    self._last_receive_time = now
+                    self._stale_reported = False
+                else:
+                    self._warn_if_stale(now)
+        finally:
+            if profiling:
+                self._timing.record_seconds("pump", self._perf_counter() - pump_start)
 
-    def _publish_scene_frame(self) -> None:
+    def _publish_scene_frame(self, *, profiling: bool) -> bool:
+        snapshot_start = self._perf_counter() if profiling else 0.0
         payload = {
             "schema": "g1_peer_scene_state.v1",
             "sender": self.cfg.local_sender_name,
@@ -430,17 +499,36 @@ class ZmqSceneStateSyncAction(ActionTerm):
             },
         }
         self._publisher_frame_id += 1
+        if profiling:
+            self._timing.record_seconds(
+                "publish_snapshot", self._perf_counter() - snapshot_start
+            )
 
+        encode_start = self._perf_counter() if profiling else 0.0
+        send_start: float | None = None
         try:
             message = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+            if profiling:
+                self._timing.record_seconds(
+                    "publish_encode", self._perf_counter() - encode_start
+                )
+            send_start = self._perf_counter() if profiling else 0.0
             self._pub_socket.send_multipart([self.topic, message], flags=zmq.NOBLOCK)
+            return True
         except zmq.Again:
-            pass
+            return False
         except zmq.ZMQError as exc:
             logger.warning("[ZMQ Scene Sync] Publish failed endpoint=%s: %s", self.cfg.bind_endpoint, exc)
+            return False
+        finally:
+            if profiling and send_start is not None:
+                self._timing.record_seconds(
+                    "publish_send", self._perf_counter() - send_start
+                )
 
-    def _receive_latest_scene_frame(self) -> bool:
+    def _receive_latest_scene_frame(self, *, profiling: bool) -> bool:
         latest_message = None
+        drained_messages = 0
         while True:
             try:
                 parts = self._sub_socket.recv_multipart(flags=zmq.NOBLOCK)
@@ -451,16 +539,29 @@ class ZmqSceneStateSyncAction(ActionTerm):
                 return False
             if len(parts) == 2 and parts[0] == self.topic:
                 latest_message = parts[1]
+                if profiling:
+                    drained_messages += 1
+
+        if profiling:
+            self._timing.increment("drained_messages", drained_messages)
+            self._timing.increment(
+                "coalesced_messages", max(0, drained_messages - 1)
+            )
 
         if latest_message is None:
+            if profiling:
+                self._timing.increment("empty_polls")
             return False
 
+        decode_start = self._perf_counter() if profiling else 0.0
         try:
             payload: dict[str, Any] = json.loads(latest_message.decode("utf-8"))
             if payload.get("schema") != "g1_peer_scene_state.v1":
                 raise ValueError(f"unsupported schema {payload.get('schema')!r}")
             if str(payload.get("sender", "")) == self.cfg.local_sender_name:
                 # 自己的帧被环回（同机双进程测试时 connect 配错），不应用。
+                if profiling:
+                    self._timing.increment("rejected_frames")
                 return False
 
             session = str(payload["session"])
@@ -475,35 +576,68 @@ class ZmqSceneStateSyncAction(ActionTerm):
                 self._last_frame_id = -1
                 self._expected_reset_id = None
             if session == self._last_session and frame_id <= self._last_frame_id:
+                if profiling:
+                    self._timing.increment("rejected_frames")
                 return False
             if int(payload["joint_count"]) != self._joint_count:
                 raise ValueError(f"joint_count mismatch: remote={payload['joint_count']} local={self._joint_count}")
             frame_joint_names = self._validate_remote_joint_order(payload)
             if self._expected_reset_id is not None and reset_id != self._expected_reset_id:
+                if profiling:
+                    self._timing.increment("rejected_frames")
                 return False
 
             robot_states = self._parse_robot_states(payload["robots"])
             object_states = self._parse_object_states(payload["objects"])
-            self._apply_scene_states(robot_states, object_states, frame_joint_names)
-
-            self._last_session = session
-            self._last_frame_id = frame_id
-            self._active_reset_id = reset_id
-            if self._expected_reset_id == reset_id:
-                self._expected_reset_id = None
-                logger.info("[ZMQ Scene Sync] Mirror accepted post-reset frame reset_id=%s", reset_id)
-            if not self._received_first_frame:
-                logger.info(
-                    "[ZMQ Scene Sync] Received first frame endpoint=%s frame_id=%d reset_id=%s",
-                    self.cfg.connect_endpoint,
-                    frame_id,
-                    reset_id,
-                )
-                self._received_first_frame = True
-            return True
         except Exception as exc:
+            if profiling:
+                self._timing.increment("invalid_frames")
             logger.warning("[ZMQ Scene Sync] Ignored invalid scene frame: %s", exc)
             return False
+        finally:
+            if profiling:
+                self._timing.record_seconds(
+                    "decode", self._perf_counter() - decode_start
+                )
+
+        apply_start = self._perf_counter() if profiling else 0.0
+        try:
+            self._apply_scene_states(
+                robot_states,
+                object_states,
+                frame_joint_names,
+                profiling=profiling,
+            )
+        except Exception as exc:
+            if profiling:
+                self._timing.increment("apply_errors")
+            logger.warning(
+                "[ZMQ Scene Sync] Failed to apply valid scene frame: %s", exc
+            )
+            return False
+        finally:
+            if profiling:
+                self._timing.record_seconds(
+                    "apply", self._perf_counter() - apply_start
+                )
+
+        self._last_session = session
+        self._last_frame_id = frame_id
+        self._active_reset_id = reset_id
+        if self._expected_reset_id == reset_id:
+            self._expected_reset_id = None
+            logger.info("[ZMQ Scene Sync] Mirror accepted post-reset frame reset_id=%s", reset_id)
+        if not self._received_first_frame:
+            logger.info(
+                "[ZMQ Scene Sync] Received first frame endpoint=%s frame_id=%d reset_id=%s",
+                self.cfg.connect_endpoint,
+                frame_id,
+                reset_id,
+            )
+            self._received_first_frame = True
+        if profiling:
+            self._timing.increment("accepted_frames")
+        return True
 
     def _parse_robot_states(
         self, payload: dict[str, Any]
@@ -572,7 +706,10 @@ class ZmqSceneStateSyncAction(ActionTerm):
         robot_states: dict[str, tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
         object_states: dict[str, torch.Tensor],
         frame_joint_names: tuple[str, ...],
+        *,
+        profiling: bool,
     ) -> None:
+        robot_start = self._perf_counter() if profiling else 0.0
         for name, (root_state, joint_pos, joint_vel) in robot_states.items():
             visual_robot = self._apply_visual_robots.get(name)
             if visual_robot is not None:
@@ -606,6 +743,12 @@ class ZmqSceneStateSyncAction(ActionTerm):
             robot.set_joint_position_target(joint_pos)
             robot.set_joint_velocity_target(zero_joint_vel)
 
+        if profiling:
+            self._timing.record_seconds(
+                "apply_robots", self._perf_counter() - robot_start
+            )
+            self._timing.increment("robot_writes", len(robot_states))
+        object_start = self._perf_counter() if profiling else 0.0
         for name, root_state in object_states.items():
             if self._object_is_kinematic[name]:
                 # 镜像侧的同步物体 spawn 时就被翻成 kinematic，而 write_root_state_to_sim
@@ -621,6 +764,10 @@ class ZmqSceneStateSyncAction(ActionTerm):
                 self._apply_objects[name].write_root_pose_to_sim(root_state[:, :7])
             else:
                 self._apply_objects[name].write_root_state_to_sim(root_state)
+        if profiling:
+            apply_end = self._perf_counter()
+            self._timing.record_seconds("apply_objects", apply_end - object_start)
+            self._timing.increment("object_writes", len(object_states))
 
     def _warn_if_stale(self, now: float) -> None:
         timeout = max(0.0, float(self.cfg.stale_timeout_s))

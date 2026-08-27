@@ -838,7 +838,7 @@ domain 96 的 1°阈值只用于强制覆盖自动 reset 分支，没有写入�
 - MuJoCo 的 `SIMULATE_DT=0.005`，每 5 ms 读取一次最新 LowCmd，按当前关节状态重新计算完整 `tau_ff + kp(q_des-q) + kd(dq_des-dq)`，随后执行一次 `mj_step`；viewer 独立按 `VIEWER_DT=0.02` 更新。因此画面约 50 Hz 时，物理、执行器和新状态仍是 200 Hz；
 - Isaac 同样使用 5 ms PhysX 步长，但当前 `decimation=4`。`SonicDDSActionProvider.get_action()` 只在每个 20 ms 环境步开始时读取一次最新 LowCmd，目标 `q/dq/tau/kp/kd` 随后保持 4 个 PhysX 子步；PhysX drive 仍会在每个子步依据当前状态计算反馈力矩，所以不能简单描述为“力矩只算 50 Hz”，但新目标、前馈力矩、动态增益和对外新状态的更新粒度目前只有 50 Hz；
 - C++ policy/reference 的离散步长仍为 20 ms；在低性能机器上按 PhysX 状态驱动推进，不再强求墙钟 50 Hz。planner 每 5 个控制步执行一次，保持 100 ms 仿真时间步长；
-- `rt/sim_state` 对 SONIC 默认降为 5 Hz，避免每主循环序列化完整场景状态抢占物理和握手路径；可用 `--sim-state-export-hz` 调整或关闭。
+- `rt/sim_state` 对普通 SONIC 启动默认降为 5 Hz，避免每主循环序列化完整场景状态抢占物理和握手路径；在线多机器人 Host 在 ZMQ PUB socket 就绪时自动关闭，初始化失败则回退 5 Hz。可用 `--sim-state-export-hz` 显式调整或关闭。
 
 ### 11.2 第一步：确认低延迟回退基线并测清端到端延迟
 

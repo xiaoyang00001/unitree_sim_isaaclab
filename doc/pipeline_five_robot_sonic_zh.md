@@ -1,18 +1,18 @@
-# 流水线多机器人 SONIC 控制（三路生产默认，支持五路）
+# 流水线多机器人 SONIC 控制（双路生产默认，支持五路）
 
 ## 1. 结果与边界
 
 `Isaac-G1-29DoF-Sonic-Conveyor` 的五个站位都具备在同一个 host 进程中升级为
-43-DoF SONIC 动力学机器人的能力。当前生产默认收敛为三路：`robot_1..3` 是 SONIC
-真身，`robot_4/5` 站位为空；需要专项联调时仍可把第 4、5 个
+43-DoF SONIC 动力学机器人的能力。当前生产默认收敛为双路：`robot_1/2` 是 SONIC
+真身，`robot_3..5` 站位为空；需要专项联调时仍可把第 3..5 个
 站位逐台启用为真身。`robot_3`、`robot_4`、`robot_5` 沿用原额外站位的位置和
 朝向，只有数量覆盖时才具备独立 articulation、执行器、足底接触传感器、动作、观测及
 DDS 通道。五台能力全开时共使用 15 个动作 term，动作张量为 `5 × 43 × 3 = 645` 维。
 
 额外站位采用固定 ID 映射，并让 `robot_3` 优先使用近位：`robot_3` 位于
 `(-6.50, 17.95)`、朝 `+X`；`robot_4` 使用远位 `(-12.70, 18.9534)`、朝西北；
-`robot_5` 位于 `(-9.50, 21.15)`、朝 `-Y`。因此生产默认三机只生成近位 SONIC，
-另外两个站位为空；四、五机按上述固定映射启用。
+`robot_5` 位于 `(-9.50, 21.15)`、朝 `-Y`。生产默认不生成这三个额外 SONIC；
+三、四、五机按上述固定映射逐台启用。
 
 这个数量只扩展同一 host 内的 SONIC 通道，**不扩展场景同步身份**：
 
@@ -20,8 +20,8 @@ DDS 通道。五台能力全开时共使用 15 个动作 term，动作张量为 
 - Windows/Linux viewer 仍是 `ISAACLAB_LOCAL_ROBOT_ID=0`；
 - 原 ID=1/2 对等模式保持双机语义；不要设置场景 ID=3/4/5。
 
-`ISAACLAB_SONIC_ROBOT_COUNT` 支持 `2..5`，便于逐台联调。共享配置默认为 `2`，生产一键
-bringup 仍通过独立的 `PIPELINE_SONIC_ROBOT_COUNT` 默认为 `3`；显式设置为 `3`、`4` 或 `5` 时依次启用其余
+`ISAACLAB_SONIC_ROBOT_COUNT` 支持 `2..5`，便于逐台联调。共享配置与生产一键
+bringup 都默认为 `2`；显式设置 `PIPELINE_SONIC_ROBOT_COUNT=3`、`4` 或 `5` 时依次启用其余
 站位。未覆盖站位保持为空。额外真身只在
 `ISAACLAB_TOTES_ON_CONVEYOR=1` 的流水线布局中启用；推车布局只有两个站位，即使共享
 配置请求 `5`，EnvCfg、DDS 和 provider 也会一起自动回退到有效数量 `2`。
@@ -32,7 +32,7 @@ bringup 仍通过独立的 `PIPELINE_SONIC_ROBOT_COUNT` 默认为 `3`；显式�
 |---|---|---|---|---|---|---|
 | 1 | `robot` / `Robot` | `g129` | `dex3` | `rt` | 无 | `5556` / `5557` |
 | 2 | `robot_2` / `Robot2` | `g129_r2` | `dex3_r2` | `rt/r2` | `_r2` | `5566` / `5567` |
-| 3 | `robot_3` / `Robot3` | `g129_r3` | `dex3_r3` | `rt/r3` | `_r3` | `5576` / `5577` |
+| 3 | `robot_3` / `Robot3`（生产默认不生成） | `g129_r3` | `dex3_r3` | `rt/r3` | `_r3` | `5576` / `5577` |
 | 4 | `robot_4` / `Robot4`（生产默认不生成） | `g129_r4` | `dex3_r4` | `rt/r4` | `_r4` | `5586` / `5587` |
 | 5 | `robot_5` / `Robot5`（生产默认不生成） | `g129_r5` | `dex3_r5` | `rt/r5` | `_r5` | `5596` / `5597` |
 
@@ -42,31 +42,34 @@ bringup 仍通过独立的 `PIPELINE_SONIC_ROBOT_COUNT` 默认为 `3`；显式�
 
 ## 3. 推荐启动
 
-一键脚本生产默认启动三台：robot_1 走 Pico，robot_2/3 走互相隔离的 keyboard 调试通道；
-robot_4/5 站位为空，不创建机器人或对应 deploy。四/五机能力仍保留，只有
-显式设置 `PIPELINE_SONIC_ROBOT_COUNT=4|5` 时才增加真身、DDS 与 deploy。
+一键脚本生产默认启动两台：robot_1 走 Pico，robot_2 走 keyboard 调试通道；
+robot_3..5 站位为空，不创建机器人或对应 deploy。三/四/五机能力仍保留，只有
+显式设置 `PIPELINE_SONIC_ROBOT_COUNT=3|4|5` 时才增加真身、DDS 与 deploy。
 脚本会对每个 Isaac deploy 显式传入 `--isaac-handcmd-hz 100`；这只把每台左右手的
 Dex3 HandCmd 从 500 Hz 降到 100 Hz，LowCmd、锁步 ACK、Control 和 Planner 链路仍保持
 500 Hz。外部 GR00T 仓库必须至少包含参数支持提交 `0f4e0b4`，并包含定时校准修复
 `122c947`；只含前者时 100 Hz 会因 writer 周期量化实际落到约 84–85 Hz。
 
-真身执行器合并在核心 EnvCfg 中保持安全默认关闭：直接启动且不传
-`ISAACLAB_SONIC_MERGE_ACTUATORS` 时仍使用原始 6 组。一键生产路径则显式采用
+真身执行器合并在核心 EnvCfg 中保持安全默认关闭；但在线多机器人 Host 由
+`sim_main.py` 默认注入 `ISAACLAB_SONIC_MERGE_ACTUATORS=1`，一键生产路径也显式采用
 `PIPELINE_SONIC_MERGE_ACTUATORS=1`，把每台 43 关节真身合成严格校验过的单组；
 `PIPELINE_SONIC_VALIDATE_ACTUATORS` 默认 `0`，避免正常启动做一次 GPU→CPU tensor
-同步。两个一键变量都只接受字面 `0` 或 `1`，并会在停止旧进程前完成校验。
+同步。Host 本地诊断预览默认每 4 个控制圈渲染一次；这只把 GUI 目标降到约
+12.5 fps，物理与 ZMQ 发布仍每个主循环执行。可用
+`PIPELINE_HOST_LATE_RENDER_INTERVAL=1` 回退每圈渲染。merge/validate 两个一键变量
+只接受字面 `0` 或 `1`，预览间隔只接受正整数，都会在停止旧进程前完成校验。
 
 ```bash
 cd <仿真工程>
 
-# 生产默认三路；无桌面会话时加 PIPELINE_HEADLESS=1
+# 生产默认双路；无桌面会话时加 PIPELINE_HEADLESS=1
 bash tools/pipeline_pico_bringup.sh
 
 # 显式启用全部五路（四路联调用 =4）
 PIPELINE_SONIC_ROBOT_COUNT=5 bash tools/pipeline_pico_bringup.sh
 ```
 
-双 Pico 仍只接管前两台；生产默认的 robot_3 保持 keyboard。显式五机时 robot_3..5
+双 Pico 在生产默认下正好接管两台真身；显式三/四/五机时 robot_3..5
 均保持 keyboard：
 
 ```bash
@@ -102,8 +105,8 @@ bash tools/pipeline_pico_bringup.sh
 该变量不是热更新；回滚必须重启完整 bringup，不能只修改运行中 shell 的环境变量。
 外仓 `deploy.sh` 自身的 Isaac 默认仍为 500 Hz，非 Isaac/实机路径也始终保持 500 Hz。
 
-脚本只为已启用的机器人创建 `/tmp/pipeline_pico/dk_rN` 键管道；生产默认只有 r1..r3，
-下面的 r4/r5 示例要求先显式启用对应数量：
+脚本只为已启用的机器人创建 `/tmp/pipeline_pico/dk_rN` 键管道；生产默认只有 r1/r2，
+下面的 r3..r5 示例要求先显式启用对应数量：
 
 ```bash
 printf 'w' >> /tmp/pipeline_pico/dk_r3
@@ -118,24 +121,26 @@ printf 's' >> /tmp/pipeline_pico/dk_r5
 UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo \
 ISAACLAB_LOCAL_ROBOT_ID=1 \
 ISAACLAB_HOST_BOTH_ROBOTS=1 \
-ISAACLAB_SONIC_ROBOT_COUNT=3 \
+ISAACLAB_SONIC_ROBOT_COUNT=2 \
 ISAACLAB_SONIC_MERGE_ACTUATORS=1 \
 ISAACLAB_TOTES_ON_CONVEYOR=1 \
 python sim_main.py \
   --task Isaac-G1-29DoF-Sonic-Conveyor \
   --robot_type g129 --action_source sonic_dds --device cpu --no_render \
-  --stats_interval 10 --sim-state-export-hz 0 --lowstate-pub-hz 55 \
+  --stats_interval 10 --lowstate-pub-hz 55 \
   --handstate-pub-hz 10
 ```
 
-Pico bringup 和上面的性能命令关闭 `rt/sim_state` 导出：多机完整状态会增加当前该通道
-负载，四/五机完整状态还会超过其共享内存容量，而且 host/viewer 场景同步走独立 ZMQ
-链路。若确有外部消费者依赖
-`rt/sim_state`，需先扩容并重新评估开销，再移除这个参数。
+一键 Pico bringup 不再硬传 `--sim-state-export-hz 0`：`sim_main.py` 在 Env 创建后确认
+ZMQ PUB socket 真正就绪才关闭 `rt/sim_state`；scene-sync 关闭、缺 pyzmq 或 bind 失败时
+自动保留 5 Hz。上面的等价命令同样不显式传该参数，因此保留生产失败回退；只有专项
+性能测试明确不需要回退时才额外传 `--sim-state-export-hz 0`。
+多机完整状态会增加通道负载，四/五机还会超过共享内存容量；若确有外部消费者依赖
+`rt/sim_state`，显式传 `--sim-state-export-hz 5` 并重新评估开销。
 
 `--handstate-pub-hz 10` 只把 Dex3 HandState 的空闲保活从通用默认 100 Hz 调到
 10 Hz；每个新 PhysX 手部样本仍通过事件唤醒立即发布，因此它不是 10 Hz 硬限流。
-未显式传入该参数时，通用 CLI 仍保持 100 Hz 默认值。
+在线多机器人 Host 未显式传入时也默认 10 Hz；普通/对等/回放模式仍保持通用 100 Hz。
 
 `--lowstate-pub-hz 55` 同样只设置 LowState 的周期空闲保活，不是 topic 的
 55 Hz 硬上限。每个新 PhysX 身体样本仍会立即唤醒发布线程；因此四机现场的
@@ -146,8 +151,9 @@ cache 只在 PhysX 状态 generation 或 reset grace 状态变化时重建字段
 并保持原 tick。共享内存继续作为兼容镜像和首次快照前的回退路径；
 `sample_seq=None` 的旧任务仍按历史语义每轮重建并递增 tick。
 
-手动 host 命令中的 `ISAACLAB_SONIC_MERGE_ACTUATORS=1` 是刻意显式设置，因为核心默认
-仍为 `0`。首次/升级验收可在同一命令再加 `ISAACLAB_SONIC_VALIDATE_ACTUATORS=1`；通过后
+手动 host 命令中的 `ISAACLAB_SONIC_MERGE_ACTUATORS=1` 为了让建场参数在日志中可显式复现；
+在线多机器人 Host 未传时 `sim_main.py` 也会选择 `1`。首次/升级验收可在同一命令再加
+`ISAACLAB_SONIC_VALIDATE_ACTUATORS=1`；通过后
 完整重启并恢复 `0`。手动回滚同样必须先完整停止 host，再以
 `ISAACLAB_SONIC_MERGE_ACTUATORS=0 ISAACLAB_SONIC_VALIDATE_ACTUATORS=0` 重新创建场景。
 
@@ -178,11 +184,11 @@ robot_1..N deploy 都必须显式传入 `--isaac-handcmd-hz 100`；只给部分�
 ## 5. Viewer
 
 host 的一帧 `scene_state` 发布当前启用的 `robot_1..N`。viewer 使用相同数量即可生成
-对应镜像；生产默认三路的等价命令为：
+对应镜像；生产默认双路的等价命令为：
 
 ```bash
 ISAACLAB_LOCAL_ROBOT_ID=0 \
-ISAACLAB_SONIC_ROBOT_COUNT=3 \
+ISAACLAB_SONIC_ROBOT_COUNT=2 \
 ISAACLAB_SCENE_SYNC_PEER_IP=<host-ip> \
 python sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor \
   --robot_type g129 --device cpu --hide_ui
@@ -242,7 +248,7 @@ SONIC 每路约 500 Hz 发布 LowCmd，而在该阶段四机仿真只产生约 7
 8.01 Hz、平均循环 122.2 ms；55 Hz 时总体 9.24 Hz、最近 9.29 Hz、平均循环 108.2 ms，
 约提升 13%，且四路均保持 `timeouts=0`。这组历史 A/B 将一键脚本的多机空闲
 保活设为 55 Hz；后续延长窗口已否决 10 Hz 和 20 Hz 候选，所以当前仍保持
-55 Hz。通用 CLI 默认值不变，需要排查兼容性时可显式回到
+55 Hz。普通/对等/回放模式仍保持通用 100 Hz，需要排查兼容性时可显式回到
 `--lowstate-pub-hz 100`。
 
 ### HandState 发布组合优化 A/B
@@ -368,7 +374,7 @@ E/T p95 分别下降 11.80%/11.32%。启动期 tensor 契约校验中，基线�
 带 `domain=99` 的 LowState 数据相加、连乘，也不得外推为五机闭环频率；五机采用生产
 默认单组后仍须另做同口径长窗复验。
 
-### 空闲速度写候选与三路生产收敛（clean-load）
+### 空闲速度写候选与历史三路收敛（clean-load）
 
 2026-08-20 又在同一四机、CPU PhysX、无额外 sim/compiler 的 clean-load 条件下，仅切换
 legacy 纸箱事件的“整行均空闲时跳过 root velocity 写入”候选。正式 exact stepped 窗口为：
@@ -391,8 +397,9 @@ ACK mismatch、`sync_waits` 增量均为 0，姿态门禁通过。因此该候�
 `29.717 / 29.100 / 38.650 ms`。三路 timeout、stale、ACK mismatch、`sync_waits`
 增量均为 0，三台姿态健康。
 
-因此生产一键 bringup 仍默认采用三路 SONIC；共享配置现默认为双路。robot_4/5 站位为空。
-四/五路能力及本文历史数据全部保留，专项联调仍可显式设置
-`PIPELINE_SONIC_ROBOT_COUNT=4|5`，但不能把它们当成当前生产帧率。另一个接触传感器
+这组数据是 2026-08-20 从四路收敛到三路的历史依据。2026-08-26 为提高双机流水线的
+发布端帧率，生产一键 bringup 进一步收敛为双路 SONIC；`robot_3..5` 站位默认为空。
+三/四/五路能力及本文历史数据全部保留，专项联调仍可显式设置
+`PIPELINE_SONIC_ROBOT_COUNT=3|4|5`，但不能把它们当成当前生产帧率。另一个接触传感器
 候选也未改变生产语义：`ISAACLAB_CONVEYOR_CONTACT_HISTORY_LENGTH` 默认仍为 `4`，
 current-only 的 `0` 只保留为显式实验值。

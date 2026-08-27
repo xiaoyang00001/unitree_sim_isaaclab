@@ -3,7 +3,7 @@
 #   sim(HOST_MODE 多机器人) + deploy#1(--input-type zmq_manager ← Pico manager)
 #   + 默认 deploy#2(keyboard 调试通道)，或 PIPELINE_DUAL_PICO=1 时：
 #     deploy#2(--input-type zmq_manager ← Pico manager#2)
-#   + robot_3..N（PIPELINE_SONIC_ROBOT_COUNT，默认 3）各走独立 keyboard deploy；
+#   + robot_3..N（PIPELINE_SONIC_ROBOT_COUNT，默认 2）仅在显式扩容时各走独立 keyboard deploy；
 #     外部 GR00T deploy.sh 尚未原生识别 ID=3..5，本脚本显式钉死 rt/rN 前缀与输出端口。
 #
 # 与 keyboard 版编排的差异：
@@ -43,12 +43,15 @@ PY="${PIPELINE_SIM_PY:-$HOME/miniconda3/envs/env_isaaclab/bin/python}"
 MGR_PY="$GR00T_ROOT/.venv_teleop/bin/python"
 PEER_IP="${ISAACLAB_SCENE_SYNC_PEER_IP:-192.168.50.127}"
 DUAL_PICO="${PIPELINE_DUAL_PICO:-0}"
-SONIC_ROBOT_COUNT="${PIPELINE_SONIC_ROBOT_COUNT:-3}"
+SONIC_ROBOT_COUNT="${PIPELINE_SONIC_ROBOT_COUNT:-2}"
 # 生产默认启用真身执行器 6→1 合并；遇到回归可在启动前显式设 0 原路回滚。
 # runtime tensor 校验只用于 A/B/诊断，默认关闭，避免正常启动发生 GPU→CPU 同步。
 # 使用 ${VAR-default} 而不是 ${VAR:-default}：显式空串也必须被下面的严格校验拒绝。
 SONIC_MERGE_ACTUATORS="${PIPELINE_SONIC_MERGE_ACTUATORS-1}"
 SONIC_VALIDATE_ACTUATORS="${PIPELINE_SONIC_VALIDATE_ACTUATORS-0}"
+# Host 本地画面只是诊断预览；Cafe 已验证每 4 个控制圈渲染一次时，
+# GUI 约 12.5 fps，但物理与 ZMQ 发布仍保持 50 Hz。设 1 可回退每圈渲染。
+HOST_LATE_RENDER_INTERVAL="${PIPELINE_HOST_LATE_RENDER_INTERVAL:-4}"
 # 只降低 Isaac Dex3 HandCmd；LowCmd、ACK 和控制/规划轮询仍保持 500 Hz。
 # 遇到兼容性问题可用 PIPELINE_ISAAC_HANDCMD_HZ=500 恢复旧流量。
 ISAAC_HANDCMD_HZ="${PIPELINE_ISAAC_HANDCMD_HZ:-100}"
@@ -103,6 +106,10 @@ if ! validate_isaac_handcmd_hz "$ISAAC_HANDCMD_HZ"; then
   echo "ERROR: PIPELINE_ISAAC_HANDCMD_HZ 只接受 [20, 500] 内的有限数值（当前值: $ISAAC_HANDCMD_HZ）。"
   exit 2
 fi
+if ! [[ "$HOST_LATE_RENDER_INTERVAL" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: PIPELINE_HOST_LATE_RENDER_INTERVAL 只接受正整数（当前值: $HOST_LATE_RENDER_INTERVAL）。" >&2
+  exit 2
+fi
 
 if [ ! -d "$SIM_DIR" ]; then
   echo "ERROR: 仿真仓库不存在: $SIM_DIR（可用 PIPELINE_SIM_DIR 覆盖）。"
@@ -131,6 +138,7 @@ mkdir -p "$LOG_DIR"
 echo "== SONIC actuator production settings =="
 echo "PIPELINE_SONIC_MERGE_ACTUATORS=$SONIC_MERGE_ACTUATORS (0=回滚原始 6 组, 1=43 关节单组)"
 echo "PIPELINE_SONIC_VALIDATE_ACTUATORS=$SONIC_VALIDATE_ACTUATORS (0=正常运行, 1=startup tensor 门禁)"
+echo "PIPELINE_HOST_LATE_RENDER_INTERVAL=$HOST_LATE_RENDER_INTERVAL (Host 本地预览间隔，不节流 ZMQ 发布)"
 
 # 渲染形态：默认 GUI（--hide_ui）——需要一个能用的 X 会话，DISPLAY 优先取调用方
 # 环境、否则 :0（PIPELINE_DISPLAY 可强制指定）。无桌面/纯 ssh 的机器用
@@ -275,6 +283,8 @@ echo "residual deploys: $(pgrep -c -f 'g1_deploy_onnx_re[f]' 2>/dev/null || echo
 
 echo "== start host sim ($SONIC_ROBOT_COUNT SONIC robots) =="
 cd "$SIM_DIR" || exit 1
+# 不在包装脚本硬传 --sim-state-export-hz：sim_main 必须等 Env 创建后确认
+# ZMQ PUB socket 真正就绪才关闭重复 SimState；bind 失败时保留 5 Hz 回退。
 env DISPLAY="$DISPLAY_TARGET" GR00T_WBC_ROOT="$GR00T_ROOT" PYTHONUNBUFFERED=1 \
     UNITREE_DDS_DOMAIN=1 UNITREE_DDS_INTERFACE=lo \
     ISAACLAB_LOCAL_ROBOT_ID=1 ISAACLAB_HOST_BOTH_ROBOTS=1 \
@@ -285,8 +295,8 @@ env DISPLAY="$DISPLAY_TARGET" GR00T_WBC_ROOT="$GR00T_ROOT" PYTHONUNBUFFERED=1 \
     UNITREE_SKIP_LOWSTATE_CRC=1 UNITREE_LOWCMD_CRC_SAMPLE_INTERVAL=50 \
     "$PY" sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor --robot_type g129 \
     --action_source sonic_dds --device cpu $RENDER_ARG --stats_interval 10 \
-    --profile_interval 25 --sim-state-export-hz 0 --lowstate-pub-hz 55 \
-    --handstate-pub-hz 10 \
+    --profile_interval 25 --lowstate-pub-hz 55 \
+    --handstate-pub-hz 10 --late-render-interval "$HOST_LATE_RENDER_INTERVAL" \
     > "$LOG_DIR/host_dual.log" 2>&1 &
 SIM_PID=$!
 
@@ -481,9 +491,17 @@ echo "OK: host physics confirmed advancing twice ($PHYSICS_BASELINE -> $PHYSICS_
 sudo -n renice -n -10 -p $(pgrep -f "sim_mai[n].py" | head -1) \
     $(pgrep -f "g1_deploy_onnx_re[f]" | tr '\n' ' ') 2>/dev/null || true
 if [ "$DUAL_PICO" = "1" ]; then
-  echo "BRINGUP_DONE (dual Pico: robot#1/#2 等操作者发车，robot#3..#$SONIC_ROBOT_COUNT 已开 keyboard)"
+  if [ "$SONIC_ROBOT_COUNT" -ge 3 ]; then
+    echo "BRINGUP_DONE (dual Pico: robot#1/#2 等操作者发车，robot#3..#$SONIC_ROBOT_COUNT 已开 keyboard)"
+  else
+    echo "BRINGUP_DONE (dual Pico: robot#1/#2 等操作者发车)"
+  fi
   echo "logs: $LOG_DIR/host_dual.log + deploy_r1..r$SONIC_ROBOT_COUNT.log + pico_manager*.log"
 else
-  echo "BRINGUP_DONE (robot#1 等操作者头显发车，robot#2..#$SONIC_ROBOT_COUNT 已开 keyboard)"
+  if [ "$SONIC_ROBOT_COUNT" -ge 3 ]; then
+    echo "BRINGUP_DONE (robot#1 等操作者头显发车，robot#2..#$SONIC_ROBOT_COUNT 已开 keyboard)"
+  else
+    echo "BRINGUP_DONE (robot#1 等操作者头显发车，robot#2 已开 keyboard)"
+  fi
   echo "logs: $LOG_DIR/host_dual.log + deploy_r1..r$SONIC_ROBOT_COUNT.log + pico_manager.log"
 fi

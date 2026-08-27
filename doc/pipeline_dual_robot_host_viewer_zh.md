@@ -41,7 +41,7 @@ flowchart LR
     GHOST["ghost『robot』<br/>隐形 · 无碰撞 · 无重力 · 场外"]
     PR["PeerRobot<br/>robot_1 镜像"]
     PR2["PeerRobot2<br/>robot_2 镜像"]
-    OBJ["10 件物体 kinematic"]
+    OBJ["17 件流水线箱/包 kinematic"]
   end
   HOLD["hold 动作源<br/>常量默认站姿"] --> AM
   AM --> GHOST
@@ -93,7 +93,8 @@ ISAACLAB_SONIC_ROBOT_COUNT=2 \
 ISAACLAB_SONIC_MERGE_ACTUATORS=1 \
 UNITREE_SKIP_LOWSTATE_CRC=1 UNITREE_LOWCMD_CRC_SAMPLE_INTERVAL=50 \
 python sim_main.py --task Isaac-G1-29DoF-Sonic-Conveyor --robot_type g129 \
-  --action_source sonic_dds --device cpu --hide_ui --stats_interval 10
+  --action_source sonic_dds --device cpu --hide_ui --stats_interval 10 \
+  --late-render-interval 4
 
 # ② 两套 deploy —— ⚠️ 必须并行启动（错峰 ~20s 即可），不能串行等 Init Done：
 #    双 ack AND 门下 deploy#1 的 Init 要看到新鲜物理样本，而物理推进又在等
@@ -110,7 +111,8 @@ G1_LOCAL_ROBOT_ID=2 bash deploy.sh --disable-crc-check --input-type keyboard isa
 - 测前清残余：`pgrep -fa g1_deploy_onnx_ref` 必须为 0——残留实例会以 kHz 级频率
   轰 ack，链路数据完全不可信（本轮实测 12 个残留 = 2kHz lowcmd）。
 - 首次双实例并发冷启动会争写 planner 的 `.trt` 缓存，先单跑一次预热。
-- 手动 host 显式使用 `ISAACLAB_SONIC_MERGE_ACTUATORS=1`；核心默认仍为 `0`。新
+- 手动 host 显式使用 `ISAACLAB_SONIC_MERGE_ACTUATORS=1` 便于复现建场参数；在线
+  多机器人 Host 未传时 `sim_main.py` 也会选择 `1`。新
   checkout、GPU/Isaac Lab 升级后可仅在一次验收启动加
   `ISAACLAB_SONIC_VALIDATE_ACTUATORS=1`，通过后完整重启并恢复 `0`。回滚原始 6 组必须
   完整停止 host，再以 `ISAACLAB_SONIC_MERGE_ACTUATORS=0`
@@ -138,15 +140,60 @@ G1_LOCAL_ROBOT_ID=2 bash deploy.sh --disable-crc-check --input-type keyboard isa
   `host_bringup` 类编排脚本可在发车后直接预激活两台（发 `\n` 与 `2` 进键管道）；
 - 键盘走管道文件时：`printf 's' >> <keyfile>`，单字符即时生效无需换行。
 
-## 4. 帧率账本（host 双机器人，i9/20 核 Linux）
+## 4. 帧率账本（host 双机器人）
 
-| 阶段 | 主循环 | 关键数字 |
+### 4.1 本轮修改思路：先分清三种“帧率”
+
+本轮不再把 Host 窗口右上角的 GUI fps 当成发布频率。需要分别观察：
+
+1. **Host 本地 GUI fps**：只表示 Ubuntu 诊断预览调用 `sim.render()` 的频率；
+2. **Host 物理/控制主循环 Hz**：决定新 PhysX 状态产生和 LowState 锁步推进速度；
+3. **ZMQ `scene_state` Hz**：Viewer 真正收到的机器人和 17 件箱/包状态更新频率。
+
+`cafe-stable-20260825` 的关键并不是“10 fps 也够看”，而是 Host 启动时显式采用
+`late_render_interval=4`：本地 GUI 约 12.5 fps，物理与外部 ZMQ SUB 实测仍约 50 Hz。
+Viewer 自己独立渲染，因此操作流畅度取决于第 3 项及其帧间隔，而不是第 1 项。
+
+流水线旧路径则让较重的双 43DoF 真身、17 个动态箱/包、传送带驱动和仓库背景每圈都
+参与渲染/更新。2026-08-26 外部 SUB 实测只有 40.484 Hz；现场进程约占 301% CPU，GPU
+SM 约 5%-9%，说明主要预算消耗在 Host CPU 侧主循环/物理/重复状态工作，不在 Viewer，
+也不在约 11 KB 一帧的 JSON 编码。因此本轮原则是：**保留每圈物理与 ZMQ 发布，只降低
+Host 诊断预览和重复发布工作；Viewer 默认路径不做功能性改动。**
+
+### 4.2 采用方法、边界与回滚
+
+| 发布端措施 | 实现与原因 | 适用边界 | 单项回滚 |
+|---|---|---|---|
+| 本地预览 4:1 | 每 4 个控制圈渲染一次，物理和 ZMQ `pump()` 仍每圈执行 | 仅在线多机器人 Host 的普通 GUI；XR、teleop、headless、livestream 和 replay 不自动采用 | `PIPELINE_HOST_LATE_RENDER_INTERVAL=1`，或直接启动时传 `--late-render-interval 1` |
+| 真身执行器 6→1 | 每台 43 关节的六组隐式执行器合成一组，减少逐子步 Python/manager 开销；已有属性展开和运行时 hash 门禁 | 只作用于 Host 真身，不作用于 Viewer 镜像 | `ISAACLAB_SONIC_MERGE_ACTUATORS=0` 后完整重启 |
+| LowState/HandState 空闲保活 55/10 Hz | 降低重复 generation 的 DDS/GIL 工作；每个新 PhysX 样本仍事件唤醒立即发布，不是硬限流 | 仅在线多机器人 Host 默认；显式 CLI 优先 | `--lowstate-pub-hz 100 --handstate-pub-hz 100` |
+| 去掉重复完整 SimState | Env 创建后确认 ZMQ PUB socket 就绪才把 `rt/sim_state` 设为 0，避免同一完整场景同时走 ZMQ 和 DDS | 只做启动期能力判断；scene-sync 关闭、缺 pyzmq 或 bind 失败时保留 5 Hz | `--sim-state-export-hz 5` |
+| 生产默认双路 | tag 和当前工位是双机器人拓扑，避免一键脚本无意创建第 3 台全动力学真身及 deploy | 三/四/五机能力仍保留 | `PIPELINE_SONIC_ROBOT_COUNT=3|4|5` |
+| 分段 profiler | 可选统计 snapshot/encode/send/publish 与接收/apply 的 mean、p50/p95/p99/max，样本有界 | 默认关闭，主 A/B 不带探针 | 诊断时加 `--scene-sync-profile` |
+
+上述默认值在 `sim_main.py` 中受 `online_scene_sync_host` 门控；通用 SONIC、对等端、Viewer
+和 replay 保持原行为。生产脚本不硬传 `--sim-state-export-hz 0`，避免把仓库默认伪装成
+用户显式覆盖并破坏 ZMQ 初始化失败时的 5 Hz 兜底。`send_enqueued_hz` 只表示本地 PUB
+socket 接受入队，端到端仍以外部 SUB 或 Viewer 的 `accepted_hz` 为准。
+
+### 4.3 验收方法与结果
+
+主性能 A/B 保持相同 Host Python argv、双 deploy 和 17 箱负载，关闭 scene-sync profiler；
+启动及着色器热身完成后，再由独立 SUB 预热 2 秒并采集 3 个连续 20 秒窗口。验收同时检查
+frame-id 缺失、重复/乱序、非法帧、session 切换和到达间隔尾延迟，避免只看 Host 自报均值。
+分段归因需要另开带 profiler 的诊断运行，不能用带探针数字替代主门禁。
+
+前五行是历史 i9/20 核 Linux 调优账本；最后一行与紧随其后的同机 A/B 来自
+2026-08-26/27 的 i7-14790F + RTX 5080 流水线 Host，跨硬件行之间不直接计算收益。
+
+| 阶段 | 观测频率 | 关键数字 |
 |---|---|---|
 | 贯通初始（全 CRC） | 25-26 Hz | E 20-42ms 波动，A 有 20ms 尖峰 |
 | + LowState 发布免 CRC | 26-29 Hz | A 尖峰消失 |
 | + lowcmd 接收 1/50 抽样 | 31-33 Hz | E 收敛 ~19ms |
 | + renice -10 | **34-36 Hz** | headless 形态 |
 | GUI（--hide_ui） | 24-26 Hz | R≈10ms 渲染成本 |
+| 2026-08-27 发布优先预设（preview interval=4） | **49.900 Hz ZMQ** | 本地 GUI 12.47-12.50 fps；3×20s 外部 SUB 为 49.900/49.850/49.950 Hz，2994 帧零丢失/乱序 |
 
 归因（py-spy 150Hz）：瓶颈是 **GIL 单线程天花板**（20 核只用 1.2 核，sim 101.5%）。
 - ⚠️ **Linux 上 unitree CRC 也是纯 Python**（旧账本"C 库 ~0.01ms"不成立）——双通道
@@ -159,7 +206,13 @@ G1_LOCAL_ROBOT_ID=2 bash deploy.sh --disable-crc-check --input-type keyboard isa
 - 剩余：native PhysX ~40%（双 43DoF 固有）、cyclonedds 反序列化 ~10%
   （500Hz lowcmd 九成是重发包，深水区）、观测/metrics 小项 ~5%。
 
-锁步语义下 35Hz = 0.7× 慢放（不丢帧不失真）；viewer 侧渲染恒 50fps。
+2026-08-26 同机旧路径的外部 SUB 基线为 `810 / 20.0079s = 40.484 Hz`；2026-08-27
+优化版在同一双机器人、17 箱、GUI Host 命令下达到 `2994 / 60s = 49.900 Hz`，提升
+23.26%。三个 20 秒窗口均无非法帧、frame-id 缺失、乱序或 session 切换；最差窗口
+到达间隔 p95 23.271 ms、p99 27.552 ms。Host 稳态 moving average 为
+49.72-50.18 Hz，本地预览 12.47-12.50 fps。该结果验证的是整套发布端默认组合，不能把
+23.26% 拆分归因给其中任一单项。工程回归同时通过：定向测试 `56 passed`，完整测试
+`422 passed, 12 skipped`；`py_compile`、`bash -n` 和 `git diff --check` 均通过。
 
 ## 5. 已知坑（每条都实测踩过）
 
@@ -226,8 +279,9 @@ G1_LOCAL_ROBOT_ID=2 bash deploy.sh --disable-crc-check --input-type keyboard isa
 - AR 视角锚定的头显实测（代码已落地挂 PeerRobot/PeerRobot2，pxr 验证过 USD 层级；
   头显侧确认视角位置/pelvis yaw 跟随/B 键 recenter 待做）；
 - win1 部署（照 §6 增量指引）与**多 viewer 并发**实测（传输层天然扇出，未实测）；
-- host 50Hz：cyclonedds 反序列化去重（重发包先比 raw bytes 再解？需下探 SDK 层）、
-  观测/metrics 小项打包、native 部分无大油水；当前 headless 34-36Hz / GUI 24-26Hz；
+- host 50Hz：发布优先预设已在 GUI Host 达到外部 ZMQ 49.900 Hz；历史未启用该组合时
+  headless 为 34-36 Hz、每圈 GUI 为 24-26 Hz。后续只在尾延迟回归时再评估
+  cyclonedds 重发包去重、观测/metrics 小项，native 部分无大油水；
 - AR viewer 实测 50Hz 满帧（A 0.0/E 6.9/R 10.6）——物理留 host、画面全推 viewer 的
   架构红利已被数字证实。
 
