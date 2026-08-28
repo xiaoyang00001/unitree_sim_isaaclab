@@ -206,6 +206,13 @@ LOCAL_ROBOT_ID = resolve_local_robot_id(verbose_tag="[conveyor_env_cfg]", load_e
 # 本机 "robot" 资产退化为停在场外的 ghost（无碰撞/无重力/合并执行器），只为满足
 # SONIC EnvCfg 的 action/observation 挂载，不参与画面构图。
 VIEWER_MODE = LOCAL_ROBOT_ID == 0
+# 纯镜像 Viewer 不运行 SONIC policy，也不承担接触/流水线动力学权威；每个 20 ms
+# 显示圈继续做父类的 4 个 5 ms 物理子步只会消耗接收与 XR 的主线程预算。默认改成
+# 1 个 20 ms 子步，仍保持 50 Hz env_step_dt。保留显式回退开关，方便 Windows/Isaac
+# 版本差异现场 A/B；Host 和普通对等端不进入此分支，继续严格使用 5 ms x 4。
+VIEWER_SINGLE_STEP_PHYSICS = _env_bool(
+    "ISAACLAB_VIEWER_SINGLE_STEP_PHYSICS", True
+)
 # host 多机器人模式（工作包 B）：历史开关 ISAACLAB_HOST_BOTH_ROBOTS=1 继续负责
 # 激活 host；实际数量由 ISAACLAB_SONIC_ROBOT_COUNT=2..5 决定。每台各有一套 deploy
 # 与 rt[/rN]/* DDS 通道，场景里没有镜像体，sync 单向发布全部真身与物体。
@@ -2219,6 +2226,25 @@ class G129SonicConveyorEnvCfg(G129SonicEnvCfg):
 
     def __post_init__(self):
         super().__post_init__()
+        if VIEWER_MODE and VIEWER_SINGLE_STEP_PHYSICS:
+            # 父类为 SONIC 权威动力学固定 dt=5ms、decimation=4。Viewer 的机器人和
+            # 物体状态由主循环外置 scene-sync pump 直接写入，不需要 200 Hz 子步；
+            # 改成 20ms x 1 可降低 env.step 成本，同时保持控制/显示圈仍为 50 Hz。
+            # render_interval 必须同步置 1：SimulationContext 初始化会用
+            # dt * render_interval 推导 rendering_dt，若遗留父类的 4 会变成 80ms。
+            self.sim.dt = 0.02
+            self.decimation = 1
+            self.sim.render_interval = 1
+            print(
+                "[viewer perf] single-step mirror physics enabled: "
+                "physics_dt=0.020000s, decimation=1, "
+                "env_step_dt=0.020000s, init_render_interval=1"
+            )
+        elif VIEWER_MODE:
+            print(
+                "[viewer perf] single-step mirror physics disabled: "
+                "using inherited SONIC physics_dt=0.005000s, decimation=4"
+            )
         # history=0 是 current-only 性能候选：当 ContactSensor 实际存在时，
         # 它依赖 InteractiveScene 的 lazy 语义在真正读取 sensor.data 时才重算
         # 当前帧。若强制每步刷新，既失去限流收益，又违背运行语义，

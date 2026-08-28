@@ -156,9 +156,10 @@ Viewer 自己独立渲染，因此操作流畅度取决于第 3 项及其帧间�
 
 流水线旧路径则让较重的双 43DoF 真身、17 个动态箱/包、传送带驱动和仓库背景每圈都
 参与渲染/更新。2026-08-26 外部 SUB 实测只有 40.484 Hz；现场进程约占 301% CPU，GPU
-SM 约 5%-9%，说明主要预算消耗在 Host CPU 侧主循环/物理/重复状态工作，不在 Viewer，
-也不在约 11 KB 一帧的 JSON 编码。因此本轮原则是：**保留每圈物理与 ZMQ 发布，只降低
-Host 诊断预览和重复发布工作；Viewer 默认路径不做功能性改动。**
+SM 约 5%-9%，说明当时的主要预算消耗在 Host CPU 侧主循环/物理/重复状态工作，不在
+约 11 KB 一帧的 JSON 编码。因此 2026-08-27 发布端轮次的原则是：**保留每圈物理与
+ZMQ 发布，只降低 Host 诊断预览和重复发布工作；该轮不改 Viewer。**Host 达到 50 Hz 后
+暴露出的 Viewer 消费瓶颈由 2026-08-28 的后续工作单独处理，见 §4.3。
 
 ### 4.2 采用方法、边界与回滚
 
@@ -176,7 +177,35 @@ Host 诊断预览和重复发布工作；Viewer 默认路径不做功能性改�
 用户显式覆盖并破坏 ZMQ 初始化失败时的 5 Hz 兜底。`send_enqueued_hz` 只表示本地 PUB
 socket 接受入队，端到端仍以外部 SUB 或 Viewer 的 `accepted_hz` 为准。
 
-### 4.3 验收方法与结果
+### 4.3 Viewer 单物理步优化（2026-08-28，待 Windows 动态验收）
+
+Host 发布侧达到约 50 Hz 后，win130 的有效在线 profiler 显示：源流到达
+`49.93-50.04 Hz`，Viewer 只应用 `42.25-43.74 Hz`，每 10 秒把已经收到的 500 帧中
+约 62-78 帧合并为最新帧。Scene-sync 主循环工作约 2.1 ms，而 Viewer 仍继承权威
+SONIC 的 `physics_dt=0.005、decimation=4`，控制器自身 E/R 合计约 20.8-21.2 ms；完整
+一圈约 22.9-23.3 ms，超过 20 ms 预算。
+
+Viewer 不运行 SONIC policy，也不是机器人、接触或流水线动力学权威。其镜像机器人和
+kinematic 箱/包由主循环外置 scene-sync pump 直接写入，因此默认改为：
+
+```text
+physics_dt=0.02
+decimation=1
+render_interval=1（SimulationContext 初始化值）
+```
+
+`physics_dt * decimation` 仍为 20 ms，控制/显示语义保持 50 Hz；只把每圈 4 个物理子步
+缩成 1 个。`render_interval` 必须同时从父类的 4 改成 1，否则初始化阶段会把
+`rendering_dt` 推成 80 ms。该覆盖只在 `LOCAL_ROBOT_ID=0` 的 Viewer 生效，Host 与普通
+对等端继续严格使用 `0.005 x 4`。现场若发现镜像关节、kinematic 物体或 XR 锚点异常，
+在 Viewer 启动环境中设置 `ISAACLAB_VIEWER_SINGLE_STEP_PHYSICS=0` 并完整重启，即可退回
+旧时序。
+
+动态验收继续使用 `--scene-sync-profile`，目标为 Viewer `accepted_hz >= 49`、合并帧
+`<= 1%`、完整单圈稳定低于 20 ms；在 Windows 头显实测完成前，不把预计收益写成既成
+结果。
+
+### 4.4 验收方法与结果
 
 主性能 A/B 保持相同 Host Python argv、双 deploy 和 17 箱负载，关闭 scene-sync profiler；
 启动及着色器热身完成后，再由独立 SUB 预热 2 秒并采集 3 个连续 20 秒窗口。验收同时检查
