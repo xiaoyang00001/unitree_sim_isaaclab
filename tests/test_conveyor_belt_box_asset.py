@@ -70,15 +70,15 @@ class BeltBoxPhysicsAssetTest(unittest.TestCase):
         text = _ENV_CFG_PATH.read_text(encoding="utf-8")
         self.assertRegex(text, r"BELT_BOX_ROT\s*=\s*\[1\.0, 0\.0, 0\.0, 0\.0\]")
 
-    def test_d02_has_a_blue_tint_and_high_contrast_top_label(self) -> None:
-        """第二箱型必须在远处也能与棕色 D01 明显区分。"""
+    def test_d02_has_a_blue_tint_without_task_level_top_label(self) -> None:
+        """第二箱型保留蓝色辨识度，不再叠加突兀的白色顶标。"""
 
         text = self._text("d02")
         self.assertIn("inputs:BaseColor_Tint = (0.15, 0.48, 1.0, 1.0)", text)
         self.assertIn("float inputs:Desaturation = 0.85", text)
-        self.assertIn('def Mesh "TopLabel"', text)
-        self.assertIn('def Material "LabelMaterial"', text)
-        self.assertIn("rel material:binding = </CartBoxD02/LabelMaterial>", text)
+        self.assertNotIn('def Mesh "TopLabel"', text)
+        self.assertNotIn('def Material "LabelMaterial"', text)
+        self.assertNotIn("rel material:binding = </CartBoxD02/LabelMaterial>", text)
 
     def test_stage_metadata_and_default_prim(self) -> None:
         for key, (default_prim, _visual, *_rest) in _EXPECTED.items():

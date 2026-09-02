@@ -94,37 +94,4 @@ def Xform "CartBoxD02" (
         token visibility = "invisible"
     }
 
-    def Material "LabelMaterial"
-    {
-        token outputs:surface.connect = </CartBoxD02/LabelMaterial/PreviewSurface.outputs:surface>
-
-        def Shader "PreviewSurface"
-        {
-            uniform token info:id = "UsdPreviewSurface"
-            color3f inputs:diffuseColor = (0.95, 0.97, 1.0)
-            float inputs:metallic = 0
-            float inputs:roughness = 0.35
-            token outputs:surface
-        }
-    }
-
-    # 22×14 cm 白色顶标，悬在压皱网格最高点上方约 2 mm；纯视觉、无碰撞。
-    def Mesh "TopLabel" (
-        prepend apiSchemas = ["MaterialBindingAPI"]
-    )
-    {
-        int[] faceVertexCounts = [4]
-        int[] faceVertexIndices = [0, 1, 2, 3]
-        normal3f[] normals = [(0, 0, 1)] (
-            interpolation = "uniform"
-        )
-        point3f[] points = [
-            (-0.11, -0.07, 0.1685),
-            (0.11, -0.07, 0.1685),
-            (0.11, 0.07, 0.1685),
-            (-0.11, 0.07, 0.1685),
-        ]
-        rel material:binding = </CartBoxD02/LabelMaterial>
-        uniform token subdivisionScheme = "none"
-    }
 }

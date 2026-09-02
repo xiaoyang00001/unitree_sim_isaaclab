@@ -218,7 +218,7 @@ s 相应增加 `0.30`）：工位 `y=14.098 ⇒ s=12.4945`、回收线
 | key | 来源 | 尺寸（沿带 × 横向 × 高） | 质量 | 资产 |
 |---|---|---|---|---|
 | `d01` | v61 背景 `ConveyorBelt_Box_XX` 同款纸箱 | 0.250 × 0.380 × 0.1487 m | 0.1 kg | `props/cart_box_d01_physics.usda` |
-| `d02` | Simple Warehouse 顶部压皱纸箱，任务层蓝色覆盖 + 白色顶标 | 0.250 × 0.380 × 0.1663 m | 0.1 kg | `props/cart_box_d02_physics.usda` |
+| `d02` | Simple Warehouse 顶部压皱纸箱，任务层蓝色覆盖 | 0.250 × 0.380 × 0.1663 m | 0.1 kg | `props/cart_box_d02_physics.usda` |
 | `c01` | Simple Warehouse 方形 C01 大箱 | 0.500 × 0.500 × 0.250 m | 1.5 kg | `props/cart_box_c01_physics.usda` |
 | `c02` | Simple Warehouse 加高 C02 大箱 | 0.500 × 0.500 × 0.311 m | 1.5 kg | `props/cart_box_c02_physics.usda` |
 | `d03` | Simple Warehouse 高型不规则 D03 纸箱 | 0.2606 × 0.4126 × 0.2656 m | 1.5 kg | `props/cart_box_d03_physics.usda` |
@@ -628,7 +628,7 @@ HandCmd 默认超时为 `0.20 s`；超时后保持最后安全的 `q/kp/kd`、�
 | nolo_label.png | 分叉 git | warehouse USD 相对引用的地面贴花 |
 | props/pushcart_physics.usda | 分叉工作区手拷（未入 git） | 引用 Nucleus 5.1 SM_PushcartA_02 |
 | props/cart_box_d05_physics.usda | 分叉 git-LFS tip 版 | D05 平底刚体封装，已含关 CCD 修复（ae9118a2e）；现已注册到默认随机池 |
-| props/cart_box_d02_physics.usda | 本仓库任务专用物理层 | 流水线压皱箱；引用 `SM_CardBoxD_02`，增加蓝色材质覆盖和白色顶标，使用 0.38×0.25×0.1663 m 平底 convexHull |
+| props/cart_box_d02_physics.usda | 本仓库任务专用物理层 | 流水线压皱箱；引用 `SM_CardBoxD_02`，增加蓝色材质覆盖，使用 0.38×0.25×0.1663 m 平底 convexHull |
 | props/cart_box_d01_physics.usda | 本仓库任务专用物理层 | 流水线纸箱队列的第一种箱型；与 d05 同构但引用 `SM_CardBoxD_01`（= v61 `ConveyorBelt_Box_XX` 的视觉源），删掉原资产的 triangle-mesh 碰撞、另挂 0.38×0.25×0.149 m 的 convexHull，原点在箱底面 |
 | props/cart_box_c01_physics.usda | 本仓库任务专用物理层 | C01 0.50×0.50×0.25 m 大箱封装；保留给显式 PATTERN 回退/A-B，不进入 0.60 m 窄带的生产默认随机池，Dex3 实抓尚未验收 |
 | props/cart_box_c02_physics.usda | 本仓库任务专用物理层 | C02 0.50×0.50×0.311 m 加高大箱封装；删除官方 triangle-mesh 碰撞并改用平底 convexHull；仅供显式 PATTERN 回退/A-B |
